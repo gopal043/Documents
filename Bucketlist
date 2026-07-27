@@ -1,1 +1,30 @@
+Recommended Learning Order
+1.	JVM Memory Areas 
+2.	Garbage Collection 
+3.	Concurrency + JMM 
+4.	Collections Internals 
+5.	Class Loading 
+6.	JIT Compiler 
+7.	Profiling Tools (JFR, Async Profiler) 
+8.	Spring Internals 
+9.	NIO 
+10.	Advanced JVM Tuning
+
+
+Most Important Patterns for Senior Interviews
+If I were preparing a 6-year experienced engineer for interviews, I'd master these first:
+1.	Service Decomposition 
+2.	Database per Service 
+3.	API Gateway 
+4.	Service Discovery 
+5.	Saga 
+6.	Outbox Pattern 
+7.	CQRS 
+8.	Event Sourcing 
+9.	Circuit Breaker 
+10.	Retry + Bulkhead 
+11.	Cache Aside 
+12.	Distributed Tracing 
+13.	Service Mesh 
+14.	Strangler Fig
 
