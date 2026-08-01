@@ -28,3 +28,68 @@ If I were preparing a 6-year experienced engineer for interviews, I'd master the
 13.	Service Mesh 
 14.	Strangler Fig
 
+
+CPU Architecture
+    ↓
+Processes
+    ↓
+Threads
+    ↓
+Memory Hierarchy
+    ↓
+CPU Cache
+    ↓
+Compiler Optimizations
+    ↓
+Instruction Reordering
+    ↓
+Cache Coherence
+    ↓
+Visibility Problem
+    ↓
+Atomicity Problem
+    ↓
+Ordering Problem
+    ↓
+Java Memory Model
+    ↓
+Happens-Before
+    ↓
+volatile
+    ↓
+synchronized
+    ↓
+Monitor Locks
+    ↓
+Lock States
+    ↓
+Biased/Lightweight/Heavyweight Locks
+    ↓
+CAS
+    ↓
+Unsafe
+    ↓
+Atomic Classes
+    ↓
+AQS
+    ↓
+ReentrantLock
+    ↓
+ReadWriteLock
+    ↓
+StampedLock
+    ↓
+Condition
+    ↓
+Thread Pools
+    ↓
+ForkJoinPool
+    ↓
+CompletableFuture
+    ↓
+False Sharing
+    ↓
+Padding
+    ↓
+Disruptor Pattern
+
