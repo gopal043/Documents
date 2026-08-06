@@ -1,0 +1,454 @@
+1. Java Core (Master It Completely)
+You should be able to explain every topic without memorizing definitions.
+JVM
+Know:
+•	JVM Architecture
+•	Heap
+•	Stack
+•	Metaspace
+•	Program Counter
+•	Native Method Stack
+Explain
+•	How an object is created
+•	How it is stored
+•	What happens during method calls
+•	Why StackOverflow occurs
+•	Why OutOfMemory occurs
+Example interview question
+Explain every memory area involved when new Employee() executes.
+________________________________________
+Garbage Collection
+Know
+•	Young Generation
+•	Old Generation
+•	Eden
+•	Survivor Spaces
+Collectors
+•	Serial
+•	Parallel
+•	CMS (legacy)
+•	G1
+•	ZGC
+•	Shenandoah
+Explain
+•	Minor GC
+•	Major GC
+•	Full GC
+Also know
+•	Soft References
+•	Weak References
+•	Phantom References
+________________________________________
+Class Loading
+Explain
+•	Loading
+•	Linking
+•	Verification
+•	Preparation
+•	Resolution
+•	Initialization
+Know
+•	Bootstrap ClassLoader
+•	Platform ClassLoader
+•	Application ClassLoader
+Explain Parent Delegation Model.
+________________________________________
+Java Memory Model
+Very important.
+Explain
+•	happens-before
+•	visibility
+•	reordering
+•	volatile
+•	synchronized
+•	atomicity
+________________________________________
+Collections
+Don't just know APIs.
+Know implementation.
+Explain
+HashMap
+•	hashing
+•	buckets
+•	linked list
+•	treeification
+•	resizing
+•	load factor
+ConcurrentHashMap
+Explain
+•	lock striping (historically)
+•	CAS
+•	synchronized buckets
+•	resize mechanism
+Know differences
+•	HashMap
+•	Hashtable
+•	ConcurrentHashMap
+________________________________________
+Comparable vs Comparator
+Explain
+•	sorting algorithms
+•	stable sorting
+•	complexity
+________________________________________
+String
+Explain
+•	String Pool
+•	intern()
+•	immutability
+•	StringBuilder
+•	StringBuffer
+________________________________________
+2. Multithreading (Must be Expert)
+This is where many experienced developers are still weak.
+Know
+Thread lifecycle
+Explain
+NEW
+RUNNABLE
+BLOCKED
+WAITING
+TIMED_WAITING
+TERMINATED
+________________________________________
+Locks
+Explain
+•	synchronized
+•	ReentrantLock
+•	ReadWriteLock
+•	StampedLock
+Know
+•	fairness
+•	starvation
+•	deadlock
+•	livelock
+________________________________________
+Executors
+Know
+Fixed Thread Pool
+Cached Thread Pool
+Scheduled
+ForkJoinPool
+Work Stealing
+________________________________________
+CompletableFuture
+Must explain
+•	thenApply
+•	thenCompose
+•	thenCombine
+•	exceptionally
+•	allOf
+•	anyOf
+________________________________________
+CAS
+Explain Compare-And-Swap.
+Know
+AtomicInteger
+LongAdder
+VarHandle
+________________________________________
+ThreadLocal
+Explain
+•	memory leaks
+•	thread pools
+•	cleanup
+________________________________________
+3. Spring Boot (Know Internals)
+Not just annotations.
+Explain
+How
+@SpringBootApplication
+works internally.
+Explain
+Auto Configuration
+Component Scan
+Bean lifecycle
+Dependency Injection
+Proxy creation
+Bean scopes
+Circular dependency
+Lazy initialization
+________________________________________
+Spring AOP
+Explain
+JDK Dynamic Proxy
+CGLIB
+Proxy Pattern
+Aspect execution
+________________________________________
+Transactions
+Explain
+@Transactional
+Propagation
+Isolation Levels
+Rollback
+Lost Update
+Dirty Read
+Repeatable Read
+Phantom Read
+________________________________________
+4. Spring Security
+Must explain
+Authentication
+Authorization
+JWT
+OAuth2
+OpenID Connect
+CSRF
+CORS
+Filters
+SecurityContext
+Password encoding
+________________________________________
+5. Hibernate/JPA (Deep)
+Explain
+Persistence Context
+Dirty Checking
+Lazy Loading
+N+1 Problem
+Entity States
+Flush
+Cascade Types
+Fetch Types
+Optimistic Locking
+Pessimistic Locking
+First Level Cache
+Second Level Cache
+Hibernate Session
+JPQL
+Criteria API
+________________________________________
+6. SQL (Become Extremely Strong)
+Many Java developers are average at SQL.
+Know
+Indexes
+Execution Plans
+Composite Indexes
+Clustered vs Non-clustered
+Normalization
+Denormalization
+Partitioning
+Sharding
+Transactions
+ACID
+MVCC
+Isolation Levels
+Window Functions
+CTEs
+Recursive Queries
+Explain why a query is slow.
+________________________________________
+7. System Design
+This separates seniors.
+Know
+Load Balancer
+Reverse Proxy
+Caching
+Redis
+Message Queues
+Kafka
+RabbitMQ
+API Gateway
+Rate Limiting
+Circuit Breaker
+Bulkhead
+Retry
+Saga Pattern
+CQRS
+Event Sourcing
+CAP Theorem
+PACELC
+Consistent Hashing
+Database Replication
+Leader-Follower
+Distributed Lock
+Idempotency
+Exactly Once vs At Least Once
+________________________________________
+8. Microservices
+Explain
+Service Discovery
+Config Server
+API Gateway
+Distributed Tracing
+OpenTelemetry
+Zipkin
+Resilience4j
+Feign
+WebClient
+Service Mesh
+Observability
+________________________________________
+9. Docker & Kubernetes
+Should comfortably explain
+Docker
+Images
+Layers
+Volumes
+Networking
+Multi-stage builds
+Kubernetes
+Pods
+ReplicaSets
+Deployments
+Services
+Ingress
+ConfigMaps
+Secrets
+Autoscaling
+Rolling Updates
+________________________________________
+10. Cloud
+Know at least one cloud platform well.
+Topics include:
+•	Compute services
+•	Managed databases
+•	Object storage
+•	Load balancers
+•	IAM (identity and access management)
+•	Monitoring
+•	Autoscaling
+•	Networking basics (VPC/VNet concepts)
+________________________________________
+11. Design Patterns
+Not definitions.
+Explain where to use them.
+Must know
+•	Singleton
+•	Factory
+•	Builder
+•	Strategy
+•	Observer
+•	Decorator
+•	Adapter
+•	Proxy
+•	Facade
+•	Chain of Responsibility
+•	Command
+•	Template Method
+________________________________________
+12. SOLID Principles
+Explain with real examples.
+Interviewers may ask
+Where did you violate SOLID?
+Be ready.
+________________________________________
+13. Data Structures & Algorithms
+Enough for interviews.
+Arrays
+Linked Lists
+Trees
+BST
+AVL
+Heap
+Trie
+Graph
+DFS
+BFS
+Union Find
+Dynamic Programming
+Sliding Window
+Binary Search
+Backtracking
+Complexity Analysis
+________________________________________
+14. Testing
+Know
+JUnit
+Mockito
+Integration Testing
+Contract Testing
+Testcontainers
+WireMock
+Performance Testing
+Load Testing
+Mutation Testing
+________________________________________
+15. Observability
+Many seniors ignore this.
+Know
+Logging
+Structured Logs
+Correlation IDs
+Metrics
+Tracing
+Health Checks
+Prometheus
+Grafana
+OpenTelemetry
+________________________________________
+16. CI/CD
+Know
+GitHub Actions
+Jenkins
+GitLab CI
+Blue-Green Deployment
+Canary Deployment
+Feature Flags
+Rollback Strategy
+________________________________________
+17. Networking
+Understand
+HTTP/HTTPS
+TCP
+UDP
+TLS Handshake
+REST
+GraphQL
+gRPC
+WebSocket
+SSE
+DNS
+Load Balancer
+CDN
+________________________________________
+18. Linux
+Be comfortable with
+•	grep
+•	awk
+•	sed
+•	find
+•	top
+•	htop
+•	netstat / ss
+•	lsof
+•	ps
+•	kill
+•	journalctl
+•	curl
+•	tcpdump (basic usage)
+Know how to analyze logs and troubleshoot a running application.
+________________________________________
+19. Performance Tuning
+Know how to diagnose:
+•	High CPU usage
+•	Memory leaks
+•	Thread contention
+•	GC pauses
+•	Slow SQL
+•	High latency
+•	Connection pool exhaustion
+•	Thread pool starvation
+Use tools such as:
+•	JDK Flight Recorder (JFR)
+•	Java Mission Control (JMC)
+•	VisualVM
+•	jstack
+•	jmap
+•	jcmd
+________________________________________
+20. Be Able to Explain Real Production Decisions
+This is what distinguishes strong candidates.
+Prepare detailed stories about:
+•	A production incident you resolved
+•	A memory leak investigation
+•	A performance optimization
+•	Reducing API latency
+•	Scaling a service under increased traffic
+•	Fixing concurrency issues
+•	Improving deployment reliability
+•	Designing a new service from scratch
+•	Leading a technical migration
+•	Mentoring developers and conducting code reviews
+Interviewers often probe these experiences because they reveal your depth of understanding and decision-making.
+
