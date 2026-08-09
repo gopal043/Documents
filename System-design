@@ -1,0 +1,656 @@
+I am 6 + years experienced java developer, I want to be 10 steps a ahead of others developers, and i don't want definitions, I want full and deep knowledge on each and every topic teach me like university lecturer and internal working of it, don't teach me all at once, one after one
+
+System Design
+This separates seniors.
+Know
+Load Balancer
+Reverse Proxy
+Caching
+Redis
+Message Queues
+Kafka
+RabbitMQ
+API Gateway
+Rate Limiting
+Circuit Breaker
+Bulkhead
+Retry
+Saga Pattern
+CQRS
+Event Sourcing
+CAP Theorem
+PACELC
+Consistent Hashing
+Database Replication
+Leader-Follower
+Distributed Lock
+Idempotency
+Exactly Once vs At Least Once
+
+That's a good approach. With 6+ years of Java experience, you don't need interview-style definitions. You need to understand why these systems exist, how they work internally, where they fail, and how companies like Amazon, Netflix, Uber, LinkedIn, and Google actually implement them.
+I suggest we do this like a university graduate course combined with production engineering. We won't move to the next topic until the current one is understood deeply.
+How we'll learn
+For every topic, we'll cover this structure:
+1.	The Problem
+o	Why was this technology/pattern invented?
+o	What problems existed before it?
+2.	Mental Model
+o	Intuition before implementation.
+o	Build an internal picture.
+3.	Internal Working
+o	Step-by-step request flow.
+o	Algorithms involved.
+o	Data structures used.
+o	Network communication.
+o	Threading model.
+o	Memory layout.
+o	Failure scenarios.
+4.	Implementation
+o	Build a simplified version ourselves.
+o	Java implementation.
+o	Pseudocode.
+o	Production implementation.
+5.	Real Systems
+o	Netflix
+o	Amazon
+o	Uber
+o	Google
+o	LinkedIn
+o	Meta
+6.	Performance
+o	Time complexity.
+o	Memory complexity.
+o	Throughput.
+o	Latency.
+o	Bottlenecks.
+7.	Failure Cases
+o	What happens when it breaks?
+o	Why?
+o	How do companies recover?
+8.	Interview Perspective
+o	Senior-level discussion.
+o	Staff engineer discussion.
+o	Principal engineer discussion.
+9.	Hands-on Project
+o	Build it.
+o	Benchmark it.
+o	Improve it.
+10.	Advanced Research
+•	Papers.
+•	Trade-offs.
+•	Alternative designs.
+________________________________________
+Course Roadmap
+We'll follow this order because each concept builds on the previous one.
+Module 1 — Traffic Management
+•	Load Balancer
+•	Reverse Proxy
+•	API Gateway
+________________________________________
+Module 2 — Performance
+•	Cache
+•	Redis
+•	Cache Invalidation
+•	Consistent Hashing
+________________________________________
+Module 3 — Distributed Communication
+•	Message Queue
+•	Kafka
+•	RabbitMQ
+________________________________________
+Module 4 — Resilience
+•	Retry
+•	Timeout
+•	Circuit Breaker
+•	Bulkhead
+•	Rate Limiting
+________________________________________
+Module 5 — Distributed Transactions
+•	Saga
+•	CQRS
+•	Event Sourcing
+•	Idempotency
+________________________________________
+Module 6 — Distributed Databases
+•	Replication
+•	Leader-Follower
+•	Distributed Lock
+________________________________________
+Module 7 — Distributed Theory
+•	CAP
+•	PACELC
+•	Exactly Once
+•	At Least Once
+________________________________________
+Rule
+I won't give "definition-style" explanations.
+Instead, we'll reverse engineer every component until you could implement a simplified version yourself.
+
+Lecture 1 — Why Load Balancer Exists
+Most courses start with:
+"A Load Balancer distributes requests."
+That sentence is true, but it doesn't explain why the component exists.
+Let's start from a system with exactly one server.
+Users
+
+   |
+   |
+Internet
+   |
+   |
++-------------+
+| Java Server |
++-------------+
+Suppose your Spring Boot application runs on one machine.
+Configuration:
+•	8 CPU cores
+•	32 GB RAM
+•	Tomcat
+•	PostgreSQL
+Everything works.
+Now imagine your application becomes popular.
+100 users
+No problem.
+1000 users
+Still okay.
+10,000 users
+CPU reaches 100%.
+Memory usage rises.
+Thread pool becomes full.
+Requests wait.
+Latency increases.
+Eventually:
+Request Timeout
+Then:
+Connection Refused
+Finally:
+Server Crash
+The question is:
+Why not simply buy a larger server?
+Suppose your current server has:
+8 CPU
+Upgrade to:
+16 CPU
+Later:
+32 CPU
+Then:
+64 CPU
+Eventually:
+128 CPU
+You discover a practical limit.
+At some point:
+•	CPUs stop scaling linearly.
+•	Memory access becomes slower due to NUMA effects.
+•	Hardware becomes disproportionately expensive.
+•	The server is still a single point of failure.
+This is called vertical scaling.
+1 server
+
+↓
+
+More CPU
+
+↓
+
+More RAM
+
+↓
+
+Bigger server
+It cannot continue indefinitely.
+________________________________________
+The Better Idea
+Instead of one huge machine...
+             ?
+User -----> Server A
+
+             ?
+User -----> Server B
+
+             ?
+User -----> Server C
+Now you have three machines.
+Each handles roughly one-third of the traffic.
+This is horizontal scaling.
+But a new question appears:
+How does the user know which server to contact?
+The browser knows only one address:
+www.mycompany.com
+It doesn't know:
+Server 1
+Server 2
+Server 3
+If DNS randomly returns one IP, what happens if that server is down?
+Users receive errors.
+So we need one component that always accepts requests and decides where each request should go.
+                 +------------------+
+Users ---------->| Load Balancer    |
+                 +------------------+
+
+                   |      |      |
+                   |      |      |
+                Server1 Server2 Server3
+This component becomes the traffic controller.
+Its first responsibility is not "balancing"—it's routing every incoming request to a healthy backend.
+________________________________________
+Is It Really That Simple?
+Suppose there are three servers:
+Server A
+Server B
+Server C
+Each can process:
+100 requests/sec
+A burst arrives:
+300 requests
+An ideal distribution is:
+100 → A
+100 → B
+100 → C
+Now suppose Server B becomes slower because it starts a long garbage collection pause.
+A naive round-robin algorithm still sends every third request to B.
+A → 10 ms
+B → 2 s
+C → 12 ms
+Users routed to B experience terrible latency even though A and C are healthy.
+A production-grade load balancer continuously evaluates backend health and, depending on the algorithm, may temporarily stop sending traffic to B until it recovers.
+This raises deeper questions we'll answer next:
+•	How does a load balancer know a server is unhealthy?
+•	What is an active health check versus a passive one?
+•	Why isn't round robin always the best algorithm?
+•	What is Least Connections?
+•	What is Least Response Time?
+•	What happens when a backend dies in the middle of processing a request?
+•	How do cloud load balancers handle millions of concurrent TCP connections without becoming bottlenecks themselves?
+Those questions lead us into the internal architecture of modern load balancers.
+
+Topic 1: Load Balancer — Part 1
+We will not start with a definition.
+We'll start with the problem that forced engineers to invent it.
+________________________________________
+Scenario: One Java server
+Imagine your Spring Boot application is running here:
+                    ┌──────────────────────┐
+Client ────────────►│ Java Application      │
+                    │                      │
+                    │ Spring Boot          │
+                    │ Tomcat               │
+                    │ JVM                  │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                           Database
+The server has:
+16 CPU
+32 GB RAM
+And suppose it can comfortably handle:
+2,000 requests/sec
+Your business grows.
+Traffic becomes:
+10,000 requests/sec
+You have two choices.
+Option A — Make the machine bigger
+16 CPU → 64 CPU
+32 GB  → 256 GB
+This is vertical scaling.
+But hardware has limits, and cost rises.
+So you choose:
+Option B — Add more servers
+                  ┌── Java Server A
+                  │
+Client ───────────┼── Java Server B
+                  │
+                  ├── Java Server C
+                  │
+                  └── Java Server D
+Now you have a different problem.
+________________________________________
+The real problem
+The client asks:
+GET /orders/123
+But where should that request go?
+Server A?
+Server B?
+Server C?
+Server D?
+You could make the client know all servers:
+10.0.0.11
+10.0.0.12
+10.0.0.13
+10.0.0.14
+But this creates problems.
+Suppose:
+Server B → crashed
+The client might still send:
+Request → B
+and get:
+Connection refused
+Now suppose you add another server:
+Server E → 10.0.0.15
+Every client needs to somehow discover E.
+Now imagine:
+1 million clients
+1000 application servers
+You don't want 1 million clients maintaining knowledge of 1000 servers.
+So we introduce an intermediary.
+                         ┌───────────────┐
+                         │ Load Balancer │
+                         └───────┬───────┘
+                                 │
+                  ┌──────────────┼──────────────┐
+                  ▼              ▼              ▼
+              Server A       Server B       Server C
+Now clients only need to know:
+api.company.com
+They don't need to know:
+Server A
+Server B
+Server C
+That's the first fundamental reason for a Load Balancer.
+________________________________________
+But now we have created a new problem
+The Load Balancer receives:
+Request #1
+Request #2
+Request #3
+Request #4
+...
+It has to decide:
+Where should each request go?
+For example:
+             Request
+                │
+                ▼
+        ┌───────────────┐
+        │ Load Balancer │
+        └───────┬───────┘
+                │
+          ??? Which server?
+                │
+        ┌───────┼───────┐
+        ▼       ▼       ▼
+        A       B       C
+This is the core problem.
+And this takes us directly into load-balancing algorithms.
+________________________________________
+First algorithm: Round Robin
+Suppose:
+A
+B
+C
+The simplest possible strategy is:
+Request 1 → A
+Request 2 → B
+Request 3 → C
+Request 4 → A
+Request 5 → B
+Request 6 → C
+Internally, you could imagine:
+int index = 0;
+
+Server chooseServer() {
+    Server server = servers[index];
+    index = (index + 1) % servers.size();
+    return server;
+}
+For:
+servers.size() = 3
+we get:
+index = 0 → A
+index = 1 → B
+index = 2 → C
+index = 0 → A
+Very simple.
+Complexity:
+Choosing backend = O(1)
+But now let's break it.
+________________________________________
+Why Round Robin is not actually "balanced"
+Imagine:
+Server A
+request latency = 10ms
+
+Server B
+request latency = 10ms
+
+Server C
+request latency = 5 seconds
+Round Robin doesn't care.
+It still does:
+A → 1
+B → 2
+C → 3
+A → 4
+B → 5
+C → 6
+So C continues receiving the same number of requests despite each request taking dramatically longer.
+Now think about what happens inside C.
+Suppose:
+C receives 1,000 req/sec
+and each request takes:
+5 seconds
+Then C can have roughly:
+5,000 requests
+in flight.
+This gives us an extremely important distributed-systems relationship:
+Where:
+L = concurrency / number of requests in system
+λ = arrival rate
+W = average time spent
+So:
+λ = 1,000 requests/sec
+W = 5 sec
+means:
+L ≈ 5,000 concurrent requests
+Now imagine those requests consume:
+Java threads
+DB connections
+Redis connections
+memory
+CPU
+network buffers
+You can get:
+High latency
+     ↓
+More concurrent requests
+     ↓
+Thread pool exhaustion
+     ↓
+Queueing
+     ↓
+Higher latency
+     ↓
+Timeouts
+     ↓
+Retries
+     ↓
+More traffic
+     ↓
+System collapse
+This is why system design cannot be learned as isolated components.
+A load balancer decision can eventually interact with:
+Thread pools
+Connection pools
+Timeouts
+Retries
+Circuit breakers
+Rate limiting
+Databases
+Caching
+We'll connect these later.
+________________________________________
+Now ask the next question
+If Round Robin only knows:
+A
+B
+C
+what if we tell it:
+A → 100 active connections
+B → 20 active connections
+C → 50 active connections
+Then perhaps:
+new request → B
+because B currently has the least active connections.
+That gives us:
+Least Connections
+Conceptually:
+                  New Request
+                       │
+                       ▼
+              ┌─────────────────┐
+              │ Load Balancer   │
+              │                 │
+              │ A → 100         │
+              │ B → 20   ← pick │
+              │ C → 50          │
+              └────────┬────────┘
+                       │
+                       ▼
+                       B
+But immediately, as a senior engineer, you should ask:
+How does the Load Balancer know that B has 20 active connections?
+That's where we start getting into internal implementation rather than definitions.
+The LB needs state resembling:
+Backend A → activeConnections = 100
+Backend B → activeConnections = 20
+Backend C → activeConnections = 50
+When a connection arrives:
+B.activeConnections++
+When it terminates:
+B.activeConnections--
+Now we're dealing with:
+state
+concurrency
+atomic operations
+connection lifecycle
+threads
+event loops
+locks
+race conditions
+And now things become much more interesting.
+________________________________________
+One more critical question
+Suppose:
+A → healthy
+B → healthy
+C → DEAD
+Our LB cannot blindly do:
+A → request
+B → request
+C → request ❌
+So the LB needs to know:
+Which backends are actually capable of serving traffic?
+This leads to:
+Health checks
+For example:
+LB
+ │
+ ├── GET /health → A → 200 ✓
+ │
+ ├── GET /health → B → 200 ✓
+ │
+ └── GET /health → C → timeout ✗
+Then:
+Eligible servers:
+
+A
+B
+C is removed from the candidate set.
+But this raises another fascinating question:
+What exactly does "healthy" mean?
+Is:
+JVM alive
+enough?
+What if:
+JVM       ✓
+Tomcat    ✓
+Database  ✗
+Redis     ✗
+Kafka     ✗
+Your /health endpoint could still return:
+200 OK
+while every real business request fails.
+So production systems distinguish things such as:
+Liveness
+Readiness
+Startup
+Dependency health
+We'll go deeply into this later.
+________________________________________
+Our mental model so far
+Don't memorize a definition of Load Balancer.
+Instead, remember the chain of problems:
+                 Traffic grows
+                      │
+                      ▼
+             One server isn't enough
+                      │
+                      ▼
+             Add multiple servers
+                      │
+                      ▼
+          Client needs server selection
+                      │
+                      ▼
+               Introduce LB
+                      │
+                      ▼
+          LB needs routing algorithm
+                      │
+             ┌────────┼─────────┐
+             ▼        ▼         ▼
+        Round Robin  Least    Weighted
+                    Conn.
+             │
+             ▼
+        Backend health
+             │
+             ▼
+        Failure handling
+             │
+             ▼
+       Cascading failures
+And this eventually connects to almost everything in your roadmap.
+________________________________________
+Where we go next
+We're going one layer deeper, not jumping to another topic.
+Load Balancer — Lesson 2
+We'll trace a real request at the network level:
+Browser
+   │
+   │ DNS lookup
+   ▼
+Load Balancer IP
+   │
+   │ TCP SYN
+   ▼
+Load Balancer
+   │
+   │ SYN-ACK
+   ▼
+TCP connection
+   │
+   ▼
+TLS handshake
+   │
+   ▼
+HTTP request
+   │
+   ▼
+Backend selection
+   │
+   ▼
+Java server
+Then we'll answer questions such as:
+•	What does L4 actually see? 
+•	What does L7 actually see? 
+•	Does the LB create two TCP connections? 
+•	What happens to the original client's source IP? 
+•	Where does NAT happen? 
+•	What is actually stored in the LB's connection table? 
+•	How does the LB choose a backend? 
+•	What happens when the backend dies mid-request? 
+•	What is connection reuse? 
+•	Why does HTTP keep-alive matter? 
+•	Why does HTTP/2 change the load-balancing problem? 
+•	Why can a "stateless" LB still have state? 
+
