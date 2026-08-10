@@ -8038,3 +8038,6187 @@ Before moving on, make sure these statements make sense internally:
 7. L4 generally has less application-level processing,
    while L7 provides richer request-aware routing.
 
+ystem Design — Lesson 12
+Reverse Proxy Internals
+We already established one crucial fact:
+Client
+   │
+   │ Connection A
+   ▼
+Proxy / LB
+   │
+   │ Connection B
+   ▼
+Backend
+Now we are going to forget load-balancing algorithms for a moment.
+The question for this lesson is:
+What is the proxy actually doing with the request internally?
+________________________________________
+12.1 Start with the simplest possible architecture
+Imagine one Java application:
+Client
+   │
+   │ HTTP
+   ▼
+Java Application
+:8080
+The client directly reaches:
+http://server:8080
+Now put another server in front:
+Client
+   │
+   │ HTTP
+   ▼
+Proxy
+   │
+   │ HTTP
+   ▼
+Java Application
+:8080
+The client no longer talks directly to the Java application.
+The proxy receives the request first.
+That is the basic architecture we need to understand.
+________________________________________
+12.2 What does "proxy" mean internally?
+Let's follow one request:
+GET /orders/123
+The request enters the proxy.
+The proxy performs roughly:
+1. Accept client connection
+2. Read request bytes
+3. Parse HTTP
+4. Determine destination
+5. Establish/reuse backend connection
+6. Construct/forward request
+7. Read backend response
+8. Send response to client
+9. Manage both connections
+So the proxy is not merely:
+copy bytes from A to B
+An HTTP reverse proxy is actively participating in the communication.
+________________________________________
+12.3 Two connections
+This is worth making extremely concrete.
+Suppose:
+Client:
+192.168.1.10:50000
+
+Proxy:
+10.0.0.5:443
+
+Backend:
+10.0.1.20:8080
+Connection A:
+192.168.1.10:50000
+          ↕
+10.0.0.5:443
+Connection B:
+10.0.0.5:45000
+          ↕
+10.0.1.20:8080
+Notice something:
+The backend does not see:
+192.168.1.10:50000
+as its TCP peer.
+It sees:
+10.0.0.5:45000
+The proxy is the network peer.
+________________________________________
+12.4 Why is this powerful?
+Because the proxy becomes a control point.
+                   Proxy
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+        ▼            ▼            ▼
+      TLS          Routing      Security
+        │            │            │
+        ▼            ▼            ▼
+   encryption     backend      filtering
+And because the proxy sits between client and server, it can enforce policies before requests reach the application.
+________________________________________
+12.5 Reverse proxy vs forward proxy
+This distinction is fundamental.
+Forward proxy
+The proxy represents the client.
+Client
+   │
+   ▼
+Forward Proxy
+   │
+   ▼
+Internet / Server
+The server sees the proxy as the requester.
+Typical purpose:
+Client-side control
+Internet access policy
+anonymization
+corporate filtering
+Reverse proxy
+The proxy represents the server side.
+Internet
+   │
+   ▼
+Reverse Proxy
+   │
+   ▼
+Application
+The client thinks it is talking to:
+example.com
+but actually communicates first with the reverse proxy.
+The reverse proxy then communicates with the application.
+________________________________________
+12.6 Why is it called "reverse"?
+Think about who the proxy is protecting/representing.
+Forward proxy:
+
+Client → Proxy → Internet
+         ↑
+     represents
+       client
+versus:
+Reverse proxy:
+
+Internet → Proxy → Application
+             ↑
+         represents
+          servers
+The direction isn't the important part.
+The side being represented is.
+________________________________________
+12.7 One backend is enough
+This is where many developers make a mistake.
+They think:
+"Reverse proxy means multiple backend servers."
+No.
+You can have:
+Client
+   ↓
+Reverse Proxy
+   ↓
+ONE Java application
+There is still a reverse proxy.
+Load balancing requires multiple possible destinations.
+Reverse proxying doesn't.
+________________________________________
+12.8 Then what is the relationship?
+Think:
+Reverse Proxy
+      │
+      ├── security
+      ├── TLS termination
+      ├── buffering
+      ├── compression
+      ├── routing
+      └── request forwarding
+Add multiple backends:
+Reverse Proxy
+      │
+      ├── Backend A
+      ├── Backend B
+      └── Backend C
+Now it can also perform:
+Load Balancing
+Therefore:
+Load balancing is one capability that a reverse proxy can provide.
+A reverse proxy is not synonymous with load balancing.
+________________________________________
+12.9 The internal request lifecycle
+Let's now go deeper.
+Client sends:
+GET /orders/123 HTTP/1.1
+Host: api.example.com
+The proxy receives bytes.
+At the operating-system level, the process has a socket:
+Client
+   │
+   │ TCP packets
+   ▼
+Network Interface
+   │
+   ▼
+Kernel TCP stack
+   │
+   ▼
+Socket
+   │
+   ▼
+Proxy process
+The proxy reads data from the socket.
+Conceptually:
+socket
+   ↓
+read()
+   ↓
+bytes
+Then:
+bytes
+  ↓
+HTTP parser
+  ↓
+HTTP request object
+This is an important transition.
+The network gives the proxy:
+bytes
+The HTTP parser turns those bytes into:
+method
+path
+headers
+body
+________________________________________
+12.10 Why parsing matters
+Suppose the request is:
+GET /payments/123
+The proxy can now inspect:
+method = GET
+path = /payments/123
+and make a routing decision:
+/payments/*
+       ↓
+payment-service
+Without parsing HTTP, the proxy couldn't naturally make this application-aware decision.
+________________________________________
+12.11 The proxy creates an upstream request
+The proxy now needs to communicate with the backend.
+We call:
+Client-facing side
+the downstream side.
+And:
+Backend-facing side
+the upstream side.
+So:
+Client
+  │
+  │ downstream connection
+  ▼
+Proxy
+  │
+  │ upstream connection
+  ▼
+Backend
+These words are extremely common in proxy architecture.
+________________________________________
+12.12 Downstream vs upstream
+Suppose:
+Client → Proxy → Java Service
+From the proxy's perspective:
+Client
+  ↓
+DOWNSTREAM
+
+Proxy
+  ↓
+UPSTREAM
+So:
+downstream = client-facing
+
+upstream = server/backend-facing
+This terminology will appear everywhere in technologies such as Nginx and Envoy.
+________________________________________
+12.13 Upstream connection creation
+Suppose the proxy has no existing connection to:
+10.0.1.20:8080
+It establishes one:
+Proxy
+   │
+   │ TCP handshake
+   ▼
+Backend
+Then potentially TLS if configured:
+Proxy
+   │
+   │ TLS handshake
+   ▼
+Backend
+Then HTTP:
+Proxy
+   │
+   │ GET /orders/123
+   ▼
+Backend
+________________________________________
+12.14 Connection pooling
+Creating an upstream TCP connection for every request would be wasteful.
+So the proxy may maintain:
+Upstream connection pool
+
+Backend A
+ ├── Connection 1
+ ├── Connection 2
+ ├── Connection 3
+ └── Connection 4
+Request arrives:
+Request 1
+    ↓
+borrow connection 2
+    ↓
+send request
+    ↓
+receive response
+    ↓
+return connection to pool
+Next request:
+Request 2
+    ↓
+reuse connection 2
+This is why we previously discussed persistent connections.
+Now you can see where that knowledge is used.
+________________________________________
+12.15 One client connection can map to many backend requests
+This is an extremely useful concept.
+Suppose:
+Client
+   │
+   │ Connection #1
+   ▼
+Proxy
+Client sends:
+Request A
+Request B
+Request C
+Request D
+The proxy may reuse backend connections:
+Proxy
+ │
+ ├── Upstream Conn #1 → Backend
+ ├── Upstream Conn #2 → Backend
+ └── Upstream Conn #3 → Backend
+So the proxy can perform connection management and multiplexing/queuing behavior between two sides.
+The client connection architecture and backend connection architecture do not have to be identical.
+________________________________________
+12.16 Why this is useful
+Suppose:
+10,000 clients
+connect to the proxy.
+But:
+100 backend servers
+The proxy can maintain a controlled pool of backend connections rather than allowing every client to independently create arbitrary backend connections.
+This creates a boundary:
+               Internet
+                  │
+          10,000 client conns
+                  │
+                  ▼
+              Proxy
+                  │
+          controlled pools
+                  │
+                  ▼
+            Backend fleet
+This is one of the reasons reverse proxies are so valuable.
+________________________________________
+12.17 Buffering
+Now suppose the backend responds quickly:
+Backend
+   │
+   │ 10 MB response
+   ▼
+Proxy
+   │
+   ▼
+Client
+What if the client is extremely slow?
+The proxy may need to buffer some response data.
+Conceptually:
+Backend
+   │
+   │ produces quickly
+   ▼
+Proxy buffer
+   │
+   │ sends slowly
+   ▼
+Client
+The proxy becomes a boundary between two different speeds.
+This is a major concept:
+Backpressure
+________________________________________
+12.18 The speed mismatch problem
+Suppose:
+Backend:
+100 MB/s
+
+Client:
+1 MB/s
+If the proxy blindly accepts backend output at 100 MB/s while the client consumes only 1 MB/s, something has to happen.
+Eventually:
+memory
+   ↓
+buffers
+   ↓
+fill
+   ↓
+overflow
+A production proxy needs mechanisms to prevent unlimited memory growth.
+It might:
+pause reading
+limit buffers
+apply backpressure
+spill to disk in some designs
+terminate slow connections
+The exact behavior depends on implementation.
+________________________________________
+12.19 Why buffering changes performance
+Buffering can help:
+Backend fast
+      ↓
+Proxy buffer
+      ↓
+Client slow
+But buffering consumes:
+RAM
+If you have:
+100,000 connections
+and each connection holds:
+1 MB
+that's:
+100,000 × 1 MB
+= 100 GB
+You can exhaust memory surprisingly quickly.
+Therefore:
+Connection count and buffer size are capacity-planning variables.
+________________________________________
+12.20 Request buffering
+The same issue happens in the opposite direction.
+Suppose a client uploads:
+500 MB file
+The backend is slow to consume it.
+The proxy must decide how to handle incoming request data.
+Conceptually:
+Client
+   │
+   │ upload
+   ▼
+Proxy
+   │
+   ├── buffer?
+   ├── stream?
+   ├── limit?
+   └── reject?
+   │
+   ▼
+Backend
+A proxy can therefore control large request bodies and protect upstream services.
+________________________________________
+12.21 Why proxies are excellent protection boundaries
+Suppose a backend accepts:
+10 GB request body
+A reverse proxy could enforce:
+maximum body = 10 MB
+Then:
+Client
+   │
+   │ 10 GB
+   ▼
+Proxy
+   │
+   │ reject
+   X
+Backend never sees it
+The application doesn't need to spend resources processing the invalid request.
+________________________________________
+12.22 Timeouts
+Another major responsibility.
+Suppose:
+Client → Proxy
+but the client sends only:
+GET /ord
+and then waits 10 minutes before sending the rest.
+Should the proxy keep resources reserved indefinitely?
+Probably not.
+So proxies often have different timeout categories:
+connection timeout
+request timeout
+read timeout
+write timeout
+idle timeout
+upstream connect timeout
+upstream response timeout
+Don't memorize the names yet.
+Understand the underlying problem:
+Every open connection consumes resources.
+Therefore the proxy needs policies controlling how long resources can remain occupied.
+________________________________________
+12.23 Why an idle connection is not free
+An open socket consumes resources such as:
+file descriptor
+kernel socket state
+TCP state
+memory
+connection tracking
+proxy bookkeeping
+A million idle connections can therefore be expensive.
+This is why:
+connection timeout
+idle timeout
+maximum connections
+are architecture-level concerns.
+________________________________________
+12.24 Reverse proxy as a resource governor
+At this point, think of the proxy as:
+                  Reverse Proxy
+                       │
+       ┌───────────────┼────────────────┐
+       ▼               ▼                ▼
+   Connection        Traffic          Resource
+    control          control           control
+       │               │                │
+       ▼               ▼                ▼
+   timeouts        rate limits       buffers
+   pooling         routing           body limits
+   keepalive       filtering         concurrency
+It sits between potentially untrusted clients and backend resources.
+________________________________________
+12.25 Header rewriting
+Suppose the client sends:
+Host: api.example.com
+The backend might receive:
+Host: internal-service:8080
+or the proxy may preserve the original host.
+The proxy can also add metadata:
+X-Forwarded-For
+X-Forwarded-Proto
+X-Forwarded-Host
+This means:
+Client request
+      ↓
+Proxy
+      ↓
+modified/augmented request
+      ↓
+Backend
+The request arriving at the backend isn't necessarily byte-for-byte identical to what the client sent.
+________________________________________
+12.26 Security consequence
+Because the proxy can modify headers, your application must understand which headers it trusts.
+For example:
+X-Forwarded-For: 203.0.113.10
+If the application blindly trusts a header supplied directly by an attacker, the attacker might fake their IP.
+Production systems therefore need a trust boundary:
+Trusted Proxy
+      │
+      │ adds trusted forwarding headers
+      ▼
+Application
+The application should distinguish:
+trusted proxy-generated metadata
+from:
+arbitrary client-supplied headers
+This becomes very important when implementing security, auditing, IP-based access control, and rate limiting.
+________________________________________
+12.27 Reverse proxy and TLS
+Let's put the pieces together.
+Option A — TLS terminates at proxy
+Client
+   │
+   │ HTTPS
+   ▼
+Reverse Proxy
+   │
+   │ HTTP
+   ▼
+Java App
+Option B — TLS re-encryption
+Client
+   │
+   │ HTTPS
+   ▼
+Reverse Proxy
+   │
+   │ HTTPS
+   ▼
+Java App
+Option C — TLS passthrough
+A lower-layer proxy can forward encrypted traffic without terminating TLS:
+Client
+   │
+   │ encrypted TLS bytes
+   ▼
+Proxy
+   │
+   │ encrypted TLS bytes
+   ▼
+Backend
+In that case the proxy cannot inspect HTTP content because it cannot decrypt it.
+This is a major architectural trade-off.
+________________________________________
+12.28 Why TLS passthrough matters
+Suppose the LB wants to route:
+/orders
+/payments
+but TLS is still encrypted.
+The LB sees:
+encrypted bytes
+It cannot see:
+/orders
+unless it terminates TLS.
+Therefore:
+TLS passthrough
+      ↓
+limited application visibility
+
+TLS termination
+      ↓
+HTTP visibility
+      ↓
+L7 routing possible
+This directly connects TLS architecture with routing capability.
+________________________________________
+12.29 Reverse proxy can hide topology
+Imagine your internal architecture:
+10.0.1.10:8080
+10.0.1.11:8080
+10.0.1.12:8080
+You don't want Internet users directly accessing these servers.
+Instead:
+Internet
+   │
+   ▼
+api.example.com
+   │
+   ▼
+Reverse Proxy
+   │
+   ├── 10.0.1.10
+   ├── 10.0.1.11
+   └── 10.0.1.12
+The proxy becomes the public entry point.
+This gives you:
+public interface
+      ↓
+controlled boundary
+      ↓
+private services
+________________________________________
+12.30 Why companies put applications behind proxies
+Because the proxy can centralize cross-cutting concerns:
+                   Internet
+                       │
+                       ▼
+                Reverse Proxy
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+      TLS          Security        Routing
+        │              │              │
+        ▼              ▼              ▼
+    certificate     filtering      backend
+                                    selection
+The application can focus primarily on:
+business logic
+instead of independently implementing every edge concern.
+________________________________________
+12.31 Reverse Proxy vs Load Balancer
+Now we can answer the earlier question properly.
+Reverse proxy
+Architecture:
+Client
+   ↓
+Proxy
+   ↓
+Server
+It can provide:
+TLS termination
+header manipulation
+buffering
+compression
+security
+routing
+caching
+connection management
+Load balancer
+Architecture:
+Client
+   ↓
+LB
+   ├── Server A
+   ├── Server B
+   └── Server C
+Its central responsibility is:
+distribute traffic among multiple destinations
+But a load balancer can be implemented using proxy behavior.
+Therefore:
+Reverse Proxy
+       +
+Multiple Backends
+       ↓
+Load Balancing capability
+Not:
+Reverse Proxy == Load Balancer
+________________________________________
+12.32 The architecture we're building toward
+At the beginning we had:
+Client
+   ↓
+Java Application
+Now:
+                        Internet
+                            │
+                            ▼
+                     Reverse Proxy
+                            │
+              ┌─────────────┼─────────────┐
+              │             │             │
+           TLS           Routing       Security
+              │             │             │
+              └─────────────┼─────────────┘
+                            ▼
+                     Backend Pool
+                            │
+                 ┌──────────┼──────────┐
+                 ▼          ▼          ▼
+              Java App   Java App   Java App
+Now the reverse proxy is doing much more than forwarding packets.
+________________________________________
+12.33 The deepest mental model
+Don't think:
+Reverse proxy = server sitting in front of another server.
+Think:
+A reverse proxy is a programmable boundary between clients and backend resources.
+It controls two sides:
+                 Reverse Proxy
+                 /             \
+                /               \
+       Downstream               Upstream
+           │                       │
+           ▼                       ▼
+        Clients                 Services
+And it can independently control:
+connection lifetime
+connection pooling
+timeouts
+buffering
+TLS
+request parsing
+routing
+headers
+security
+traffic limits
+This is why reverse proxies are such a foundational building block.
+________________________________________
+12.34 A complete request lifecycle
+Let's put everything together.
+Client
+  │
+  │ 1. TCP connection
+  ▼
+Reverse Proxy
+  │
+  │ 2. TLS handshake
+  │    (if HTTPS termination)
+  ▼
+HTTP parser
+  │
+  │ 3. Parse request
+  ▼
+Routing logic
+  │
+  │ 4. Select upstream
+  ▼
+Connection pool
+  │
+  │ 5. Get/reuse backend connection
+  ▼
+Backend
+  │
+  │ 6. Process request
+  ▼
+Proxy
+  │
+  │ 7. Buffer/stream response
+  ▼
+Client
+That is the internal lifecycle you should carry forward.
+________________________________________
+12.35 Where Load Balancer fits now
+You can now see the hierarchy:
+                         Proxy
+                           │
+               ┌───────────┴───────────┐
+               │                       │
+              L4                      L7
+               │                       │
+       connection-aware          application-aware
+                                       │
+                                       ▼
+                                Reverse Proxy
+                                       │
+                                       ▼
+                                 HTTP routing
+                                       │
+                              ┌────────┼────────┐
+                              ▼        ▼        ▼
+                              A        B        C
+And when the L7 reverse proxy has multiple backend instances:
+Reverse Proxy
+      │
+      ├── A
+      ├── B
+      └── C
+it needs a load-balancing algorithm to select among them.
+So our previous lessons now fit together rather than being separate topics.
+________________________________________
+What you should retain from Lesson 12
+The important chain is:
+Client
+   ↓
+downstream connection
+   ↓
+Reverse Proxy
+   ↓
+HTTP parsing
+   ↓
+routing / policy
+   ↓
+upstream connection
+   ↓
+Backend
+And:
+Client ↔ Proxy
+and:
+Proxy ↔ Backend
+are normally separate connections.
+That one fact explains a huge amount of reverse-proxy behavior.
+
+System Design — Lesson 13
+Reverse Proxy Internals: Event Loop, Non-Blocking I/O & epoll
+We now go inside the reverse proxy process.
+Forget routing, TLS, caching, and load balancing for this lesson.
+The problem we're solving is:
+How can one proxy process handle tens of thousands of network connections without creating one thread per connection?
+This is one of the most important foundations for understanding Nginx, Envoy, Netty, and high-performance Java servers.
+________________________________________
+13.1 Start with the naive design
+Imagine a proxy receives 10,000 clients.
+Client 1 ──┐
+Client 2 ──┤
+Client 3 ──┤
+Client 4 ──┤
+    ...    ├──► Proxy
+Client 9999┤
+Client 10000┘
+A beginner might design:
+Connection 1 → Thread 1
+Connection 2 → Thread 2
+Connection 3 → Thread 3
+...
+Connection 10000 → Thread 10000
+Why?
+Because blocking socket code is easy to understand:
+while (true) {
+    Socket socket = serverSocket.accept();
+
+    new Thread(() -> {
+        handle(socket);
+    }).start();
+}
+Conceptually:
+Thread
+   │
+   ▼
+read(socket)
+   │
+   │ waits...
+   │
+   ▼
+data arrives
+   │
+   ▼
+process request
+The thread spends much of its life waiting.
+That is the problem.
+________________________________________
+13.2 What does "waiting on a socket" actually mean?
+Suppose:
+Client
+   │
+   │ TCP connection established
+   ▼
+Proxy
+The proxy calls something equivalent to:
+read(socket)
+But the client hasn't sent HTTP data yet.
+So what happens?
+The thread says, conceptually:
+"I need data from this socket. I'll wait."
+The operating system puts that thread into a waiting state.
+It isn't continuously executing your Java/C/C++ code.
+So:
+Thread
+  │
+  ├── running
+  │
+  ▼
+read()
+  │
+  │ no data
+  ▼
+BLOCKED / WAITING
+Later:
+network packet arrives
+        ↓
+kernel receives packet
+        ↓
+socket has data
+        ↓
+thread can continue
+________________________________________
+13.3 Why is thread-per-connection problematic?
+Suppose:
+50,000 connections
+and each connection has a thread.
+You now have:
+50,000 threads
+But most may be doing:
+WAITING
+WAITING
+WAITING
+WAITING
+WAITING
+Only a small fraction might actually be processing data at a given instant.
+So we're wasting resources representing waiting.
+________________________________________
+13.4 Threads aren't free
+A thread requires resources.
+Typically:
+Thread
+ ├── stack
+ ├── thread metadata
+ ├── scheduler state
+ └── CPU scheduling overhead
+And when there are huge numbers of threads, the operating system has to manage them.
+The CPU also performs context switching.
+Conceptually:
+Thread A
+   ↓
+save CPU state
+   ↓
+Thread B
+   ↓
+save CPU state
+   ↓
+Thread C
+   ↓
+...
+If there are too many runnable threads, scheduling overhead becomes significant.
+________________________________________
+13.5 But here's the deeper problem
+Network applications are mostly waiting.
+Imagine 10,000 connections:
+Connection 1 → waiting
+Connection 2 → waiting
+Connection 3 → waiting
+...
+Connection 9999 → waiting
+Connection 10000 → waiting
+Then suddenly:
+Connection 731
+      ↓
+data arrives
+We don't need:
+10,000 threads
+to discover that.
+We really need the operating system to tell us:
+"Socket 731 is ready."
+That's the idea behind I/O multiplexing.
+________________________________________
+13.6 The key change in thinking
+Instead of:
+One connection
+      ↓
+One thread
+      ↓
+wait
+we want:
+Many connections
+      ↓
+One event loop
+      ↓
+OS tells us which sockets are ready
+      ↓
+Process only those
+Conceptually:
+             Event Loop
+                 │
+       ┌─────────┼─────────┐
+       ▼         ▼         ▼
+    Socket 1  Socket 2  Socket 3
+       │         │         │
+       └─────────┼─────────┘
+                 │
+                 ▼
+             OS Kernel
+________________________________________
+13.7 What does "non-blocking" mean?
+This is commonly misunderstood.
+Suppose we have:
+socket.read()
+In blocking mode:
+read()
+  │
+  ├── data available → return data
+  │
+  └── no data → WAIT
+In non-blocking mode:
+read()
+  │
+  ├── data available → return data
+  │
+  └── no data → return immediately
+That is the critical difference.
+Non-blocking doesn't mean:
+"There is always data."
+It means:
+"Don't make the calling thread wait for data."
+________________________________________
+13.8 Example
+Suppose socket #1 has data:
+Socket 1 → "GET /orders"
+Socket 2 → nothing
+Socket 3 → nothing
+A non-blocking read could behave conceptually like:
+read(socket1)
+→ data
+
+read(socket2)
+→ not ready
+
+read(socket3)
+→ not ready
+The thread doesn't get stuck on socket 2.
+That's already better.
+But there is still a problem.
+________________________________________
+13.9 The naive non-blocking loop
+You might write:
+while (true) {
+
+    for each socket:
+
+        tryRead(socket)
+
+}
+With:
+10,000 sockets
+the process repeatedly checks:
+socket 1
+socket 2
+socket 3
+...
+socket 10000
+Then again:
+socket 1
+socket 2
+...
+Most checks find:
+nothing available
+This is called busy polling if done continuously.
+We need something smarter.
+________________________________________
+13.10 We want the OS to monitor the sockets
+We want to say:
+Kernel:
+
+Please watch these 10,000 sockets.
+
+I don't care about sockets that have no activity.
+
+Wake/notify me when something becomes ready.
+Then:
+Kernel
+   │
+   │ watches sockets
+   │
+   ├── socket 1
+   ├── socket 2
+   ├── socket 3
+   ├── ...
+   └── socket 10000
+When data arrives:
+Network
+   ↓
+Kernel
+   ↓
+Socket 731 becomes readable
+   ↓
+Event loop gets notification
+This is I/O multiplexing.
+________________________________________
+13.11 select, poll, epoll
+Unix/Linux systems evolved several mechanisms for this.
+Historically:
+select()
+   ↓
+poll()
+   ↓
+epoll()
+The exact implementation details differ, but the progression is important.
+We are interested mainly in:
+epoll
+because it is a major mechanism behind high-concurrency Linux networking.
+________________________________________
+13.12 What does epoll conceptually do?
+Think of it as a kernel-managed readiness system.
+The application says:
+Kernel,
+watch these sockets.
+Then:
+Socket 1 ─┐
+Socket 2 ─┤
+Socket 3 ─┤
+Socket 4 ─┤
+   ...    ├──► epoll
+Socket N ─┘
+Later:
+Network packet arrives
+        ↓
+Kernel processes it
+        ↓
+Socket 731 becomes readable
+        ↓
+epoll records readiness
+        ↓
+event loop wakes
+Then the event loop asks:
+"Which sockets are ready?"
+The kernel returns something like:
+Socket 731 → READABLE
+Socket 918 → READABLE
+Socket 421 → READABLE
+The application processes those.
+________________________________________
+13.13 This changes the work dramatically
+Without readiness notification:
+Check 10,000 sockets
+       ↓
+mostly nothing
+With an event mechanism:
+10,000 registered sockets
+       ↓
+OS tracks readiness
+       ↓
+3 sockets active
+       ↓
+process 3
+So:
+10,000 connections
+doesn't necessarily mean:
+10,000 active pieces of application work
+That's the key scalability insight.
+________________________________________
+13.14 The event loop
+Now we can build a simplified event loop.
+Conceptually:
+while (running) {
+
+    events = epoll_wait();
+
+    for (event : events) {
+
+        if (event == READABLE) {
+            readData();
+        }
+
+        if (event == WRITABLE) {
+            writeData();
+        }
+
+    }
+}
+The important part is:
+epoll_wait()
+The thread can sleep until the kernel tells it that something interesting happened.
+________________________________________
+13.15 What happens when a client connects?
+There is a special socket:
+Server Socket
+The proxy listens on:
+0.0.0.0:443
+Conceptually:
+Internet
+   │
+   │ TCP SYN
+   ▼
+Listening Socket
+The kernel receives the connection.
+The event loop gets:
+READABLE
+on the listening socket.
+The proxy then calls:
+accept()
+and obtains a new client socket.
+Now:
+Listening socket
+      │
+      └── accept()
+             ↓
+        Client socket
+The new client socket can itself be registered with epoll.
+________________________________________
+13.16 Important distinction: listening socket vs connected socket
+Don't confuse these.
+Listening socket
+Its job:
+"Tell me when a new connection arrives."
+Connected socket
+Its job:
+"Give me data from this established connection."
+So:
+                 Server
+                   │
+          Listening Socket
+                   │
+                accept()
+                   │
+       ┌───────────┼───────────┐
+       ▼           ▼           ▼
+    Client A    Client B    Client C
+    Socket      Socket      Socket
+This distinction is foundational to server networking.
+________________________________________
+13.17 Let's follow a real HTTP request
+Now we combine everything.
+Client:
+GET /orders/123
+Step 1 — TCP connection
+Client
+   │
+   │ SYN
+   ▼
+Proxy
+Kernel establishes TCP.
+________________________________________
+Step 2 — event loop sees new connection
+epoll_wait()
+      ↓
+LISTEN_SOCKET readable
+      ↓
+accept()
+Now we have:
+clientSocket
+________________________________________
+Step 3 — register client socket
+The proxy tells the kernel:
+Watch clientSocket for READ events.
+Conceptually:
+epoll
+  │
+  ├── clientSocket A
+  ├── clientSocket B
+  ├── clientSocket C
+  └── ...
+________________________________________
+Step 4 — client sends HTTP bytes
+Client
+   │
+   │ GET /orders/123
+   ▼
+Kernel
+The kernel places received bytes into socket-related buffers.
+________________________________________
+Step 5 — readiness event
+The event loop eventually receives:
+clientSocket A → READABLE
+________________________________________
+Step 6 — proxy reads
+The proxy performs:
+read(clientSocket)
+Now it has:
+GET /orders/123
+________________________________________
+Step 7 — parse HTTP
+bytes
+  ↓
+HTTP parser
+  ↓
+GET
+/orders/123
+headers
+________________________________________
+Step 8 — select backend
+For example:
+/orders/*
+      ↓
+Order Service
+________________________________________
+Step 9 — upstream connection
+The proxy may obtain an existing connection from its upstream pool or establish a new one.
+Proxy
+   │
+   │ upstream socket
+   ▼
+Order Service
+________________________________________
+Step 10 — send upstream
+The proxy writes:
+GET /orders/123
+to the upstream socket.
+________________________________________
+Step 11 — wait
+The backend processes the request.
+The event loop does not need to block waiting for that one backend.
+It can continue handling:
+Client A
+Client B
+Client C
+Client D
+...
+________________________________________
+Step 12 — backend response arrives
+Kernel receives:
+HTTP/1.1 200 OK
+...
+The upstream socket becomes readable.
+epoll reports:
+upstreamSocket → READABLE
+________________________________________
+Step 13 — proxy reads response
+upstream socket
+       ↓
+read()
+       ↓
+HTTP response
+________________________________________
+Step 14 — proxy writes to client
+The response is sent through:
+client socket
+And eventually:
+Client
+   ▲
+   │
+Proxy
+   ▲
+   │
+Backend
+The complete process is event-driven.
+________________________________________
+13.18 One event loop can manage many connections
+Conceptually:
+                 Event Loop
+                     │
+                     ▼
+                 epoll_wait
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+   Client A      Client B      Backend C
+   readable      writable      readable
+        │            │            │
+        ▼            ▼            ▼
+     process       process       process
+The event loop doesn't spend its time:
+waiting on Client A
+It waits for events from the OS.
+________________________________________
+13.19 This is why Nginx became famous
+A simplified mental model of traditional high-performance Nginx architecture is:
+                 Nginx Master
+                      │
+          ┌───────────┼───────────┐
+          ▼           ▼           ▼
+      Worker 1     Worker 2    Worker 3
+          │           │           │
+       epoll        epoll        epoll
+          │           │           │
+      clients       clients      clients
+Each worker can manage many connections using event-driven I/O.
+This is very different from:
+1 connection
+     ↓
+1 thread
+________________________________________
+13.20 What about CPU-heavy work?
+Now we hit an important limitation.
+Suppose the event loop receives:
+GET /calculate
+and your proxy executes:
+for (long i = 0; i < 10_000_000_000L; i++) {
+    expensiveCalculation();
+}
+What happens?
+The event loop is busy.
+Event Loop
+    │
+    ▼
+CPU-heavy operation
+    │
+    │ BLOCKS EVENT LOOP
+    ▼
+Other connections wait
+That's terrible.
+So event-driven architectures are particularly powerful when operations are:
+I/O-heavy
+rather than:
+CPU-blocking
+________________________________________
+13.21 A subtle but critical distinction
+There are two different meanings of "blocking."
+Blocking I/O
+read()
+   ↓
+wait for network data
+CPU blocking
+CPU-intensive work
+   ↓
+event loop can't process other events
+Even with non-blocking I/O, you can still destroy performance by running expensive CPU work on the event-loop thread.
+________________________________________
+13.22 What does "non-blocking server" actually mean?
+It does not mean:
+"Nothing ever waits."
+It means more specifically:
+The event-loop thread does not synchronously wait for slow I/O operations.
+The OS handles the waiting.
+This distinction is extremely important.
+________________________________________
+13.23 Now connect this to Java
+You've probably seen:
+java.nio
+and:
+Selector
+SelectableChannel
+SelectionKey
+Java NIO provides an abstraction around OS-level readiness mechanisms.
+Conceptually:
+Java application
+      │
+      ▼
+Selector
+      │
+      ▼
+OS-specific mechanism
+      │
+      ├── Linux → epoll
+      ├── macOS → kqueue
+      └── Windows → appropriate OS mechanism
+So Java NIO isn't inventing networking from scratch.
+It provides a portable programming model over operating-system capabilities.
+________________________________________
+13.24 Netty
+This is why Netty is so important in the Java ecosystem.
+A simplified architecture:
+                 Netty
+                   │
+             EventLoopGroup
+                   │
+        ┌──────────┼──────────┐
+        ▼          ▼          ▼
+    EventLoop    EventLoop   EventLoop
+        │          │          │
+       NIO        NIO        NIO
+        │          │          │
+       OS         OS         OS
+Many high-performance Java networking systems use event-driven I/O concepts.
+This is one of the conceptual foundations behind technologies such as:
+Netty
+Reactor Netty
+WebFlux
+gRPC implementations
+________________________________________
+13.25 Why this matters for Spring WebFlux
+If you later use:
+Spring WebFlux
+you'll encounter:
+reactive
+non-blocking
+event loop
+backpressure
+These aren't random buzzwords.
+They come from this exact architecture:
+OS readiness
+      ↓
+event loop
+      ↓
+non-blocking I/O
+      ↓
+reactive processing
+________________________________________
+13.26 The dangerous mistake in reactive Java
+Suppose you're using an event-loop-based framework.
+Then you do:
+String result = jdbcTemplate.queryForObject(...);
+and that JDBC operation blocks.
+Now:
+Event Loop
+    │
+    ▼
+Blocking JDBC
+    │
+    │ WAIT
+    ▼
+Event Loop stuck
+While it's waiting:
+Request A → waiting
+Request B → waiting
+Request C → waiting
+...
+So the architecture says:
+Don't perform blocking operations on the event-loop thread.
+This is not a stylistic rule.
+It follows directly from the architecture.
+________________________________________
+13.27 The whole architecture now
+We started with:
+Client
+   ↓
+Reverse Proxy
+   ↓
+Backend
+Inside the proxy:
+                     Reverse Proxy
+                          │
+                     Event Loop
+                          │
+                       epoll
+                          │
+             ┌────────────┼────────────┐
+             ▼            ▼            ▼
+         Client A      Client B      Client C
+             │            │            │
+             └────────────┼────────────┘
+                          │
+                          ▼
+                     HTTP parser
+                          │
+                          ▼
+                       Router
+                          │
+                          ▼
+                   Upstream pool
+                          │
+                          ▼
+                       Backend
+Now you understand why a high-performance proxy doesn't need one thread per client.
+________________________________________
+13.28 The deepest mental model
+Don't memorize:
+"Nginx uses epoll."
+Instead understand this chain:
+Huge number of connections
+          ↓
+Most connections aren't active at every moment
+          ↓
+Don't dedicate a thread to waiting on each one
+          ↓
+Use non-blocking sockets
+          ↓
+Ask OS which sockets are ready
+          ↓
+OS tracks readiness
+          ↓
+epoll reports active sockets
+          ↓
+event loop processes only ready work
+That is the real idea.
+________________________________________
+13.29 One final diagram
+Keep this picture in your head:
+                  CLIENTS
+     ┌────────┬────────┬────────┬────────┐
+     ▼        ▼        ▼        ▼        ▼
+   Socket   Socket   Socket   Socket   Socket
+     │        │        │        │        │
+     └────────┴────────┼────────┴────────┘
+                       ▼
+                  Linux Kernel
+                       │
+                     epoll
+                       │
+              "These are ready"
+                       │
+                       ▼
+                  Event Loop
+                       │
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+       read()       write()      connect()
+          │            │            │
+          └────────────┼────────────┘
+                       ▼
+                 HTTP processing
+                       │
+                       ▼
+                 Upstream pool
+                       │
+                       ▼
+                    Backend
+
+System Design — Lesson 14
+epoll Internals — What Actually Happens Inside Linux?
+In Lesson 13, we reached this model:
+Many connections
+       ↓
+Non-blocking sockets
+       ↓
+epoll
+       ↓
+Event loop
+       ↓
+Process only ready connections
+Now we go one level below the event loop.
+The goal is not to memorize epoll() APIs. The goal is to understand what the Linux kernel is doing for the proxy.
+________________________________________
+14.1 First: What is a File Descriptor?
+This is the first thing you must understand.
+When your application opens a resource, Linux gives the process a small integer called a file descriptor (FD).
+For example:
+fd = 3
+It could represent:
+file
+socket
+pipe
+terminal
+device
+So when a server creates a socket:
+socket()
+Linux may return:
+3
+Conceptually:
+Application
+     │
+     │ fd = 3
+     ▼
+Linux Kernel
+     │
+     ▼
+TCP Socket
+The number 3 is not the socket itself.
+It is a handle/reference used by the process to refer to the kernel-managed socket.
+________________________________________
+14.2 Why does Linux use integers?
+Because the application doesn't need to know the internal kernel object.
+Imagine:
+Application
+    │
+    │ 3
+    ▼
+Process FD table
+    │
+    ▼
+Kernel socket object
+    │
+    ├── TCP state
+    ├── receive buffer
+    ├── send buffer
+    ├── protocol state
+    └── network information
+The application simply says:
+read(3)
+Linux interprets:
+"Read from the resource represented by FD 3."
+________________________________________
+14.3 A socket is therefore not the FD
+This distinction matters.
+Don't think:
+socket = 3
+Think:
+FD 3
+  │
+  ▼
+reference
+  │
+  ▼
+kernel socket object
+This becomes extremely important when we talk about epoll.
+________________________________________
+14.4 Server startup
+Let's build a tiny server conceptually.
+socket()
+Linux creates a socket and returns:
+fd = 3
+Then:
+bind(fd, 8080)
+means:
+FD 3
+   ↓
+bind it to port 8080
+Then:
+listen(fd)
+means:
+FD 3
+   ↓
+start accepting incoming TCP connections
+Now:
+             Linux
+               │
+               ▼
+       Listening Socket
+               │
+              FD 3
+               │
+          port 8080
+________________________________________
+14.5 Client connects
+Suppose a client connects:
+Client
+   │
+   │ TCP SYN
+   ▼
+Linux
+The kernel handles TCP connection establishment.
+When the server calls:
+accept(3)
+Linux gives the application another FD.
+For example:
+4
+Now:
+FD 3 → Listening socket
+
+FD 4 → Client A connection
+Another client:
+FD 5 → Client B
+Another:
+FD 6 → Client C
+So:
+Process
+│
+├── FD 3 → listening socket
+├── FD 4 → client A
+├── FD 5 → client B
+├── FD 6 → client C
+└── ...
+________________________________________
+14.6 This is why thousands of connections are possible
+You can have:
+FD 4
+FD 5
+FD 6
+...
+FD 10000
+Each FD refers to a different kernel-managed resource.
+Therefore:
+10,000 connections
+can correspond roughly to:
+10,000 socket FDs
+The OS keeps track of them.
+________________________________________
+14.7 Now comes epoll
+We have:
+FD 4 → Client A
+FD 5 → Client B
+FD 6 → Client C
+...
+FD 10000 → Client N
+We want Linux to tell us:
+Which of these sockets currently has something useful to do?
+That's where epoll enters.
+________________________________________
+14.8 Creating an epoll instance
+Conceptually:
+epoll_create()
+returns another FD.
+For example:
+FD 7 → epoll instance
+Now the process has:
+FD 3 → listening socket
+FD 4 → client A
+FD 5 → client B
+FD 6 → client C
+
+FD 7 → epoll instance
+Notice something interesting:
+Even the epoll instance itself is represented by a file descriptor.
+Linux treats many resources through the same FD abstraction.
+________________________________________
+14.9 Registering a socket
+Suppose:
+FD 4 → Client A
+We tell epoll:
+Watch FD 4 and notify me when it becomes readable.
+Conceptually:
+epoll_ctl(
+    epollFD,
+    ADD,
+    socketFD = 4,
+    READ
+)
+Now:
+              epoll FD 7
+                   │
+                   ▼
+              watches
+                   │
+                   ▼
+                FD 4
+                   │
+                   ▼
+              Client A
+We do the same:
+FD 5 → watch
+FD 6 → watch
+FD 8 → watch
+...
+________________________________________
+14.10 What does "watch" mean?
+This is crucial.
+The application isn't repeatedly asking:
+"Is FD 4 ready?"
+
+"Is FD 5 ready?"
+
+"Is FD 6 ready?"
+Instead it tells the kernel:
+Watch these FDs for me.
+The kernel then monitors the underlying resources as part of its networking machinery.
+________________________________________
+14.11 The kernel already receives packets
+Remember:
+Network
+   ↓
+Network interface
+   ↓
+Linux kernel
+   ↓
+TCP/IP stack
+   ↓
+Socket receive buffer
+The proxy process isn't directly watching Ethernet packets.
+The kernel handles them first.
+Suppose:
+Client A
+   │
+   │ GET /orders
+   ▼
+Network card
+   ▼
+Linux kernel
+   ▼
+TCP processing
+   ▼
+Socket FD 4
+The bytes become available to the socket.
+Now FD 4 is considered readable.
+________________________________________
+14.12 What does "readable" actually mean?
+It does not necessarily mean:
+"The entire HTTP request is available."
+It generally means:
+A read operation can make progress without blocking.
+For example:
+FD 4
+   ↓
+some bytes available
+The proxy can call:
+read(fd4)
+and get data.
+That may be:
+GET /ord
+rather than the complete:
+GET /orders/123 HTTP/1.1
+...
+This is extremely important for network programming.
+________________________________________
+14.13 TCP is a byte stream
+TCP doesn't understand:
+HTTP request
+TCP sees:
+bytes
+bytes
+bytes
+bytes
+So the client may send:
+GET /orders/123 HTTP/1.1
+but the proxy might receive:
+GET /ord
+first.
+Then:
+ers/123 HT
+Then:
+TP/1.1...
+The HTTP parser must accumulate bytes until it has enough information to parse the HTTP message.
+Therefore:
+epoll readable
+doesn't mean:
+HTTP request complete
+It means:
+socket has data that can currently be read
+________________________________________
+14.14 The event loop calls epoll_wait
+Now the proxy has registered:
+FD 4
+FD 5
+FD 6
+...
+FD 10000
+The event loop calls:
+epoll_wait()
+Conceptually:
+Application
+     │
+     │ epoll_wait()
+     ▼
+Linux Kernel
+     │
+     │
+     │ waits...
+     │
+The event-loop thread can sleep.
+It isn't burning CPU scanning thousands of sockets.
+________________________________________
+14.15 Then a packet arrives
+Suppose Client B sends:
+GET /payments
+Network path:
+Client B
+   ↓
+Network interface
+   ↓
+Linux kernel
+   ↓
+TCP/IP stack
+   ↓
+Socket FD 5
+The socket now has data.
+The kernel knows:
+FD 5 is readable
+And because FD 5 is registered with epoll:
+epoll
+   ↓
+FD 5 becomes ready
+________________________________________
+14.16 epoll_wait() wakes up
+The sleeping event loop gets notified.
+Conceptually:
+epoll_wait()
+     │
+     │ sleeping
+     │
+     ▼
+Kernel detects FD 5 ready
+     │
+     ▼
+wake event-loop thread
+     │
+     ▼
+epoll_wait() returns
+The returned event tells the application:
+FD 5 → readable
+Now the event loop knows exactly what to process.
+________________________________________
+14.17 This is the scalability trick
+Imagine:
+100,000 connections
+Only:
+17 connections
+have activity right now.
+The event loop gets something conceptually like:
+FD 512 → readable
+FD 781 → readable
+FD 1002 → writable
+FD 2341 → readable
+...
+It doesn't need to inspect all 100,000 connections one by one.
+It processes the ready ones.
+________________________________________
+14.18 Where is the list of watched FDs?
+At a conceptual level, think of an epoll instance as maintaining two important ideas:
+                epoll instance
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+          ▼                     ▼
+     Interest list          Ready list
+Interest list
+What should I watch?
+FD 4
+FD 5
+FD 6
+FD 7
+...
+Ready list
+Which watched FDs are currently ready?
+FD 5
+FD 918
+FD 1203
+This is a simplified mental model, not a promise about every internal kernel data structure.
+But it is an excellent way to understand the mechanism.
+________________________________________
+14.19 Why this is better than scanning
+Naive approach:
+for fd in all_connections:
+    check(fd)
+If:
+N = 100,000
+you inspect:
+100,000
+items even if only 10 are active.
+With readiness notification:
+100,000 registered
+       ↓
+10 ready
+       ↓
+process approximately those 10
+That's the fundamental performance advantage.
+________________________________________
+14.20 But does epoll magically make everything O(1)?
+No.
+Be careful here.
+People sometimes say:
+"epoll is O(1)."
+That's an oversimplification.
+The real performance characteristics depend on:
+number of registered FDs
+number of ready events
+event registration/modification
+kernel implementation
+application processing
+network workload
+The important practical idea is:
+You avoid repeatedly scanning every connection just to find out which ones are active.
+That's the architectural advantage.
+________________________________________
+14.21 Now the interesting part: Level Triggered
+There are two major ways to interpret readiness:
+Level-triggered
+Edge-triggered
+Start with level-triggered.
+Suppose FD 4 has:
+100 bytes
+available.
+The socket is:
+READABLE
+The event loop gets:
+FD 4 → readable
+But suppose the application reads only:
+20 bytes
+There are still:
+80 bytes
+remaining.
+The socket is still readable.
+Therefore the kernel can report it again.
+Conceptually:
+100 bytes available
+      ↓
+event
+      ↓
+read 20
+      ↓
+80 bytes remain
+      ↓
+still readable
+      ↓
+event again
+This is level-triggered behavior.
+________________________________________
+14.22 Think of a water tank
+Imagine:
+Tank
+██████████
+The rule is:
+"Notify me whenever the tank contains water."
+You remove some:
+Tank
+██████
+There is still water.
+So:
+"Notify me again."
+That's similar to level-triggered readiness.
+The condition remains true.
+________________________________________
+14.23 Edge-triggered
+Now imagine a different rule:
+"Notify me when the state changes from not-ready to ready."
+Initially:
+0 bytes
+Then data arrives:
+0 → 100 bytes
+That's a transition.
+The kernel reports:
+FD 4 → READY
+Application reads only:
+20 bytes
+Now:
+80 bytes remain
+But the state didn't transition from:
+not-ready → ready
+again.
+Therefore the application must be careful.
+________________________________________
+14.24 Why edge-triggered requires draining
+With edge-triggered mode, the typical pattern is:
+while (true) {
+    read();
+}
+until the socket says:
+EAGAIN
+Conceptually:
+FD becomes ready
+      ↓
+event
+      ↓
+read
+      ↓
+read
+      ↓
+read
+      ↓
+read
+      ↓
+EAGAIN
+      ↓
+stop
+This means:
+"I've consumed everything currently available."
+________________________________________
+14.25 What is EAGAIN?
+It basically tells the non-blocking application:
+There is currently nothing more to read without waiting.
+So:
+read()
+   ↓
+data
+repeat.
+Eventually:
+read()
+   ↓
+EAGAIN
+Then:
+stop reading for now
+and wait for another readiness event.
+________________________________________
+14.26 Why can edge-triggered code go wrong?
+Suppose:
+100 bytes arrive
+Event:
+FD 4 → ready
+Application reads only:
+20 bytes
+80 remain.
+If it assumes:
+"I'll get another event."
+it may not.
+Result:
+80 bytes
+   ↓
+still sitting in socket buffer
+   ↓
+application doesn't read them
+You can effectively stall that connection.
+That's why edge-triggered event loops require careful programming.
+________________________________________
+14.27 Another failure: 100% CPU
+Now imagine the opposite.
+Suppose the application keeps asking to write to a socket that is always writable.
+If the event loop continuously receives:
+WRITABLE
+WRITABLE
+WRITABLE
+WRITABLE
+...
+and does unnecessary work, it can spin.
+This is one reason event registration needs to be managed carefully.
+You don't necessarily want:
+WATCH WRITE
+all the time.
+________________________________________
+14.28 Why write readiness is different
+Reading:
+READABLE
+usually means:
+there is data available to read
+Writing:
+WRITABLE
+usually means:
+the socket's send buffer has space for data
+But most TCP sockets are writable most of the time.
+Therefore, an event-driven server often watches for write readiness only when it actually has pending output that couldn't be written immediately.
+Conceptually:
+No pending response
+       ↓
+don't care about WRITE
+
+Pending response
+       ↓
+try write()
+
+Can't write everything
+       ↓
+watch WRITE
+
+Socket becomes writable
+       ↓
+continue write()
+This is an important event-loop optimization.
+________________________________________
+14.29 Now let's build the proxy event loop
+A simplified conceptual loop:
+while (serverRunning) {
+
+    events = epoll_wait();
+
+    for each event {
+
+        if (event == NEW_CONNECTION) {
+            accept();
+            register(clientSocket);
+        }
+
+        if (event == READABLE) {
+            read();
+            parse();
+            process();
+        }
+
+        if (event == WRITABLE) {
+            writePendingData();
+        }
+    }
+}
+This tiny loop represents a huge amount of high-performance networking architecture.
+________________________________________
+14.30 But there is another problem: HTTP processing isn't instantaneous
+Suppose:
+FD 10 → request
+The proxy reads it.
+Then it performs:
+routing
+authentication
+header processing
+upstream selection
+Some of those operations may take time.
+If the event loop spends:
+500 ms
+processing one connection, other connections are delayed.
+So the design principle becomes:
+Keep event-loop work short and non-blocking.
+________________________________________
+14.31 Event loop = traffic controller
+Think of the event loop as an airport controller.
+There may be:
+10,000 planes
+but only a few need immediate attention.
+The controller doesn't personally fly each plane.
+Instead:
+Event Loop
+   │
+   ├── Connection A → read
+   ├── Connection B → write
+   ├── Connection C → accept
+   └── Connection D → read
+It coordinates readiness.
+This is the mental model you should retain.
+________________________________________
+14.32 Where does the actual data live?
+This is another important internal picture.
+Suppose:
+Client sends:
+GET /orders
+Conceptually:
+NIC
+ │
+ ▼
+Kernel network stack
+ │
+ ▼
+TCP receive buffer
+ │
+ ▼
+Socket
+ │
+ ▼
+read()
+ │
+ ▼
+User-space memory
+ │
+ ▼
+HTTP parser
+The event loop isn't directly reading the network card.
+It is interacting with the kernel-managed socket abstraction.
+________________________________________
+14.33 The complete journey
+Let's trace one byte.
+Client
+   │
+   │ TCP packet
+   ▼
+Network Interface Card
+   │
+   ▼
+Linux kernel
+   │
+   ▼
+TCP/IP processing
+   │
+   ▼
+Socket receive buffer
+   │
+   ▼
+epoll readiness
+   │
+   ▼
+Event loop
+   │
+   ▼
+read()
+   │
+   ▼
+User-space buffer
+   │
+   ▼
+HTTP parser
+This is the real bridge between:
+network
+and:
+application
+________________________________________
+14.34 One very important correction
+Don't think:
+epoll reads data.
+It doesn't.
+Instead:
+epoll
+   ↓
+tells application which FDs are ready
+
+read()
+   ↓
+actually retrieves data
+So:
+epoll = readiness notification
+
+read/write = data movement
+This distinction is fundamental.
+________________________________________
+14.35 What happens when the backend is slow?
+Suppose proxy has:
+Client socket = FD 4
+Backend socket = FD 20
+Request:
+Client → Proxy → Backend
+Backend takes 2 seconds.
+The proxy's event loop doesn't have to sit:
+FD 20
+   ↓
+WAIT 2 seconds
+Instead:
+send request upstream
+      ↓
+register/watch backend socket
+      ↓
+return to event loop
+      ↓
+handle other connections
+Eventually:
+Backend response arrives
+      ↓
+FD 20 readable
+      ↓
+epoll event
+      ↓
+process response
+This is one of the biggest reasons event-driven proxies scale.
+________________________________________
+14.36 The complete mental model
+You can now think about a proxy like this:
+                    USER SPACE
+┌───────────────────────────────────────────┐
+│                                           │
+│              Reverse Proxy                │
+│                                           │
+│            ┌──────────────┐               │
+│            │ Event Loop   │               │
+│            └──────┬───────┘               │
+│                   │                       │
+│              epoll_wait()                 │
+│                   │                       │
+│            ready FD events                │
+│                   │                       │
+│       ┌───────────┼───────────┐           │
+│       ▼           ▼           ▼           │
+│    read()      write()     accept()       │
+│                                           │
+└───────────────────┬───────────────────────┘
+                    │
+                    │ system calls
+                    ▼
+┌───────────────────────────────────────────┐
+│                 KERNEL                    │
+│                                           │
+│  TCP/IP stack                             │
+│  Socket state                             │
+│  Receive buffers                          │
+│  Send buffers                             │
+│  epoll machinery                          │
+│                                           │
+└───────────────────┬───────────────────────┘
+                    │
+                    ▼
+                 NETWORK
+This is the architecture you should have in your head.
+________________________________________
+14.37 One more important thing: epoll doesn't eliminate threads
+This is another misconception.
+It's not:
+epoll
+   ↓
+one thread forever
+Production systems can have:
+CPU cores
+    ↓
+multiple workers
+    ↓
+each worker
+    ↓
+event loop
+    ↓
+epoll
+For example:
+                Proxy
+                  │
+       ┌──────────┼──────────┐
+       ▼          ▼          ▼
+   Worker 1   Worker 2   Worker 3
+       │          │          │
+     epoll      epoll      epoll
+       │          │          │
+    clients     clients    clients
+This allows the architecture to use multiple CPU cores while still avoiding one-thread-per-connection.
+________________________________________
+14.38 Why multiple event loops?
+Suppose:
+CPU cores = 16
+One event loop running on one core cannot fully utilize all CPU cores for CPU-side processing.
+So you can have:
+16 workers
+with event-driven networking.
+The exact architecture varies by server/framework.
+But the general model is:
+Many connections
+      ↓
+Few event-loop threads
+      ↓
+Many CPU cores
+instead of:
+Many connections
+      ↓
+Many threads
+________________________________________
+14.39 Compare the two architectures
+Traditional thread-per-connection
+10,000 connections
+       ↓
+10,000 threads
+       ↓
+mostly waiting
+Event-driven
+10,000 connections
+       ↓
+few event loops
+       ↓
+OS tracks readiness
+       ↓
+only active connections processed
+This is the key reason event-driven networking became so important for high-concurrency systems.
+________________________________________
+14.40 Lesson 14 checkpoint
+Before moving on, you should now be able to explain this entire chain without memorizing:
+Client
+   ↓
+TCP packet
+   ↓
+NIC
+   ↓
+Linux kernel
+   ↓
+TCP stack
+   ↓
+Socket
+   ↓
+File descriptor
+   ↓
+epoll registration
+   ↓
+socket becomes readable
+   ↓
+epoll_wait() returns event
+   ↓
+event loop
+   ↓
+read()
+   ↓
+HTTP parser
+And separately:
+epoll does NOT read the data.
+
+epoll tells the application:
+
+"FD X is ready."
+
+read() actually gets the bytes.
+________________________________________
+One level deeper next
+Lesson 15 — epoll Edge-Triggered vs Level-Triggered + The EAGAIN Problem
+We'll take the two mechanisms we introduced here and actually walk through them with socket state diagrams:
+LEVEL TRIGGERED
+
+data arrives
+     ↓
+READABLE
+     ↓
+read 20 bytes
+     ↓
+80 bytes remain
+     ↓
+READABLE AGAIN
+versus:
+EDGE TRIGGERED
+
+nothing
+   ↓
+100 bytes arrive
+   ↓
+state transition
+   ↓
+ONE event
+   ↓
+must drain socket
+   ↓
+read()
+read()
+read()
+   ↓
+EAGAIN
+Then we'll examine why an incorrectly implemented event loop can either lose/stall data or consume 100% CPU.
+That is the next concept.
+System Design — Lesson 15
+epoll: Level-Triggered vs Edge-Triggered + EAGAIN
+In Lesson 14, we established:
+Socket
+   ↓
+File Descriptor
+   ↓
+epoll watches FD
+   ↓
+socket becomes ready
+   ↓
+epoll_wait()
+   ↓
+event loop
+   ↓
+read()/write()
+Now we answer a very specific question:
+Once a socket becomes ready, exactly when should the kernel notify the application?
+This leads to:
+•	Level-triggered (LT) 
+•	Edge-triggered (ET) 
+•	EAGAIN 
+•	Why event loops must drain sockets 
+•	How bad event-loop code causes CPU spinning 
+________________________________________
+15.1 Start with one socket
+Imagine:
+FD 10
+The client sends:
+Hello World
+The kernel's receive buffer now contains:
+┌───────────────────────┐
+│ Hello World           │
+└───────────────────────┘
+There are 11 bytes waiting.
+Therefore:
+FD 10 = READABLE
+Now the question is:
+How should epoll report this readiness?
+There are two major approaches.
+________________________________________
+15.2 Level-triggered — think "current state"
+Level-triggered asks:
+Is the condition currently true?
+For reading:
+Is there data available?
+If yes:
+READABLE
+If no:
+NOT READABLE
+Think of it like a light switch:
+ON  → condition exists
+OFF → condition doesn't exist
+________________________________________
+15.3 Example
+Initially:
+Socket receive buffer:
+
+[ EMPTY ]
+Therefore:
+NOT READABLE
+Client sends:
+Hello World
+Now:
+[ Hello World ]
+Therefore:
+READABLE
+epoll reports:
+FD 10 → READABLE
+________________________________________
+15.4 Now the application reads only 5 bytes
+Suppose:
+Hello World
+The application reads:
+Hello
+Remaining:
+ World
+The socket is still readable.
+Why?
+Because data is still available.
+Therefore:
+FD 10
+   ↓
+still READABLE
+With level-triggered behavior, the application can receive another readiness notification.
+Conceptually:
+11 bytes
+   ↓
+event
+   ↓
+read 5
+   ↓
+6 bytes remain
+   ↓
+still ready
+   ↓
+event again
+________________________________________
+15.5 The important property of LT
+Level-triggered behavior is forgiving.
+If your application doesn't consume everything:
+some data remains
+then:
+condition remains true
+so it can be notified again.
+This makes LT easier to program.
+________________________________________
+15.6 Think about a bathtub
+Imagine a bathtub with water.
+Rule:
+"Alert me whenever the bathtub contains water."
+You have:
+████████
+You remove some:
+████
+There is still water.
+So:
+ALERT
+again.
+You remove more:
+██
+Still water.
+Again:
+ALERT
+Finally:
+EMPTY
+No alert.
+That's the intuition behind level triggering.
+________________________________________
+15.7 Edge-triggered — think "state transition"
+Edge-triggered asks:
+Did the state change?
+Not:
+"Is it currently ready?"
+Suppose:
+NOT READABLE
+Then data arrives:
+NOT READABLE
+       ↓
+     data arrives
+       ↓
+READABLE
+That's a transition.
+The edge is:
+NOT READY → READY
+The application receives an event.
+________________________________________
+15.8 Example
+Initially:
+Socket buffer:
+
+[ EMPTY ]
+State:
+NOT READY
+Then 100 bytes arrive:
+[ 100 bytes ]
+State changes:
+NOT READY
+     ↓
+READY
+Edge-triggered notification:
+EVENT
+________________________________________
+15.9 Now application reads only 20 bytes
+Suppose:
+100 bytes
+are available.
+Application reads:
+20 bytes
+Remaining:
+80 bytes
+The socket is still readable.
+But notice:
+Before:
+NOT READY
+
+After data arrived:
+READY
+
+After reading 20:
+READY
+There wasn't another:
+NOT READY → READY
+transition.
+So you should not depend on another edge event.
+This is the critical difference.
+________________________________________
+15.10 Therefore ET requires draining
+When an event arrives:
+FD 10 → READABLE
+the application should generally keep reading until the socket says:
+EAGAIN
+Conceptually:
+event
+  ↓
+read()
+  ↓
+read()
+  ↓
+read()
+  ↓
+read()
+  ↓
+EAGAIN
+Now:
+No more data currently available
+and the event-loop can move on.
+________________________________________
+15.11 What exactly is EAGAIN?
+Suppose socket is non-blocking.
+Application calls:
+read()
+If data exists:
+read()
+   ↓
+returns bytes
+If there is no data:
+read()
+   ↓
+EAGAIN
+Meaning, approximately:
+"There is no data available right now, and because this socket is non-blocking, I'm not going to wait."
+This is exactly what the event loop needs.
+________________________________________
+15.12 Let's trace ET properly
+Suppose:
+Client → 100 bytes
+Kernel:
+Socket buffer
+┌────────────────────────────────────┐
+│ 100 bytes                          │
+└────────────────────────────────────┘
+State:
+NOT READY → READY
+epoll:
+EVENT
+Application:
+read()
+gets:
+50 bytes
+Remaining:
+50 bytes
+Application continues:
+read()
+gets:
+50 bytes
+Now:
+buffer = EMPTY
+Application calls:
+read()
+Again.
+There is no data.
+Because socket is non-blocking:
+EAGAIN
+Now stop.
+________________________________________
+15.13 Why not simply call read() once?
+Because of the edge-triggered behavior.
+Suppose:
+100 bytes
+arrive.
+Event:
+READY
+You read only:
+20 bytes
+Remaining:
+80 bytes
+Then you return to your event loop.
+Potentially:
+80 bytes
+   ↓
+still in socket buffer
+   ↓
+no new edge
+   ↓
+application doesn't read
+The connection may appear stuck.
+That's why ET requires:
+Drain until EAGAIN.
+________________________________________
+15.14 A simplified ET algorithm
+Conceptually:
+onReadable(fd):
+
+    while true:
+
+        n = read(fd)
+
+        if n > 0:
+            process(n)
+            continue
+
+        if n == 0:
+            connection closed
+            break
+
+        if n == EAGAIN:
+            break
+
+        if error:
+            handle error
+            break
+Notice the three important outcomes.
+n > 0
+Data received.
+process it
+n == 0
+Peer closed its sending side / connection EOF condition.
+handle close
+EAGAIN
+Nothing more currently available.
+stop reading
+________________________________________
+15.15 Why does EAGAIN matter so much?
+Because it defines the boundary between:
+"there is more data available now"
+and:
+"there isn't more data right now"
+For an event loop:
+READY
+ ↓
+read
+ ↓
+read
+ ↓
+read
+ ↓
+EAGAIN
+ ↓
+return control to event loop
+That's the basic ET pattern.
+________________________________________
+15.16 What if you don't use non-blocking sockets?
+Now imagine:
+read(fd)
+and the socket has:
+no data
+With blocking mode:
+read()
+   ↓
+WAIT
+The event-loop thread gets stuck.
+That's catastrophic.
+Imagine:
+Event Loop
+    │
+    ├── Client A
+    ├── Client B
+    ├── Client C
+    │
+    ▼
+read(Client A)
+    │
+    │ no data
+    ▼
+BLOCKED
+Now Client B and C can't be efficiently processed by that event loop.
+Therefore:
+epoll + non-blocking I/O
+is a fundamental pairing.
+________________________________________
+15.17 Now let's look at the opposite failure: CPU spinning
+Suppose you write:
+while (true) {
+
+    read(fd);
+
+}
+with a non-blocking socket.
+When no data exists:
+read()
+   ↓
+EAGAIN
+If you ignore that:
+while(true) {
+    read(fd);
+}
+you get:
+read()
+EAGAIN
+read()
+EAGAIN
+read()
+EAGAIN
+read()
+EAGAIN
+...
+The CPU runs continuously.
+Potential result:
+CPU → 100%
+This is called busy spinning / busy polling.
+________________________________________
+15.18 Correct behavior
+Instead:
+while(true) {
+
+    result = read(fd);
+
+    if (result == EAGAIN) {
+        break;
+    }
+}
+Then:
+return to event loop
+and wait for the next readiness event.
+So:
+READY
+ ↓
+drain
+ ↓
+EAGAIN
+ ↓
+STOP
+ ↓
+epoll_wait()
+ ↓
+sleep
+That's much more efficient.
+________________________________________
+15.19 Level-triggered vs Edge-triggered
+Now put them side by side.
+	Level Triggered	Edge Triggered
+Question	Is it ready now?	Did readiness change?
+Notification	Can repeat	Usually transition-driven
+Partial read	Can be notified again	Must continue draining
+Programming	Easier	More complex
+Typical pattern	Read available data	Read until EAGAIN
+Risk	Repeated events	Missing/stalling if not drained
+________________________________________
+15.20 Why would anyone choose edge-triggered?
+Because it can reduce repeated readiness notifications.
+Imagine:
+1 MB data
+If application reads:
+10 KB
+and 1014 KB remain, level-triggered readiness can continue reporting:
+READABLE
+READABLE
+READABLE
+...
+ET can instead give the event on the transition:
+NOT READY → READY
+and the application is responsible for draining the socket.
+This can reduce event notification overhead in some workloads.
+But the programming requirements are stricter.
+________________________________________
+15.21 A critical distinction: readiness vs completeness
+This is a major networking concept.
+Suppose:
+HTTP request = 500 bytes
+The kernel says:
+READABLE
+Maybe only:
+100 bytes
+are available.
+The kernel does not know:
+"this is an HTTP request and it needs 400 more bytes."
+TCP knows only:
+bytes
+Therefore:
+epoll readiness
+      ≠
+HTTP message complete
+The HTTP parser handles message boundaries.
+________________________________________
+15.22 This is why HTTP parsing needs state
+Suppose client sends:
+GET /orders HTTP/1.1
+Host: example.com
+The proxy might receive:
+GET /orders HT
+Then:
+TP/1.1\r\nHost:
+Then:
+example.com\r\n...
+The event loop must preserve partially received data.
+Conceptually:
+Connection State
+   │
+   ├── socket FD
+   ├── input buffer
+   ├── parser state
+   ├── HTTP headers
+   └── request state
+This is why real event-driven servers are more sophisticated than:
+read()
+parse()
+done
+________________________________________
+15.23 The event loop is really managing state machines
+This is an advanced but important mental model.
+For every connection:
+Connection
+    │
+    ▼
+STATE
+Possible states:
+ACCEPTED
+   ↓
+READING_REQUEST
+   ↓
+REQUEST_PARSED
+   ↓
+CONNECTING_UPSTREAM
+   ↓
+WRITING_UPSTREAM
+   ↓
+READING_UPSTREAM
+   ↓
+WRITING_RESPONSE
+   ↓
+KEEP_ALIVE
+   ↓
+READING_NEXT_REQUEST
+The event loop advances these state machines when I/O becomes ready.
+This is a deeper understanding of event-driven architecture.
+________________________________________
+15.24 One connection can move through multiple events
+For example:
+Client socket
+     │
+     ▼
+READABLE
+     │
+     ▼
+read request
+     │
+     ▼
+connect upstream
+     │
+     ▼
+CONNECT event
+     │
+     ▼
+write request
+     │
+     ▼
+READABLE upstream
+     │
+     ▼
+read response
+     │
+     ▼
+WRITABLE client
+     │
+     ▼
+write response
+So the event loop isn't simply:
+request → response
+It is orchestrating a sequence of asynchronous state transitions.
+________________________________________
+15.25 Now let's introduce partial writes
+We have mostly discussed reads.
+But writes have the same problem.
+Suppose the proxy wants to send:
+1 MB response
+It calls:
+write()
+The kernel might accept only:
+200 KB
+Why?
+Because the socket's send buffer has limited available space.
+So:
+Application
+   │
+   │ 1 MB
+   ▼
+write()
+   │
+   ▼
+Kernel accepts 200 KB
+Remaining:
+824 KB
+The application must remember those remaining bytes.
+________________________________________
+15.26 This creates an output buffer
+Conceptually:
+Connection
+    │
+    ├── input buffer
+    │
+    └── output buffer
+Example:
+Output buffer:
+
+┌───────────────────────────────┐
+│ remaining 824 KB              │
+└───────────────────────────────┘
+Then the event loop watches:
+WRITABLE
+when necessary.
+________________________________________
+15.27 Write flow
+Response generated
+       ↓
+output buffer
+       ↓
+try write()
+       ↓
+some bytes written
+       ↓
+remaining bytes
+       ↓
+socket not currently writable
+       ↓
+register WRITE interest
+       ↓
+epoll event
+       ↓
+continue write()
+       ↓
+buffer empty
+       ↓
+remove WRITE interest
+This is an extremely important production pattern.
+________________________________________
+15.28 Why don't we always watch WRITE?
+Because the socket is often writable.
+If you constantly register:
+READ + WRITE
+the event loop might repeatedly receive:
+WRITE READY
+WRITE READY
+WRITE READY
+...
+even though there's nothing to send.
+So good event loops generally watch write readiness only when they have pending data.
+________________________________________
+15.29 The event-driven proxy is now becoming clear
+A connection contains state:
+Connection
+ ├── FD
+ ├── input buffer
+ ├── output buffer
+ ├── HTTP parser state
+ ├── upstream connection
+ └── connection state
+The event loop:
+epoll_wait()
+      ↓
+events
+      ↓
+find Connection object
+      ↓
+perform small amount of work
+      ↓
+update state
+      ↓
+modify epoll interest
+      ↓
+return to epoll_wait()
+This is much closer to how real high-performance servers are structured.
+________________________________________
+15.30 What have we actually learned?
+The real lesson isn't:
+"LT and ET are two epoll modes."
+The deeper lesson is:
+Network I/O is incremental.
+A request isn't necessarily received in one operation.
+A response isn't necessarily sent in one operation.
+Therefore the server must maintain state across multiple readiness events.
+________________________________________
+15.31 Production mental model
+Think:
+                EVENT LOOP
+                    │
+                epoll_wait()
+                    │
+             ┌──────┴──────┐
+             │             │
+          READABLE      WRITABLE
+             │             │
+             ▼             ▼
+         read data      write data
+             │             │
+             ▼             ▼
+       input buffer    output buffer
+             │             │
+             ▼             ▼
+        HTTP parser    partial write
+             │             │
+             └──────┬──────┘
+                    ▼
+             connection state
+                    │
+                    ▼
+               next event
+________________________________________
+15.32 Senior-level question
+Suppose an interviewer asks:
+"Why does a non-blocking event-driven server need to read until EAGAIN when using edge-triggered epoll?"
+A weak answer:
+"Because that's how epoll works."
+A stronger answer:
+"Edge-triggered notification is based on readiness transitions. If the application reads only part of the available data, the socket can remain readable without another not-ready-to-ready transition. Therefore the event handler drains the socket until a non-blocking read returns EAGAIN, which means no more data is currently available."
+That's the level of understanding we're aiming for.
+________________________________________
+15.33 One more subtle point
+EAGAIN does not mean:
+"There will never be data."
+It means:
+"There is no more data available right now without waiting."
+Later:
+Client sends more data
+       ↓
+socket becomes ready
+       ↓
+epoll event
+       ↓
+read again
+So the cycle is:
+DATA
+ ↓
+READ
+ ↓
+READ
+ ↓
+EAGAIN
+ ↓
+WAIT
+ ↓
+DATA ARRIVES
+ ↓
+READ
+That is the heartbeat of a non-blocking event loop.
+________________________________________
+Lesson 15 — Final mental model
+You should now be able to visualize:
+                CLIENT
+                   │
+                   │ bytes
+                   ▼
+            ┌───────────────┐
+            │ Linux Kernel  │
+            │               │
+            │ TCP buffer    │
+            └───────┬───────┘
+                    │
+               FD becomes
+                READABLE
+                    │
+                    ▼
+                  epoll
+                    │
+                    ▼
+               event loop
+                    │
+                    ▼
+                  read()
+                    │
+              ┌─────┴─────┐
+              │           │
+            bytes       EAGAIN
+              │           │
+              ▼           ▼
+            parse       stop
+              │           │
+              └─────┬─────┘
+                    ▼
+              next event
+And the key rule:
+Level Triggered:
+"Is the condition still true?"
+
+Edge Triggered:
+"Did the condition change?"
+
+ET:
+"Drain until EAGAIN."
+________________________________________
+Next Lesson — 16
+Now we've finished the core Linux event-loop mechanics needed for understanding a high-performance reverse proxy.
+Next we'll move back upward into the proxy itself:
+Lesson 16 — Reverse Proxy Connection Lifecycle
+We'll trace one real HTTP request from client to backend and back, but this time at the socket level:
+Client
+  ↓
+TCP connection
+  ↓
+Proxy listening socket
+  ↓
+accept()
+  ↓
+client FD
+  ↓
+HTTP bytes
+  ↓
+event loop
+  ↓
+HTTP parsing
+  ↓
+upstream connection
+  ↓
+backend TCP connection
+  ↓
+request forwarding
+  ↓
+response streaming
+  ↓
+client response
+  ↓
+keep-alive / connection close
+That will connect everything we've learned into the actual Reverse Proxy internal architecture.
+next
+System Design — Lesson 16
+Reverse Proxy Connection Lifecycle: One Request, From Client → Proxy → Backend → Client
+We've now finished the Linux I/O foundation:
+Socket
+  ↓
+File Descriptor
+  ↓
+Non-blocking I/O
+  ↓
+epoll
+  ↓
+Level / Edge Triggering
+  ↓
+EAGAIN
+  ↓
+Event Loop
+Now we move up one abstraction level.
+Our question is:
+What actually happens inside a reverse proxy when a client sends one HTTP request?
+We'll trace one request all the way through.
+________________________________________
+16.1 The architecture
+Suppose we have:
+Client
+   │
+   │ HTTP
+   ▼
+Reverse Proxy
+   │
+   │ HTTP
+   ▼
+Backend Server
+For example:
+Browser
+   │
+   │ GET /orders/123
+   ▼
+Nginx / HAProxy / Envoy
+   │
+   │ GET /orders/123
+   ▼
+Java Spring Boot
+There are actually two TCP connections involved.
+Connection #1
+
+Client ←──────────────→ Proxy
+
+
+Connection #2
+
+Proxy ←──────────────→ Backend
+This is one of the most important things to understand.
+The proxy isn't simply "passing a packet through."
+It is sitting between two independent connections.
+________________________________________
+16.2 Before any request arrives
+The proxy has started.
+It creates a listening socket:
+socket()
+bind()
+listen()
+Suppose:
+Listening FD = 3
+Conceptually:
+Proxy Process
+      │
+      ▼
+FD 3
+      │
+      ▼
+Listening TCP socket
+      │
+      ▼
+0.0.0.0:8080
+The proxy registers FD 3 with epoll:
+epoll
+  │
+  └── FD 3 → READABLE
+But here "readable" means:
+A new connection can be accepted.
+Not HTTP data.
+That's an important distinction.
+________________________________________
+16.3 Client wants /orders/123
+Client:
+Browser
+wants:
+GET /orders/123
+But HTTP doesn't immediately jump into the application.
+First, TCP connection establishment happens.
+________________________________________
+16.4 TCP connection establishment
+Client sends:
+SYN
+Proxy responds:
+SYN + ACK
+Client:
+ACK
+Conceptually:
+Client                         Proxy
+
+   SYN ------------------------>
+
+       <---------------- SYN+ACK
+
+   ACK ------------------------>
+Now TCP connection is established.
+________________________________________
+16.5 The listening socket becomes ready
+The kernel has completed enough work that:
+FD 3
+has an incoming connection waiting to be accepted.
+So:
+epoll
+  ↓
+FD 3 ready
+Event loop wakes:
+epoll_wait()
+     ↓
+FD 3
+     ↓
+accept()
+________________________________________
+16.6 accept() creates another FD
+This is important.
+The listening FD:
+FD 3
+doesn't become the client's connection.
+Instead:
+accept(FD 3)
+returns a new FD.
+Suppose:
+FD 4
+Now:
+FD 3 → listening socket
+FD 4 → Client connection
+Visualize:
+Proxy
+
+FD 3
+ │
+ └── Listening socket
+       │
+       └── accepts connections
+
+
+FD 4
+ │
+ └── Client A TCP connection
+________________________________________
+16.7 Why two FDs?
+Because the proxy must continue listening for new clients.
+Suppose:
+Client A → FD 4
+Client B → ?
+Client C → ?
+The listening socket must remain available:
+FD 3 → accept new clients
+while:
+FD 4 → Client A
+handles Client A's data.
+________________________________________
+16.8 The proxy makes FD 4 non-blocking
+Conceptually:
+fcntl(FD4, O_NONBLOCK)
+Why?
+Because the event loop cannot afford:
+read(FD4)
+   ↓
+WAIT
+It needs:
+read(FD4)
+   ↓
+data
+or:
+read(FD4)
+   ↓
+EAGAIN
+________________________________________
+16.9 FD 4 is registered with epoll
+Now:
+epoll
+ │
+ ├── FD 3 → accept events
+ │
+ └── FD 4 → client read events
+The proxy is ready.
+________________________________________
+16.10 Client sends HTTP bytes
+The client sends:
+GET /orders/123 HTTP/1.1
+Host: api.example.com
+Connection: keep-alive
+But TCP transports bytes.
+The kernel receives network packets:
+Network
+   ↓
+NIC
+   ↓
+Linux kernel
+   ↓
+TCP stack
+   ↓
+FD 4 receive buffer
+Now FD 4 becomes readable.
+________________________________________
+16.11 epoll wakes the event loop
+We get:
+epoll_wait()
+      ↓
+FD 4 READABLE
+The event loop finds the connection object:
+FD 4
+ ↓
+Connection object
+and calls:
+read(FD4)
+________________________________________
+16.12 The proxy gets bytes—not an HTTP request
+Suppose:
+read()
+returns:
+GET /orders/123 HTTP/1.1\r\n
+Host: api.example.com\r\n
+Maybe the rest hasn't arrived yet.
+The proxy therefore stores bytes in an input buffer:
+Connection FD 4
+
+Input Buffer
+┌──────────────────────────────────────┐
+│ GET /orders/123 HTTP/1.1\r\n         │
+│ Host: api.example.com\r\n            │
+└──────────────────────────────────────┘
+It needs to determine:
+Has a complete HTTP request arrived?
+________________________________________
+16.13 HTTP parsing starts
+The proxy's HTTP parser examines:
+GET /orders/123 HTTP/1.1
+It extracts:
+Method = GET
+Path   = /orders/123
+Version = HTTP/1.1
+Then headers:
+Host: api.example.com
+Connection: keep-alive
+The parser needs to understand where the request ends.
+For a simple GET with no body:
+\r\n\r\n
+marks the end of the headers.
+________________________________________
+16.14 Now the proxy has a logical HTTP request
+We can represent it as:
+Request
+├── method: GET
+├── path: /orders/123
+├── version: HTTP/1.1
+├── headers
+└── body: empty
+This is now an application-level object.
+Notice the layers:
+Ethernet
+   ↓
+IP
+   ↓
+TCP
+   ↓
+Socket
+   ↓
+Bytes
+   ↓
+HTTP parser
+   ↓
+HTTP Request
+Each layer knows different things.
+________________________________________
+16.15 Now the proxy must decide where to send it
+This is where reverse proxy logic begins.
+The proxy might have:
+/api/orders → backend pool A
+/api/users  → backend pool B
+/static     → static server
+Our request:
+/orders/123
+might map to:
+Order Service
+Suppose there are three backend servers:
+Backend Pool
+
+10.0.0.11:8080
+10.0.0.12:8080
+10.0.0.13:8080
+The proxy needs to choose one.
+________________________________________
+16.16 Backend selection
+The proxy may use:
+Round Robin
+Least Connections
+Weighted Round Robin
+Hash-based selection
+Random
+Suppose:
+Round Robin
+selects:
+10.0.0.12:8080
+Now we have:
+Client
+   │
+   │ Connection A
+   ▼
+Proxy
+   │
+   │ Connection B
+   ▼
+10.0.0.12:8080
+________________________________________
+16.17 Here's a critical architectural point
+The client connection:
+Client ↔ Proxy
+and backend connection:
+Proxy ↔ Backend
+are independent.
+They have:
+different TCP state
+different sequence numbers
+different buffers
+different sockets
+different FDs
+Potentially:
+Client socket FD 4
+Backend socket FD 10
+________________________________________
+16.18 Does the proxy always create a new backend TCP connection?
+No.
+This is a major production optimization.
+The proxy can either:
+Option A — Create new backend connection
+Client
+   │
+   ▼
+Proxy
+   │
+   └── TCP connect()
+           ↓
+        Backend
+Option B — Reuse an existing connection
+Proxy
+  │
+  ├── Backend connection #1
+  ├── Backend connection #2
+  ├── Backend connection #3
+  └── Backend connection #4
+This is called connection pooling / keep-alive reuse.
+We'll go deep into this later.
+For now, assume a backend connection needs to be established.
+________________________________________
+16.19 Proxy calls connect()
+The proxy creates:
+Backend socket
+Suppose:
+FD 10
+Then:
+connect(FD10, 10.0.0.12:8080)
+Because this is a non-blocking proxy, connect() may not finish immediately.
+This is important.
+________________________________________
+16.20 Non-blocking connect
+A blocking model:
+connect()
+   ↓
+WAIT
+   ↓
+connected
+would block the event-loop thread.
+Instead:
+connect()
+   ↓
+connection in progress
+   ↓
+return control
+The proxy can monitor the socket for connection completion.
+Conceptually:
+FD 10
+   ↓
+CONNECTING
+Then:
+epoll
+   ↓
+FD 10 becomes writable
+The proxy can verify whether the connection succeeded.
+________________________________________
+16.21 Why writable?
+This surprises many developers.
+For a non-blocking TCP connect, completion is commonly detected through write/error readiness.
+The important idea:
+connect()
+   ↓
+in progress
+   ↓
+event indicates completion
+   ↓
+check socket error state
+Don't simply assume:
+WRITABLE = SUCCESS
+The connection may have failed.
+________________________________________
+16.22 Now backend connection is established
+We have:
+FD 4
+Client ↔ Proxy
+
+FD 10
+Proxy ↔ Backend
+The proxy's internal state might look like:
+Connection Object
+├── clientFd = 4
+├── upstreamFd = 10
+├── request
+├── inputBuffer
+├── outputBuffer
+├── state
+└── backendServer
+This is where the proxy begins coordinating two sockets.
+________________________________________
+16.23 Proxy forwards the HTTP request
+It creates bytes for the backend:
+GET /orders/123 HTTP/1.1
+Host: api.example.com
+...
+Then:
+write(FD10)
+Those bytes go:
+User space
+   ↓
+Kernel socket send buffer
+   ↓
+TCP
+   ↓
+Network
+   ↓
+Backend
+Again:
+write() does not necessarily mean the backend application has already received or processed the request.
+It usually means the bytes have been accepted into the local kernel's sending path/buffer.
+This distinction matters enormously for latency reasoning.
+________________________________________
+16.24 Backend receives the request
+Backend machine:
+Network
+   ↓
+NIC
+   ↓
+Kernel
+   ↓
+TCP socket
+   ↓
+Backend process
+   ↓
+HTTP parser
+Now the Java server sees:
+GET /orders/123
+The application processes it.
+For example:
+Controller
+   ↓
+Service
+   ↓
+Database
+This part belongs to backend architecture rather than reverse proxy internals.
+________________________________________
+16.25 Backend response begins
+Suppose backend produces:
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "id": 123,
+  "status": "SHIPPED"
+}
+Backend sends bytes through its socket.
+They travel:
+Backend
+   ↓
+TCP
+   ↓
+Network
+   ↓
+Proxy NIC
+   ↓
+Proxy kernel
+   ↓
+Proxy upstream socket FD 10
+FD 10 becomes readable.
+________________________________________
+16.26 epoll again
+The proxy's event loop:
+epoll_wait()
+      ↓
+FD 10 READABLE
+It reads:
+read(FD10)
+Now the proxy has backend response bytes.
+Where do they go?
+Into an output buffer associated with the client connection.
+Conceptually:
+Backend FD 10
+      │
+      │ read()
+      ▼
+Proxy memory
+      │
+      ▼
+Client output buffer
+      │
+      ▼
+Client FD 4
+________________________________________
+16.27 Why does buffering matter?
+Suppose backend produces data faster than the client can consume it.
+Example:
+Backend
+  ↓
+100 MB/s
+but:
+Client
+  ↓
+5 MB/s
+The proxy can't blindly keep reading forever.
+Otherwise:
+Backend → Proxy memory
+                 ↓
+             memory grows
+                 ↓
+              OOM risk
+This leads to one of the most important concepts in networking:
+Backpressure
+________________________________________
+16.28 Backpressure
+The proxy needs to regulate:
+producer
+   ↓
+proxy
+   ↓
+consumer
+Here:
+Backend = producer
+Client = consumer
+If:
+producer speed > consumer speed
+then the proxy must eventually slow the producer.
+Conceptually:
+Backend
+   ↓
+Proxy buffer
+   ↓
+Client
+When buffer becomes too large:
+stop / reduce reading from backend
+or otherwise apply flow control.
+This prevents unlimited memory consumption.
+We'll later dedicate a deeper lesson to this.
+________________________________________
+16.29 Proxy sends response to client
+Suppose output buffer contains:
+{
+  "id": 123,
+  "status": "SHIPPED"
+}
+Proxy tries:
+write(FD4)
+Maybe all bytes fit.
+Then:
+output buffer = empty
+If only part can be written:
+write()
+   ↓
+partial write
+remaining bytes stay in the output buffer.
+The proxy watches:
+FD4 → WRITABLE
+and continues later.
+________________________________________
+16.30 The full request path
+Now let's combine everything:
+                     CLIENT
+                        │
+                        │ TCP
+                        ▼
+               ┌─────────────────┐
+               │ Reverse Proxy   │
+               │                 │
+               │ Listening FD 3  │
+               └────────┬────────┘
+                        │
+                     accept()
+                        │
+                        ▼
+                    Client FD 4
+                        │
+                     read()
+                        │
+                        ▼
+                  HTTP Parser
+                        │
+                        ▼
+                  Route Selection
+                        │
+                        ▼
+                 Backend Selection
+                        │
+                        ▼
+                   Backend FD 10
+                        │
+                     connect()
+                        │
+                        ▼
+                  write(request)
+                        │
+                        ▼
+                     BACKEND
+                        │
+                    process()
+                        │
+                  response bytes
+                        │
+                        ▼
+                  read(FD 10)
+                        │
+                        ▼
+                 Output Buffer
+                        │
+                   write(FD 4)
+                        │
+                        ▼
+                     CLIENT
+This is the core reverse proxy lifecycle.
+________________________________________
+16.31 But where does epoll sit?
+Every I/O operation is coordinated by the event loop.
+                    epoll_wait()
+                         │
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+      Client FD 4    Backend FD 10   Listen FD 3
+       READABLE        READABLE        READABLE
+          │              │              │
+          ▼              ▼              ▼
+        read()         read()         accept()
+So the event loop is essentially the orchestrator.
+________________________________________
+16.32 One event loop can manage both directions
+This is a powerful idea.
+Suppose:
+10,000 clients
+and:
+2,000 backend connections
+You don't necessarily need:
+12,000 threads
+Instead:
+Many FDs
+   ↓
+epoll
+   ↓
+few event-loop workers
+Each event advances a connection's state.
+________________________________________
+16.33 Why this architecture is so powerful
+Imagine:
+Client A → waiting for backend DB
+Client B → sending request
+Client C → receiving response
+Client D → idle keep-alive
+Client E → backend connection establishing
+A thread-per-connection model might have many threads blocked/waiting.
+An event-driven model says:
+Client A → nothing to do now
+Client B → process
+Client C → process
+Client D → nothing to do
+Client E → process
+The CPU is focused on work that can actually progress.
+________________________________________
+16.34 Reverse proxy is therefore a state machine
+This is the deeper architectural insight.
+A proxy isn't simply:
+receive()
+send()
+It manages states.
+For example:
+CLIENT_CONNECTION
+       ↓
+READING_REQUEST
+       ↓
+REQUEST_COMPLETE
+       ↓
+SELECT_BACKEND
+       ↓
+CONNECTING_UPSTREAM
+       ↓
+FORWARDING_REQUEST
+       ↓
+WAITING_FOR_RESPONSE
+       ↓
+READING_RESPONSE
+       ↓
+WRITING_RESPONSE
+       ↓
+RESPONSE_COMPLETE
+       ↓
+KEEP_ALIVE
+At any point:
+error
+timeout
+disconnect
+retry
+can change the state.
+________________________________________
+16.35 This explains why reverse proxies are complicated
+At first glance:
+Client → Proxy → Server
+looks trivial.
+Internally:
+Client socket
+    +
+HTTP parser
+    +
+routing
+    +
+backend pool
+    +
+upstream socket
+    +
+event loop
+    +
+input buffers
+    +
+output buffers
+    +
+timeouts
+    +
+connection reuse
+    +
+backpressure
+    +
+failure handling
+That's the real system.
+________________________________________
+16.36 Important: TCP connection ≠ HTTP request
+You asked about this earlier, so let's reinforce it from the actual lifecycle.
+One TCP connection can carry:
+HTTP Request 1
+HTTP Response 1
+
+HTTP Request 2
+HTTP Response 2
+
+HTTP Request 3
+HTTP Response 3
+For HTTP/1.1 keep-alive:
+TCP Connection
+│
+├── Request 1
+├── Response 1
+├── Request 2
+├── Response 2
+└── Request 3
+Therefore:
+1 TCP connection
+≠
+1 HTTP request
+This is extremely important for understanding connection pools, load balancing, HTTP/2, and performance.
+________________________________________
+16.37 What happens after the response?
+The proxy has a decision.
+If:
+Connection: close
+then:
+response complete
+      ↓
+close socket
+If keep-alive:
+response complete
+      ↓
+keep client FD open
+      ↓
+wait for next request
+So the lifecycle can return:
+WRITING_RESPONSE
+      ↓
+RESPONSE_COMPLETE
+      ↓
+KEEP_ALIVE
+      ↓
+READING_NEXT_REQUEST
+This means a single client socket can live for a long time.
+________________________________________
+16.38 And this creates an interesting problem
+Suppose:
+Client connects
+and then does nothing.
+The connection remains open.
+Imagine:
+100,000 idle connections
+They consume resources:
+FDs
+memory
+connection state
+kernel buffers
+proxy state
+Therefore proxies need:
+idle timeout
+request timeout
+connect timeout
+read timeout
+write timeout
+These will become very important later when we study resilience.
+________________________________________
+16.39 One request's complete timeline
+Let's compress everything:
+T0
+Client connects
+ ↓
+TCP handshake
+
+T1
+accept()
+ ↓
+Client FD created
+
+T2
+Client sends HTTP bytes
+ ↓
+kernel receive buffer
+
+T3
+epoll reports READABLE
+ ↓
+read()
+
+T4
+HTTP parser
+ ↓
+request complete
+
+T5
+route request
+ ↓
+select backend
+
+T6
+connect backend
+ ↓
+backend FD
+
+T7
+write request upstream
+ ↓
+backend processes
+
+T8
+backend sends response
+ ↓
+upstream FD READABLE
+
+T9
+read response
+ ↓
+proxy output buffer
+
+T10
+client FD WRITABLE
+ ↓
+write response
+
+T11
+response complete
+ ↓
+keep-alive OR close
+That is one complete request lifecycle.
+________________________________________
+16.40 The most important mental model from Lesson 16
+Don't visualize a reverse proxy as:
+Client
+   ↓
+Proxy
+   ↓
+Backend
+Visualize it as:
+               REVERSE PROXY
+                     │
+             ┌───────┴────────┐
+             │                │
+             ▼                ▼
+        Client Socket    Upstream Socket
+             │                │
+             ▼                ▼
+         Input Buffer     Input Buffer
+             │                │
+             └───────┬────────┘
+                     │
+                Event Loop
+                     │
+                  epoll
+                     │
+                     ▼
+              Connection State
+The proxy is coordinating two independent asynchronous streams.
+That's the real internal architecture.
+________________________________________
+Lesson 16 checkpoint
+You should now be able to answer:
+1. Why does accept() return a new FD?
+Because:
+listening FD
+must remain available to accept future connections, while the new FD represents the individual client connection.
+2. Is the client TCP connection the same as the backend TCP connection?
+No.
+Client ↔ Proxy
+and:
+Proxy ↔ Backend
+are independent TCP connections.
+3. Does write() mean the backend application has processed the request?
+No.
+It generally means the bytes were accepted into the local kernel's sending path/buffer; network delivery and application processing happen later.
+4. Why does the proxy need output buffers?
+Because writes can be partial:
+wanted: 1 MB
+written: 200 KB
+remaining: 824 KB
+5. Why does the proxy need backpressure?
+Because:
+Backend faster than Client
+can otherwise cause:
+unbounded proxy buffering
+→ memory exhaustion
+
+System Design — Lesson 17
+Reverse Proxy: Connection Pooling & Keep-Alive Internals
+We won't repeat sockets, epoll, EAGAIN, or the basic request lifecycle.
+Today we're answering a much more important production question:
+If the proxy already connected to a backend once, why should it create another TCP connection for the next HTTP request?
+Usually, it shouldn't.
+________________________________________
+17.1 The problem
+Imagine a client sends:
+GET /orders/1
+The proxy needs to talk to:
+Order Service
+Naive implementation:
+Request 1
+Client
+   ↓
+Proxy
+   ↓
+TCP connect()
+   ↓
+Backend
+   ↓
+response
+   ↓
+close()
+
+Request 2
+Client
+   ↓
+Proxy
+   ↓
+TCP connect()
+   ↓
+Backend
+This works.
+But it's wasteful.
+The proxy is repeatedly paying for:
+TCP connection establishment
++
+TLS handshake (if HTTPS)
++
+kernel/socket setup
++
+connection bookkeeping
+So we ask:
+Can we reuse an existing connection?
+Yes.
+That's keep-alive + connection pooling.
+________________________________________
+17.2 First understand TCP connection cost
+Suppose:
+Proxy → Backend
+needs a TCP connection.
+TCP establishment involves the handshake:
+Proxy                         Backend
+
+   SYN ------------------------>
+
+       <---------------- SYN+ACK
+
+   ACK ------------------------>
+Only after that can application data flow normally.
+So every new connection has a startup cost.
+Now suppose TLS is also involved:
+TCP handshake
+      ↓
+TLS handshake
+      ↓
+HTTP request
+      ↓
+HTTP response
+That's even more expensive.
+________________________________________
+17.3 The fundamental optimization
+Instead of:
+Request 1 → connection 1 → close
+Request 2 → connection 2 → close
+Request 3 → connection 3 → close
+we want:
+Connection 1
+   │
+   ├── Request 1
+   ├── Response 1
+   ├── Request 2
+   ├── Response 2
+   ├── Request 3
+   └── Response 3
+So:
+1 TCP connection
+        ↓
+multiple HTTP requests
+This is HTTP keep-alive.
+________________________________________
+17.4 TCP connection vs HTTP request
+This is worth locking into your mental model.
+They are different layers:
+TCP Connection
+│
+├── HTTP Request 1
+├── HTTP Response 1
+├── HTTP Request 2
+├── HTTP Response 2
+├── HTTP Request 3
+└── HTTP Response 3
+Therefore:
+TCP connection ≠ HTTP request
+A connection is a transport-level channel.
+HTTP requests are application-level messages traveling through it.
+________________________________________
+17.5 Client keep-alive and backend keep-alive are separate
+A reverse proxy has two sides:
+                 Proxy
+              /         \
+             /           \
+        Client          Backend
+Therefore there are two independent connection-reuse questions.
+Client side
+Client ↔ Proxy
+Can this TCP connection handle another request?
+Backend side
+Proxy ↔ Backend
+Can this TCP connection be reused for another backend request?
+These are independent.
+This is an important production concept.
+________________________________________
+17.6 Example
+Suppose:
+Client A
+keeps a connection open:
+Client A ↔ Proxy
+The proxy might use:
+Backend connection #7
+for request 1.
+After request 1 finishes:
+Backend connection #7
+is returned to the pool.
+Later:
+Client A
+sends request 2.
+The proxy can take:
+Backend connection #7
+again.
+So:
+Client connection
+       │
+       │ Request 1
+       ▼
+Backend connection #7
+       │
+       ▼
+      pool
+
+       │
+       │ Request 2
+       ▼
+Backend connection #7
+________________________________________
+17.7 Now we need a connection pool
+A production proxy may have thousands of backend connections.
+Conceptually:
+Backend: Order Service
+
+Connection Pool
+┌────────────────────────────┐
+│ Conn 1  IDLE               │
+│ Conn 2  BUSY               │
+│ Conn 3  IDLE               │
+│ Conn 4  BUSY               │
+│ Conn 5  IDLE               │
+└────────────────────────────┘
+The pool manages these connections.
+A request arrives.
+The proxy asks:
+"Give me an available connection to Order Service."
+Pool returns:
+Conn 3
+The proxy uses it.
+When finished:
+Conn 3 → IDLE
+and puts it back into the pool.
+________________________________________
+17.8 The pool is really a resource manager
+Think beyond networking.
+It's the same idea as:
+Database Connection Pool
+Thread Pool
+Object Pool
+HTTP Client Connection Pool
+The fundamental pattern is:
+Resource
+   ↓
+Create
+   ↓
+Pool
+   ↓
+Acquire
+   ↓
+Use
+   ↓
+Release
+   ↓
+Pool
+The pool exists because creating resources is expensive.
+________________________________________
+17.9 A simplified pool data structure
+A conceptual implementation could use:
+class ConnectionPool {
+
+    Queue<Connection> idleConnections;
+
+    Set<Connection> activeConnections;
+
+    Connection acquire() {
+        ...
+    }
+
+    void release(Connection connection) {
+        ...
+    }
+}
+Conceptually:
+idleConnections
+      ↓
+[ C1 ][ C3 ][ C7 ]
+
+activeConnections
+      ↓
+[ C2 ][ C4 ]
+This is not how every production proxy implements it internally, but it's a useful mental model.
+________________________________________
+17.10 What happens when a request arrives?
+Suppose:
+Order request
+arrives.
+The proxy:
+1. Find backend pool
+2. Try to acquire idle connection
+3. Validate connection state
+4. Use connection
+5. Send request
+6. Read response
+7. Return connection to pool
+So:
+Request
+   ↓
+Backend Pool
+   ↓
+Acquire connection
+   ↓
+Use
+   ↓
+Response complete
+   ↓
+Release
+   ↓
+Idle pool
+________________________________________
+17.11 But there's a hidden problem
+What if the pool has:
+C1
+C2
+C3
+and all are busy?
+Pool
+├── C1 BUSY
+├── C2 BUSY
+└── C3 BUSY
+A new request arrives.
+What should happen?
+We cannot simply create unlimited connections.
+Because:
+100 requests
+→ 100 connections
+might be okay.
+But:
+100,000 requests
+→ 100,000 backend connections
+could destroy the backend.
+________________________________________
+17.12 Maximum connections
+So pools normally have a limit:
+maxConnections = 100
+Now:
+Connections
+0 ─────────────────── 100
+                     ↑
+                   limit
+Once 100 connections are active:
+new request
+    ↓
+pool exhausted
+The proxy must decide what to do.
+Possible behaviors:
+wait
+queue
+timeout
+reject
+fail fast
+This is a major design decision.
+________________________________________
+17.13 Pool exhaustion is not merely a connection problem
+Consider:
+Client requests
+       ↓
+Proxy
+       ↓
+Connection Pool
+       ↓
+Backend
+Suppose backend becomes slow.
+Requests stay active longer.
+Therefore:
+connections stay BUSY longer
+Then:
+pool occupancy ↑
+Eventually:
+pool full
+Then requests wait.
+Then latency increases.
+Then upstream requests pile up.
+Then more resources become occupied.
+This can create a cascading failure.
+We'll later connect this directly to:
+Timeout
+Circuit Breaker
+Bulkhead
+Rate Limiting
+________________________________________
+17.14 Connection pool as a bulkhead
+Here's an important connection.
+Suppose Order Service has:
+max 100 backend connections
+Then one service can't consume unlimited connections.
+This can act as a form of isolation:
+Order Service
+    ↓
+100 connections maximum
+Other services may have their own pools:
+User Service
+    ↓
+50 connections
+
+Payment Service
+    ↓
+30 connections
+So one backend cannot automatically consume the entire proxy's connection resources.
+Later, when we study Bulkhead, you'll see this idea again at a more general level.
+________________________________________
+17.15 Idle connections
+Now imagine:
+Pool:
+
+C1 IDLE
+C2 IDLE
+C3 IDLE
+...
+C50 IDLE
+Why keep all 50 open forever?
+Each connection consumes resources.
+At some point the proxy should remove unused connections.
+So we need:
+idle timeout
+Example:
+idleTimeout = 30 seconds
+If:
+connection last used = 40 seconds ago
+the proxy may close it.
+Conceptually:
+IDLE
+ ↓
+30 seconds
+ ↓
+still unused
+ ↓
+CLOSE
+________________________________________
+17.16 Why not keep idle connections forever?
+Because the backend may have its own limits.
+Suppose:
+Proxy
+1000 idle connections
+      ↓
+Backend
+max 500 connections
+You don't want the proxy consuming backend connection capacity unnecessarily.
+There are also:
+FD memory
+kernel socket buffers
+TLS state
+application connection state
+to consider.
+________________________________________
+17.17 The stale connection problem
+This is one of the most important real-world issues.
+Suppose:
+Proxy ←──────── TCP connection ───────→ Backend
+The connection sits idle.
+Proxy thinks:
+"Great. I'll reuse this."
+But backend has already closed it.
+Maybe because of:
+backend idle timeout
+network failure
+server restart
+load balancer timeout
+firewall/NAT timeout
+Now the proxy's pool contains:
+C7 = looks idle
+but it's actually dead/stale.
+________________________________________
+17.18 Then a new request arrives
+Proxy:
+acquire C7
+tries:
+write(request)
+and gets an error.
+Now:
+request
+   ↓
+stale connection
+   ↓
+write failure
+The proxy must:
+1. remove stale connection
+2. create another connection
+3. retry if safe/appropriate
+But the retry decision is not automatically safe.
+This becomes very important when we study idempotency and retries.
+________________________________________
+17.19 Why can't we blindly retry?
+Suppose:
+POST /payments
+Proxy sends it.
+Backend processes the payment.
+But response gets lost.
+Proxy sees:
+connection failure
+It might think:
+"Let's retry!"
+Now the payment could be processed twice.
+So:
+connection reuse
+        ↓
+failure
+        ↓
+retry
+        ↓
+idempotency problem
+This is one of the cross-topic connections we'll eventually study in depth.
+________________________________________
+17.20 Connection lifetime
+A production connection often has multiple limits.
+For example:
+max idle time
+max lifetime
+max requests per connection
+Conceptually:
+Connection
+   │
+   ├── idle timeout
+   ├── max lifetime
+   └── max request count
+Why max lifetime?
+Because long-lived connections can accumulate issues:
+stale network paths
+load balancer state
+NAT state
+resource fragmentation
+server-side changes
+Rotating connections can sometimes improve stability.
+________________________________________
+17.21 Connection reuse improves latency
+Compare:
+Without reuse
+Request
+ ↓
+TCP handshake
+ ↓
+request
+ ↓
+response
+ ↓
+close
+With reuse
+Existing TCP connection
+ ↓
+request
+ ↓
+response
+The connection establishment overhead disappears for subsequent requests.
+If TLS is involved, the savings can be even more significant.
+________________________________________
+17.22 Connection reuse improves throughput
+Suppose backend supports:
+10,000 requests/sec
+but connection creation is expensive.
+If every request requires a new connection:
+10,000 requests/sec
+→ 10,000 TCP connections/sec created
+That's enormous churn.
+With pooling:
+100 connections
+→ thousands of requests
+can flow through those connections over time.
+This dramatically reduces connection-management overhead.
+________________________________________
+17.23 But pooling isn't free
+Here's the important trade-off.
+Suppose:
+maxConnections = 1000
+You might think:
+More connections = more performance.
+Not necessarily.
+Each connection can consume:
+memory
+FD
+kernel buffers
+CPU
+TLS state
+backend resources
+Too many connections can create:
+context switching
+contention
+memory pressure
+backend overload
+So there is an optimal region.
+Not:
+MAX_CONNECTIONS = INFINITY
+________________________________________
+17.24 Connection pool sizing
+Imagine:
+Backend
+   │
+   └── 8 CPU cores
+You configure:
+10,000 connections
+Does that mean the backend can process 10,000 requests simultaneously?
+No.
+The number of connections and amount of useful concurrency are different concepts.
+You must consider:
+CPU
+DB connections
+thread pools
+downstream services
+request latency
+I/O
+memory
+For example:
+10,000 clients
+       ↓
+Proxy
+       ↓
+100 backend connections
+       ↓
+Backend
+       ↓
+DB pool = 30
+The actual bottleneck might be:
+DB pool = 30
+not the proxy.
+________________________________________
+17.25 The bottleneck moves
+This is a core system-design principle.
+Imagine:
+1000 clients
+    ↓
+Load Balancer
+    ↓
+Reverse Proxy
+    ↓
+Backend
+    ↓
+Database
+Suppose you increase proxy connections:
+100 → 500
+You might improve proxy throughput.
+But then:
+Backend → Database
+gets overloaded.
+So:
+Improving one layer
+        ↓
+moves pressure to another layer
+That's why performance tuning must examine the entire system.
+________________________________________
+17.26 A simplified connection pool algorithm
+Conceptually:
+acquire():
+
+    if idle connection exists:
+        connection = removeIdle()
+        
+        if connection is healthy:
+            markActive(connection)
+            return connection
+
+        close(connection)
+
+    if activeCount < maxConnections:
+        connection = createConnection()
+        markActive(connection)
+        return connection
+
+    wait / queue / timeout / reject
+Then:
+release(connection):
+
+    if connection is healthy
+       and reusable:
+        markIdle(connection)
+        addToIdlePool(connection)
+    else:
+        close(connection)
+This is the basic mechanism.
+________________________________________
+17.27 Important: "release" doesn't necessarily mean close
+This distinction is critical.
+A naive developer may think:
+connection.close();
+after each request.
+A pool means:
+release(connection)
+does not necessarily mean:
+TCP close
+It means:
+"Return this resource to the pool."
+The pool owns its lifecycle.
+________________________________________
+17.28 Connection pool state machine
+A useful mental model:
+             create
+               │
+               ▼
+           CONNECTING
+               │
+            success
+               ▼
+             IDLE
+               │
+            acquire
+               ▼
+             ACTIVE
+               │
+          request done
+               ▼
+             IDLE
+               │
+       ┌───────┴────────┐
+       │                │
+   idle timeout      error
+       │                │
+       ▼                ▼
+     CLOSED           CLOSED
+This is much closer to how you should mentally model connection pooling.
+________________________________________
+17.29 What happens when pool is exhausted?
+Let's examine four possibilities.
+Option 1 — Wait
+Request
+ ↓
+pool full
+ ↓
+wait
+ ↓
+connection released
+ ↓
+request gets connection
+Advantage:
+requests aren't immediately rejected
+Problem:
+waiting requests accumulate
+________________________________________
+Option 2 — Timeout
+pool full
+ ↓
+wait
+ ↓
+timeout
+ ↓
+failure
+This prevents indefinite waiting.
+________________________________________
+Option 3 — Reject immediately
+pool full
+ ↓
+fail fast
+This protects the system but increases errors.
+________________________________________
+Option 4 — Create more connections
+This can work only up to a carefully chosen limit.
+Otherwise:
+pool full
+ ↓
+create more
+ ↓
+backend overloaded
+ ↓
+backend slows
+ ↓
+more connections required
+ ↓
+backend collapses
+This is a positive feedback loop.
+________________________________________
+17.30 The dangerous feedback loop
+This is worth remembering.
+Backend becomes slow
+       ↓
+Requests take longer
+       ↓
+Connections remain busy longer
+       ↓
+Pool fills
+       ↓
+Requests wait
+       ↓
+Latency increases
+       ↓
+More requests remain in system
+       ↓
+Backend gets more pressure
+       ↓
+Backend becomes even slower
+This is a queueing / overload spiral.
+This is why later concepts like:
+Timeout
+Rate Limiting
+Circuit Breaker
+Bulkhead
+Load Shedding
+exist.
+________________________________________
+17.31 Connection pooling and Little's Law
+Now let's introduce one useful performance relationship.
+A basic queueing relationship is:
+L = λ × W
+Where:
+L = average number of requests in system
+λ = throughput
+W = average time spent in system
+Suppose:
+λ = 1000 requests/sec
+W = 100 ms = 0.1 sec
+Then:
+L = 1000 × 0.1
+  = 100
+Approximately 100 requests are in-flight.
+If latency becomes:
+W = 1 second
+then:
+L = 1000 × 1
+  = 1000
+Now approximately 1000 requests are in-flight.
+This explains something very important:
+When downstream latency increases, required concurrency increases even if traffic volume stays constant.
+________________________________________
+17.32 Why this matters to connection pools
+Suppose:
+1000 requests/sec
+and average backend latency:
+50 ms
+Approximate concurrency:
+1000 × 0.05 = 50
+But backend latency becomes:
+500 ms
+Then:
+1000 × 0.5 = 500
+Now you may need approximately:
+500 concurrent backend operations
+to sustain the same throughput.
+So latency directly influences connection requirements.
+________________________________________
+17.33 This is why "just increase the connection pool" is dangerous
+Suppose:
+Pool = 100
+and requests are slow.
+You increase:
+100 → 1000
+Maybe throughput improves temporarily.
+But if the backend is slow because the database is overloaded:
+Proxy
+ ↓
+1000 connections
+ ↓
+Backend
+ ↓
+Database overloaded
+you've amplified the problem.
+The correct solution may be:
+fix DB
+reduce traffic
+cache
+rate-limit
+timeout
+bulkhead
+not:
+increase connections
+________________________________________
+17.34 Client-side pool vs server-side pool
+Be precise about where the pool lives.
+In our architecture:
+Client
+   ↓
+Reverse Proxy
+   ↓
+Backend
+The proxy owns backend connections.
+But the backend application may itself have:
+Database connection pool
+So:
+Proxy
+   │
+   │ HTTP connection pool
+   ▼
+Java Service
+   │
+   │ JDBC connection pool
+   ▼
+Database
+There are multiple pools in the system.
+________________________________________
+17.35 Pool multiplication
+This creates another interesting problem.
+Suppose:
+10 proxy instances
+and each has:
+max 100 backend connections
+Potential total:
+10 × 100 = 1000 backend connections
+Now imagine:
+100 application instances
+and each has:
+DB pool = 50
+Potential DB connections:
+100 × 50 = 5000
+This is why distributed systems must reason about aggregate capacity, not just per-instance configuration.
+________________________________________
+17.36 Connection pool architecture
+A more realistic conceptual structure:
+                 Reverse Proxy
+                       │
+              Backend Pool Map
+                       │
+       ┌───────────────┼───────────────┐
+       ▼               ▼               ▼
+ Order Service    User Service    Payment Service
+       │               │               │
+       ▼               ▼               ▼
+    Pool A           Pool B           Pool C
+       │
+   ┌───┼────┐
+   ▼   ▼    ▼
+  C1  C2   C3
+The proxy doesn't necessarily have one giant pool.
+It needs to associate connections with a backend target.
+________________________________________
+17.37 Why backend identity matters
+Suppose:
+Order Service:
+10.0.0.11
+10.0.0.12
+10.0.0.13
+A connection to:
+10.0.0.11
+cannot simply be reused for:
+10.0.0.12
+The connection belongs to a particular destination.
+So the pool may be organized around:
+Backend endpoint
+or:
+Backend cluster + destination
+This becomes more interesting when service discovery and load balancing enter the picture.
+________________________________________
+17.38 Connection reuse and load balancing
+Suppose the backend pool contains:
+A
+B
+C
+and the proxy creates:
+10 connections to A
+10 connections to B
+10 connections to C
+Now request distribution isn't simply:
+Request 1 → A
+Request 2 → B
+Request 3 → C
+The proxy is choosing among available backend connections.
+This is one reason:
+Connection reuse interacts with load-balancing strategy.
+Later we'll examine this in detail.
+________________________________________
+17.39 HTTP/1.1 vs HTTP/2
+Keep-alive behaves differently depending on the HTTP version.
+With HTTP/1.1:
+TCP connection
+   ↓
+Request
+   ↓
+Response
+   ↓
+Request
+   ↓
+Response
+One connection can be reused sequentially.
+HTTP/2 changes the model significantly.
+One TCP connection can carry multiple concurrent streams:
+             TCP Connection
+                   │
+       ┌───────────┼───────────┐
+       ▼           ▼           ▼
+   Stream 1    Stream 2    Stream 3
+   Request A   Request B   Request C
+So HTTP/2 introduces multiplexing.
+This drastically changes connection-pool design.
+We will cover this later rather than mixing it into today's lesson.
+________________________________________
+17.40 Important distinction
+Don't confuse:
+Keep-alive
+with:
+Connection pooling
+They're related but not identical.
+Keep-alive
+Means:
+Don't close the connection after one request/response.
+Connection pooling
+Means:
+Maintain reusable connections as managed resources and allow multiple requests to acquire/release them.
+A pool generally relies on persistent connections, but pooling is the broader resource-management mechanism.
+________________________________________
+17.41 Performance summary
+Connection reuse gives us:
+Less TCP handshake overhead
+Less TLS handshake overhead
+Less socket creation
+Less connection churn
+Lower latency
+Higher throughput
+But introduces:
+Pool management
+Stale connections
+Idle connection cleanup
+Pool exhaustion
+Resource limits
+Fairness issues
+Failure handling
+So once again:
+Optimization
+     ↓
+new complexity
+That's a recurring theme throughout system design.
+________________________________________
+17.42 Production mental model
+At this point, visualize the proxy like this:
+                         REVERSE PROXY
+                               │
+                 ┌─────────────┴─────────────┐
+                 │                           │
+             Client Side                Backend Side
+                 │                           │
+         Client connections            Connection pools
+                 │                           │
+                 │                   ┌───────┼───────┐
+                 │                   ▼       ▼       ▼
+                 │                 Pool A  Pool B  Pool C
+                 │                   │
+                 │                 C1 C2 C3
+                 │
+                 └─────────────┬─────────────┘
+                               │
+                          Event Loop
+                               │
+                             epoll
+And each backend connection has a lifecycle:
+CREATE
+  ↓
+CONNECT
+  ↓
+IDLE
+  ↓
+ACQUIRE
+  ↓
+ACTIVE
+  ↓
+RELEASE
+  ↓
+IDLE
+  ↓
+TIMEOUT / ERROR
+  ↓
+CLOSE
+________________________________________
+17.43 The deeper lesson
+Connection pooling isn't really about HTTP.
+It's about expensive resources with limited capacity.
+The pattern appears everywhere:
+TCP connections
+Database connections
+Threads
+File descriptors
+Memory buffers
+GPU workers
+Connection pools
+The general design problem is:
+How many resources should we create, how do we reuse them, and what happens when demand exceeds capacity?
+That question will repeatedly appear throughout our system-design journey.
+________________________________________
+17.44 What you should be able to reason about now
+Suppose someone says:
+"Our service has high latency. Increase the HTTP connection pool from 100 to 1000."
+You should not immediately agree.
+You should ask:
+Why is latency high?
+
+Is the pool exhausted?
+
+Are connections actually being reused?
+
+Is the backend slow?
+
+Is the DB slow?
+
+Are connections waiting?
+
+Are stale connections causing failures?
+
+Is the backend itself limited to 200 connections?
+
+Are we creating too many concurrent requests?
+
+Is there a queue forming?
+
+What's the downstream bottleneck?
+That is the mindset we're building.
+________________________________________
+Lesson 17 — Core takeaway
+Remember this chain:
+New connection per request
+        ↓
+TCP/TLS establishment overhead
+        ↓
+High latency + connection churn
+Therefore:
+Keep-alive
+        ↓
+Reuse TCP connections
+        ↓
+Connection Pool
+        ↓
+Acquire → Use → Release
+        ↓
+Limit resources
+        ↓
+Idle timeout + max lifetime
+        ↓
+Handle stale connections
+        ↓
+Handle pool exhaustion
+And the most important production insight:
+A connection pool is not just a performance optimization. It is a concurrency-control and resource-protection mechanism.
+________________________________________
+Next Lesson — 18
+Reverse Proxy — Load Balancing Algorithms Internals
+Now we have a pool of backend connections. The next question naturally follows:
+When there are multiple backend servers, how does the proxy decide where each request goes?
+We'll go internally through:
+Backend pool
+     ↓
+Round Robin
+     ↓
+Weighted Round Robin
+     ↓
+Least Connections
+     ↓
+Weighted Least Connections
+     ↓
+Random
+     ↓
+Hash-based routing
+     ↓
+Health-aware selection
+     ↓
+Connection reuse interaction
+     ↓
+Why "least connections" can be misleading
+     ↓
+Algorithm complexity
+     ↓
+Real production trade-offs
+Then we'll be in a strong position to finish the Load Balancer + Reverse Proxy portion and move to API Gateway, without repeating the networking foundation.
+next
+System Design — Lesson 18
+Load Balancing Algorithms Internals
+We now have the reverse proxy's backend connection pool.
+The next problem is:
+When multiple backend instances can serve the request, how does the proxy decide which one gets it?
+Example:
+                         Reverse Proxy
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+          Server A        Server B        Server C
+          10.0.0.11       10.0.0.12       10.0.0.13
+The decision made here is the load-balancing algorithm.
+________________________________________
+18.1 First: what are we actually balancing?
+Don't think:
+"We are balancing requests."
+More accurately, we're trying to balance work.
+These are not necessarily equivalent.
+Consider:
+Request A → 2 ms
+Request B → 2 ms
+Request C → 10 seconds
+Three requests don't represent equal amounts of work.
+If we send:
+A → Server 1
+B → Server 2
+C → Server 3
+the request count looks perfectly balanced:
+A: 1 request
+B: 1 request
+C: 1 request
+But the actual workload is not balanced.
+That distinction will explain many of the limitations of simple algorithms.
+________________________________________
+18.2 Algorithm #1 — Round Robin
+The simplest approach:
+A → B → C → A → B → C → ...
+Suppose we have:
+Servers:
+A
+B
+C
+Requests:
+R1 → A
+R2 → B
+R3 → C
+R4 → A
+R5 → B
+R6 → C
+The algorithm is essentially:
+index = (index + 1) % numberOfServers
+For 3 servers:
+0 → 1 → 2 → 0 → 1 → 2
+________________________________________
+18.3 Internal data structure
+We could maintain:
+List<Backend> servers;
+
+AtomicInteger index;
+Conceptually:
+servers
+┌───────┬───────┬───────┐
+│   A   │   B   │   C   │
+└───────┴───────┴───────┘
+    0       1       2
+
+index = 1
+Next request:
+server = servers[index]
+index = (index + 1) % servers.size()
+Complexity:
+Selection = O(1)
+Memory    = O(N)
+Extremely cheap.
+________________________________________
+18.4 But concurrency creates a problem
+A real reverse proxy isn't handling requests sequentially.
+Imagine:
+Thread 1 → request
+Thread 2 → request
+Thread 3 → request
+Thread 4 → request
+All access the same:
+index
+If we do:
+index++;
+naively, we can get races.
+So the actual implementation needs some form of atomicity.
+For example:
+AtomicInteger index;
+or another concurrency-safe mechanism.
+But there's a deeper issue:
+Do we even want a global shared counter?
+At enormous throughput, contention around shared state can matter.
+So production implementations may use more sophisticated approaches.
+________________________________________
+18.5 Round Robin's hidden assumption
+Round Robin assumes roughly:
+Server A ≈ Server B ≈ Server C
+in capability.
+Suppose:
+A = 16 CPU cores
+B = 16 CPU cores
+C = 4 CPU cores
+Round Robin still gives:
+A → 1
+B → 1
+C → 1
+That's not necessarily fair.
+So we introduce:
+Weighted Round Robin
+________________________________________
+18.6 Weighted Round Robin
+Assign capacities:
+A = weight 5
+B = weight 3
+C = weight 2
+Total:
+5 + 3 + 2 = 10
+Approximately:
+A → 50%
+B → 30%
+C → 20%
+One conceptual sequence could be:
+A A A A A B B B C C
+Then repeat.
+This lets us account for different server capacities.
+________________________________________
+18.7 Why this is still imperfect
+Suppose:
+A = powerful server
+B = powerful server
+C = powerful server
+but:
+A → database is slow
+B → database is fast
+C → database is fast
+Static weights don't know that.
+The actual server condition changes dynamically.
+This leads us to:
+Least Connections
+________________________________________
+18.8 Least Connections
+Instead of counting how many requests have been assigned:
+A = 20 active connections
+B = 5 active connections
+C = 12 active connections
+send the next request to:
+B
+because:
+5 < 12 < 20
+Conceptually:
+Request
+   ↓
+Check active connections
+   ↓
+A: 20
+B: 5   ← choose
+C: 12
+________________________________________
+18.9 Why might this be better?
+Consider:
+Round Robin:
+
+A → R1
+B → R2
+C → R3
+A → R4
+B → R5
+C → R6
+But suppose:
+A has 100 active requests
+B has 10
+C has 20
+Round Robin doesn't care.
+Least Connections says:
+Choose B
+because B currently has less active work.
+________________________________________
+18.10 But here's the subtle problem
+"Number of connections" is not the same as "amount of work."
+Suppose:
+A = 5 connections
+B = 5 connections
+But:
+A's requests = 2 ms each
+B's requests = 5 seconds each
+Connection count says:
+A = B
+Actual workload says:
+B >> A
+So Least Connections is only an approximation of load.
+This is a very important system-design lesson:
+The metric you optimize is only a proxy for the thing you actually care about.
+________________________________________
+18.11 Connection vs request
+This becomes particularly important with HTTP keep-alive.
+Suppose:
+Server A
+1 persistent connection
+That connection can carry many requests over time.
+So:
+1 connection ≠ 1 request
+And with HTTP/2:
+1 connection
+    ↓
+many concurrent streams
+Therefore, simple connection counting becomes even less representative.
+________________________________________
+18.12 Why HTTP/2 changes the problem
+With HTTP/1.1:
+Connection
+   └── request/response
+With HTTP/2:
+Connection
+   ├── Stream 1
+   ├── Stream 2
+   ├── Stream 3
+   └── Stream 4
+So:
+connections = 3
+doesn't tell us how much work each backend is doing.
+One backend might have:
+3 connections
+300 active streams
+another:
+3 connections
+10 active streams
+A load balancer that only sees connections can make poor decisions.
+________________________________________
+18.13 Random selection
+Another strategy:
+Randomly choose A, B, or C
+Why use something apparently dumb?
+Because it can be surprisingly effective.
+For many independent requests, random selection naturally distributes traffic approximately evenly.
+Conceptually:
+random(0, N-1)
+Selection:
+O(1)
+No global round-robin counter required.
+________________________________________
+18.14 Power of Two Choices
+Now we get to a very interesting algorithm.
+Instead of checking every server:
+A B C D E F G H
+choose two random servers.
+Suppose:
+Randomly select:
+C
+F
+Current loads:
+C = 17
+F = 4
+Choose:
+F
+That's called the Power of Two Choices approach.
+________________________________________
+18.15 Why only two?
+You might ask:
+Why not check all servers?
+Because with thousands of servers, scanning all of them for every request costs:
+O(N)
+But choosing two is:
+O(1)
+while still providing surprisingly good load distribution.
+This is an excellent example of distributed-system engineering:
+A small amount of approximate information can produce a very good result at much lower cost.
+________________________________________
+18.16 Least Connections implementation complexity
+Naively:
+for each backend:
+    find minimum connections
+That's:
+O(N)
+per request.
+If:
+N = 10
+no big deal.
+But:
+N = 10,000
+and:
+100,000 requests/sec
+you potentially perform enormous amounts of work.
+So production implementations need to think about:
+selection cost
+state updates
+concurrency
+________________________________________
+18.17 Can we use a heap?
+We could maintain:
+MinHeap
+ordered by active connections:
+         3
+       /   \
+      5     7
+     / \
+    9   10
+The root has the smallest load.
+Then:
+choose → root
+update load → heapify
+Complexity:
+select = O(1)
+update = O(log N)
+But concurrency becomes more complicated.
+Multiple requests simultaneously changing connection counts mean the heap needs synchronization or a more sophisticated concurrent design.
+Again:
+An algorithm that looks simple on paper becomes complicated under concurrency.
+________________________________________
+18.18 Health checks enter the picture
+Suppose:
+A = healthy
+B = healthy
+C = DEAD
+Round Robin doesn't inherently know that.
+Without health awareness:
+A → request succeeds
+B → request succeeds
+C → request fails
+A → succeeds
+B → succeeds
+C → fails
+Terrible.
+So the load balancer needs health information.
+________________________________________
+18.19 Active health checks
+The load balancer can periodically send:
+GET /health
+to each backend.
+For example:
+Every 5 seconds:
+
+LB → A /health → 200
+LB → B /health → 200
+LB → C /health → timeout
+Then:
+C = unhealthy
+and the load balancer removes it from selection.
+________________________________________
+18.20 But health checks introduce another problem
+Suppose:
+10,000 backend instances
+and you check every:
+5 seconds
+That's:
+10,000 / 5
+= 2,000 health checks/sec
+That's significant traffic.
+And if each health check involves:
+HTTP
+TLS
+authentication
+database checks
+it can become expensive.
+Therefore health checks themselves need careful design.
+________________________________________
+18.21 Liveness vs readiness
+A backend may be:
+process alive
+but:
+unable to serve traffic
+Example:
+Java process = alive
+HTTP server = alive
+Database = unavailable
+If /health returns:
+200 OK
+but the service can't actually process requests, the load balancer keeps sending traffic to it.
+So production systems often distinguish between:
+Liveness
+Readiness
+Conceptually:
+Liveness:
+"Am I alive?"
+
+Readiness:
+"Can I accept traffic?"
+This distinction becomes particularly important in containerized environments.
+________________________________________
+18.22 Failure detection isn't instantaneous
+Suppose server C crashes at:
+10:00:00
+Health check runs every:
+5 seconds
+The LB might not discover failure until:
+10:00:00 → 10:00:05
+During that period:
+some requests → C → failure
+So load balancing is fundamentally dealing with imperfect information.
+The system doesn't know reality instantly.
+That's a recurring distributed-system problem.
+________________________________________
+18.23 Health check state machine
+Conceptually:
+               healthy
+                  │
+              failures
+                  ▼
+              SUSPECT
+                  │
+            more failures
+                  ▼
+             UNHEALTHY
+                  │
+            successful checks
+                  ▼
+               HEALTHY
+Real systems may use thresholds.
+For example:
+3 consecutive failures
+→ unhealthy
+and:
+2 consecutive successes
+→ healthy
+Why?
+To avoid flapping.
+________________________________________
+18.24 What is flapping?
+Suppose a server alternates:
+healthy
+failure
+healthy
+failure
+healthy
+If the LB immediately changes state every time:
+traffic → server
+traffic → removed
+traffic → server
+traffic → removed
+the system becomes unstable.
+So health systems use:
+failure thresholds
+success thresholds
+timeouts
+cooldown periods
+to stabilize decisions.
+________________________________________
+18.25 Weighted Least Connections
+We can combine:
+server capacity
++
+current load
+Suppose:
+A = powerful
+B = medium
+C = weak
+and current connections:
+A = 20
+B = 10
+C = 5
+Raw least connections picks:
+C
+But perhaps C's capacity is only 25% of A's.
+A weighted algorithm may normalize the load against capacity.
+Conceptually:
+effective load =
+active connections / capacity weight
+Then compare normalized load.
+The exact implementation differs between systems, but the principle matters.
+________________________________________
+18.26 Sticky sessions
+Now we encounter a different requirement.
+Suppose:
+User A → Server 1
+and the user's session lives only in:
+Server 1 memory
+If the next request goes to:
+Server 2
+the session may disappear.
+So we could use:
+User A → Server 1
+User A → Server 1
+User A → Server 1
+This is session affinity / sticky sessions.
+________________________________________
+18.27 Why sticky sessions are dangerous
+Imagine:
+Server 1
+1000 users
+while:
+Server 2
+100 users
+If those users are sticky:
+Server 1 = overloaded
+Server 2 = mostly idle
+The load balancer can't freely redistribute traffic.
+Sticky sessions reduce flexibility.
+A better architecture is often:
+Application
+   ↓
+Shared session store
+   ↓
+Redis / database
+Then any backend can handle the request.
+We'll eventually connect this directly to Redis.
+________________________________________
+18.28 Hash-based routing
+Another approach:
+hash(userId) % numberOfServers
+For example:
+hash("user123") % 3 = 1
+so:
+user123 → Server B
+This provides deterministic routing.
+But there's a huge problem.
+Suppose we add a server:
+A
+B
+C
+
+add D
+Now:
+hash(userId) % 3
+becomes:
+hash(userId) % 4
+A huge percentage of users may map to different servers.
+This is why consistent hashing exists.
+We'll study it deeply later.
+________________________________________
+18.29 Load balancing is not one algorithm
+A production LB often combines multiple mechanisms:
+                  Load Balancer
+                       │
+              ┌────────┴────────┐
+              ▼                 ▼
+         Health status       Backend set
+              │                 │
+              └────────┬────────┘
+                       ▼
+                Selection policy
+                       │
+        ┌──────────────┼───────────────┐
+        ▼              ▼               ▼
+    Round Robin   Least Load       Hashing
+The actual decision might consider:
+health
+capacity
+connections
+latency
+zone
+region
+weights
+session affinity
+routing rules
+________________________________________
+18.30 The most important conceptual distinction
+There are two fundamentally different kinds of load balancing:
+Static
+"Assume server capacity is known."
+Examples:
+Round Robin
+Weighted Round Robin
+Dynamic
+"Observe current server state."
+Examples:
+Least Connections
+Latency-aware routing
+Load-aware routing
+Static algorithms are:
+simple
+cheap
+predictable
+Dynamic algorithms can be:
+more adaptive
+more expensive
+more complex
+dependent on accurate information
+________________________________________
+18.31 Why latency-aware routing is interesting
+Suppose:
+A → average latency = 20ms
+B → average latency = 50ms
+C → average latency = 200ms
+We could prefer A.
+But why is C at 200 ms?
+Maybe:
+C is overloaded
+or:
+C has slower hardware
+or:
+C is geographically farther away
+or:
+C's database is degraded
+So latency can be a useful signal.
+But latency itself is noisy.
+A single slow request shouldn't necessarily make a server "bad."
+Therefore real systems use:
+rolling averages
+percentiles
+EWMA
+thresholds
+rather than simplistic instantaneous values.
+We'll revisit this when discussing resilience.
+________________________________________
+18.32 Why p99 matters
+Suppose:
+Server A:
+average = 20 ms
+p99 = 2 seconds
+
+Server B:
+average = 30 ms
+p99 = 50 ms
+Average latency says:
+A is better
+But tail latency says:
+B is much more predictable
+At scale, tail latency can dominate user experience.
+This is why production load balancing can involve much more than average response time.
+________________________________________
+18.33 A simplified decision pipeline
+A useful production mental model is:
+Request
+   ↓
+Determine backend cluster
+   ↓
+Remove unhealthy instances
+   ↓
+Apply routing constraints
+   ↓
+Choose selection algorithm
+   ↓
+Choose backend
+   ↓
+Acquire/reuse connection
+   ↓
+Send request
+Notice the order.
+We don't want to choose:
+dead backend
+and only afterward discover it's dead.
+________________________________________
+18.34 What happens if all servers are unhealthy?
+This is an important failure case.
+A = unhealthy
+B = unhealthy
+C = unhealthy
+Possible policies:
+fail immediately
+return 503
+try unhealthy nodes anyway
+fallback to another cluster
+fail over to another region
+There is no universal answer.
+It depends on the system.
+For a payment service, failing safely may be preferable.
+For a read-only system, stale data from another region might be acceptable.
+This is system design, not an algorithm problem.
+________________________________________
+18.35 Load balancer + connection pool interaction
+This connects directly to Lesson 17.
+Suppose:
+Backend A
+Pool = 100 connections
+
+Backend B
+Pool = 100 connections
+If the LB sends all requests to A:
+A pool → exhausted
+B pool → idle
+So selection strategy directly affects pool utilization.
+This is why:
+Load balancing
++
+Connection pooling
+cannot always be treated as independent components.
+________________________________________
+18.36 A practical comparison
+Algorithm	Cost	Adapts to load?	Main weakness
+Round Robin	O(1)	No	Ignores actual work
+Weighted RR	O(1)	No	Static weights
+Random	O(1)	No	Approximate distribution
+Least Connections	O(N) naive	Yes	Connection count ≠ work
+Power of 2	O(1)	Partially	Approximation
+Hashing	O(1)	No	Rebalancing problem
+Consistent Hashing	~O(log N) lookup depending on structure	No	More complex
+The exact complexity of production implementations can vary with data structures.
+________________________________________
+18.37 The deeper engineering principle
+You should now see a pattern:
+Round Robin
+    ↓
+cheap but ignorant
+
+Least Connections
+    ↓
+more information
+
+Latency-aware
+    ↓
+even more information
+
+Full load-aware routing
+    ↓
+more accurate
+but more state + complexity
+So we're always trading:
+simplicity
+     ↕
+intelligence
+and:
+low overhead
+     ↕
+better decisions
+There is no universally "best" load-balancing algorithm.
+________________________________________
+18.38 Senior-level reasoning
+Suppose someone asks:
+"Which load-balancing algorithm should we use?"
+Don't answer:
+"Least Connections."
+Instead ask:
+Are servers identical?
+
+Are request costs similar?
+
+Are requests short or long-lived?
+
+HTTP/1.1 or HTTP/2?
+
+Do we have sticky sessions?
+
+Do servers have different capacities?
+
+How frequently does load change?
+
+How many backend instances exist?
+
+What's the cost of maintaining load information?
+
+Can we tolerate approximate decisions?
+
+Do we need zone/region awareness?
+Then choose the algorithm.
+That is senior-level thinking.
+________________________________________
+18.39 One final mental model
+Think of a load balancer as an online decision-maker operating with incomplete information.
+Every request:
+                 Request
+                    │
+                    ▼
+        ┌─────────────────────────┐
+        │ What do I know?         │
+        │                         │
+        │ health                  │
+        │ connections             │
+        │ weights                 │
+        │ latency                 │
+        │ topology                │
+        │ affinity                │
+        └────────────┬────────────┘
+                     ▼
+                Decision
+                     │
+                     ▼
+                  Backend
+The difficulty isn't selecting A, B, or C.
+The difficulty is:
+What information should the load balancer use to make that decision, how expensive is it to obtain, and how accurate does it need to be?
+That's the real load-balancing problem.
+________________________________________
+Lesson 18 checkpoint
+You should now understand:
+Round Robin
+Weighted Round Robin
+Least Connections
+Random
+Power of Two Choices
+Health-aware routing
+Sticky sessions
+Hash-based routing
+Latency-aware routing
+And more importantly:
+Load balancing
+      ↕
+Connection pooling
+      ↕
+Health checks
+      ↕
+Concurrency
+      ↕
+Latency
+      ↕
+Capacity
+These aren't isolated features.
+They're interacting mechanisms.
+________________________________________
+Next Lesson — 19
+Load Balancer: Health Checks, Failure Detection & Backend Removal Internals
+We'll go deeper into the part that makes a load balancer production-grade:
+Active vs passive health checks
+Heartbeat
+Timeout
+Failure thresholds
+Success thresholds
+Healthy → unhealthy state transitions
+Unhealthy → healthy recovery
+Flapping
+Slow backend
+Partial failure
+Connection failure
+Health-check storms
+Graceful backend shutdown
+Connection draining
+Zero-downtime deployment
+
+
