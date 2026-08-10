@@ -654,3 +654,7387 @@ Then we'll answer questions such as:
 •	Why does HTTP/2 change the load-balancing problem? 
 •	Why can a "stateless" LB still have state? 
 
+Load Balancer — Lesson 2: What Actually Happens to a Request?
+Now we're going below HTTP.
+Our goal is to understand what physically/logically happens between:
+Client
+   ↓
+Load Balancer
+   ↓
+Java Application
+We'll start with the simplest case:
+Client ────────► L4 Load Balancer ────────► Java Server
+No API Gateway. No service mesh. No Kafka. Just networking.
+________________________________________
+1. Start with the client
+You write:
+https://api.example.com/orders/123
+Your application doesn't initially know:
+10.10.2.15
+It knows a hostname:
+api.example.com
+So the first thing that happens is DNS resolution.
+Conceptually:
+Client
+   |
+   | "What IP is api.example.com?"
+   v
+DNS
+   |
+   | 203.0.113.10
+   v
+Client
+The returned IP might represent the load-balancing frontend, not your Java server.
+So:
+203.0.113.10
+could be:
+                 Public Internet
+                       |
+                       v
+               203.0.113.10
+                       |
+                Load Balancer
+                       |
+              ┌────────┼────────┐
+              ▼        ▼        ▼
+            App A    App B    App C
+This distinction is extremely important.
+The public IP doesn't have to belong to your application.
+________________________________________
+2. Now TCP enters the picture
+Suppose the client got:
+203.0.113.10
+and the service uses HTTPS:
+port 443
+The client needs a TCP connection.
+The TCP handshake is approximately:
+Client                         LB
+  |                             |
+  | -------- SYN -------------> |
+  |                             |
+  | <------- SYN-ACK ---------- |
+  |                             |
+  | -------- ACK -------------> |
+  |                             |
+  |       TCP established       |
+Now we have:
+Client
+   │
+   │ TCP connection
+   ▼
+Load Balancer
+Notice something:
+At this moment, we haven't sent the HTTP request yet.
+TCP is underneath HTTP.
+This distinction matters enormously.
+________________________________________
+3. Now HTTPS/TLS happens
+After TCP is established, TLS negotiation happens.
+Conceptually:
+Client
+   │
+   │ TCP
+   ▼
+LB
+   │
+   │ TLS handshake
+   ▼
+LB
+Eventually we have an encrypted channel.
+Then:
+GET /orders/123 HTTP/1.1
+Host: api.example.com
+travels inside the TLS connection.
+Now here's the first major architectural fork.
+________________________________________
+4. Does the Load Balancer understand /orders/123?
+Depends.
+L4 Load Balancer
+At Layer 4, it primarily works with:
+IP
+TCP
+UDP
+ports
+connections
+It doesn't necessarily need to understand:
+GET /orders/123
+or:
+Host: api.example.com
+or:
+Authorization: Bearer ...
+It can make decisions based on lower-level connection information.
+________________________________________
+L7 Load Balancer
+An L7 load balancer can understand HTTP-level information:
+GET /orders/123
+Host: api.example.com
+Cookie: ...
+Now it can make decisions such as:
+/api/orders/*    → Order service
+
+/api/payments/*  → Payment service
+So:
+L4
+ ↓
+"I know this is TCP traffic."
+
+L7
+ ↓
+"I know this is an HTTP request for /orders/123."
+That's a massive conceptual difference.
+________________________________________
+5. The really important question
+Suppose:
+Client
+   |
+   | TCP connection #1
+   |
+   v
+Load Balancer
+   |
+   | ???
+   |
+   v
+Java Server
+How does the LB communicate with the Java server?
+This is where many developers have an incomplete mental model.
+In many proxy-style architectures, you effectively have:
+Client                    Load Balancer              Server
+  │                              │                      │
+  │──── TCP connection #1 ──────►│                      │
+  │                              │──── TCP connection #2 ─────►
+  │                              │                      │
+  │                              │                      │
+There can be two separate connections:
+Connection #1:
+
+Client
+   │
+   └──────────────► LB
+
+
+Connection #2:
+
+LB
+   │
+   └──────────────► Backend
+The LB sits in the middle.
+This is why a proxy/load balancer can perform operations such as:
+TLS termination
+connection management
+backend selection
+timeouts
+health checks
+header manipulation
+depending on its architecture and layer.
+________________________________________
+6. Why two connections matter
+Imagine:
+Client → LB
+has:
+100ms latency
+while:
+LB → Java Server
+has:
+2ms latency
+The LB is essentially acting as a middleman between two network relationships.
+This means it can potentially terminate one connection and establish another.
+For example:
+Client
+   |
+   | HTTPS
+   v
+LB
+   |
+   | HTTP
+   v
+Java
+That is:
+Client ──TLS──► LB ──HTTP──► Java
+The LB terminates TLS.
+This is commonly called:
+TLS termination
+Why might we want that?
+Because instead of every Java instance individually handling public TLS connections:
+Internet
+   |
+   ├── TLS → Java A
+   ├── TLS → Java B
+   ├── TLS → Java C
+   ├── TLS → Java D
+   └── TLS → Java E
+we can terminate TLS at the edge:
+Internet
+       |
+       | HTTPS
+       v
+      LB
+       |
+       | HTTP
+       v
+   Private network
+       |
+   ┌───┼────┐
+   ▼   ▼    ▼
+  A    B    C
+But this creates a security question:
+Is HTTP between LB and Java acceptable?
+Often not.
+Instead:
+Client
+   |
+   | HTTPS
+   v
+LB
+   |
+   | HTTPS
+   v
+Java
+Now there are two TLS relationships.
+TLS #1
+Client ↔ LB
+
+TLS #2
+LB ↔ Java
+That's called TLS re-encryption / TLS passthrough patterns, depending on exactly where termination occurs.
+________________________________________
+7. Now let's talk about the source IP
+Suppose the real client is:
+Client IP = 49.205.10.25
+The request reaches:
+Load Balancer
+and the LB forwards it to:
+10.0.1.25
+What does the Java application see as the client IP?
+Potentially:
+10.0.1.100
+—the LB's address.
+Why?
+Because from the backend's perspective, the immediate network peer may be the LB.
+So:
+Real client:
+
+49.205.10.25
+
+LB:
+
+10.0.0.10
+
+Java:
+
+10.0.1.25
+The Java server might see:
+source = 10.0.0.10
+instead of:
+49.205.10.25
+But applications often need the original client IP.
+For example:
+Rate limiting
+Audit logs
+Security
+Fraud detection
+Geo location
+So the proxy can communicate the original address using mechanisms such as HTTP forwarding headers.
+For HTTP, a common pattern is:
+X-Forwarded-For: 49.205.10.25
+Or standardized forwarding mechanisms can be used.
+Your Spring application may then have:
+remoteAddress
+representing the proxy while a forwarded header carries the original client address.
+Important production lesson
+Never blindly trust:
+X-Forwarded-For
+from arbitrary internet clients.
+Your infrastructure should define which proxies are trusted to set/append forwarding information.
+Otherwise an attacker can potentially send:
+X-Forwarded-For: 127.0.0.1
+and fool poorly configured application logic.
+________________________________________
+8. NAT enters the story
+Now we need to understand something called NAT — Network Address Translation.
+Imagine:
+Client:
+
+49.205.10.25:52144
+connects to:
+LB:
+
+203.0.113.10:443
+At some point the LB needs to send traffic toward:
+Backend:
+
+10.0.1.25:8080
+The network may perform address/port translation.
+Conceptually:
+49.205.10.25:52144
+          |
+          v
+203.0.113.10:443
+          |
+          v
+10.0.1.25:8080
+The exact implementation differs depending on the load balancer architecture.
+But the important mental model is:
+Network addresses and ports can be translated as traffic crosses network boundaries.
+________________________________________
+9. Connection tracking
+Now we're approaching something really interesting.
+Suppose 100,000 clients are connected.
+The LB needs to keep track of which connection belongs to which backend.
+Conceptually, it may have state resembling:
+Client connection
+        ↓
+10.20.30.40:52144
+        ↓
+Backend
+        ↓
+10.0.1.25:8080
+Another:
+10.20.30.41:61232
+        ↓
+10.0.1.26:8080
+And so on.
+Conceptually:
+┌──────────────────────────────────────────┐
+│ Connection Table                          │
+├──────────────────────────────────────────┤
+│ Client            Backend                 │
+│ 10.20.30.40:52144 → 10.0.1.25:8080      │
+│ 10.20.30.41:61232 → 10.0.1.26:8080      │
+│ 10.20.30.42:44210 → 10.0.1.25:8080      │
+└──────────────────────────────────────────┘
+This is a major insight:
+A "stateless" load-balancing architecture can still have connection state.
+Why?
+Because packets belonging to an established flow need to be associated correctly.
+________________________________________
+10. Why this state matters
+Suppose the first packet goes:
+Client → A
+Then the next packet somehow goes:
+Client → B
+That's potentially disastrous.
+The connection's traffic needs to remain associated with the right flow/backend depending on the LB design.
+So a flow can conceptually be represented by something like:
+Source IP
+Source Port
+Destination IP
+Destination Port
+Protocol
+This is commonly called the 5-tuple:
+(src IP,
+ src port,
+ dst IP,
+ dst port,
+ protocol)
+For example:
+49.205.10.25
+52144
+203.0.113.10
+443
+TCP
+That combination identifies a TCP flow.
+________________________________________
+11. This gives us a new understanding of "load balancing"
+The LB isn't necessarily choosing a backend for every packet independently.
+It may choose a backend when a new flow/connection is established:
+New flow
+   ↓
+Select backend
+   ↓
+Remember mapping
+   ↓
+Subsequent packets
+   ↓
+Same backend
+Conceptually:
+                    New connection
+                          │
+                          ▼
+                 Backend selection
+                          │
+              ┌───────────┼───────────┐
+              ▼           ▼           ▼
+              A           B           C
+                          │
+                          ▼
+                    Mapping stored
+This distinction becomes crucial when we study:
+•	connection persistence 
+•	TCP 
+•	HTTP keep-alive 
+•	HTTP/2 
+•	WebSockets 
+•	sticky sessions 
+________________________________________
+12. Now consider HTTP keep-alive
+Suppose the client sends:
+GET /users/1
+GET /users/2
+GET /users/3
+It doesn't necessarily establish three TCP connections.
+With connection reuse:
+Client
+   |
+   | TCP connection
+   |
+   +── GET /users/1
+   +── GET /users/2
+   +── GET /users/3
+   |
+   v
+LB
+One TCP connection can carry multiple HTTP requests.
+This means a load balancer may make a backend decision based on:
+connection
+rather than independently distributing:
+request #1 → A
+request #2 → B
+request #3 → C
+This is an extremely important distinction.
+________________________________________
+13. HTTP/2 makes it even more interesting
+HTTP/1.1:
+TCP connection
+   |
+   ├── Request 1
+   ├── Request 2
+   └── Request 3
+HTTP/2 introduces multiplexing.
+Conceptually:
+One TCP connection
+        |
+        ├──── Stream 1 → /orders
+        ├──── Stream 2 → /users
+        ├──── Stream 3 → /payments
+        └──── Stream 4 → /products
+So now:
+ONE TCP CONNECTION
+        |
+        +-- MANY concurrent HTTP streams
+That has major consequences for load balancing.
+Suppose:
+Client
+   |
+   | HTTP/2 connection
+   v
+LB
+   |
+   v
+Backend A
+You don't necessarily get:
+Stream 1 → A
+Stream 2 → B
+Stream 3 → C
+just because the HTTP requests are separate.
+Depending on architecture, the connection-level mapping can strongly influence where those streams go.
+This is one reason connection-level balancing and request-level balancing are not the same problem.
+We'll explore this much deeper later.
+________________________________________
+14. The failure case
+Now let's break the system.
+We have:
+Client
+   |
+   v
+LB
+   |
+   v
+Backend A
+Client sends:
+GET /orders/123
+The LB forwards it to A.
+Then:
+Backend A crashes
+What happens?
+It depends on exactly where the failure occurs.
+Case 1 — Backend dies before request
+LB can potentially detect failure and route future connections elsewhere.
+A ❌
+B ✓
+C ✓
+
+new connection → B
+Easy.
+Case 2 — Backend dies while processing
+Client
+   |
+   v
+LB
+   |
+   v
+A
+   |
+   X
+ crash
+Now what?
+The LB may detect that the backend connection failed.
+But should it automatically send the same request to B?
+Danger.
+Suppose the request was:
+POST /payments
+Maybe A successfully processed the payment:
+Payment charged ✓
+and then crashed before responding.
+LB doesn't necessarily know whether the business operation succeeded.
+If it blindly retries:
+POST /payments
+against B:
+Payment charged AGAIN ❌
+This is exactly why load balancing is connected to:
+Idempotency
+Retry
+Exactly-once vs at-least-once
+Distributed transactions
+Those are later modules in your course.
+________________________________________
+15. This is a huge system-design lesson
+Infrastructure-level retry doesn't automatically mean:
+"Safe to retry."
+Because the network doesn't necessarily know the business semantics of the operation.
+For example:
+GET /users/123
+is usually much easier to retry safely.
+But:
+POST /payments
+may not be.
+So the architecture eventually needs:
+Load Balancer
+      ↓
+Timeout
+      ↓
+Retry?
+      ↓
+Idempotency?
+      ↓
+Business semantics
+This is why senior system design isn't about memorizing components.
+It's about understanding how failure propagates between components.
+________________________________________
+16. Let's pause and build the mental model
+You should now see the request roughly like this:
+                         DNS
+                          │
+                          ▼
+                    LB Public IP
+                          │
+                          ▼
+                   TCP connection
+                          │
+                          ▼
+                    TLS handshake
+                          │
+                          ▼
+                    HTTP request
+                          │
+                          ▼
+                 Load Balancer
+                          │
+                   backend selection
+                          │
+                          ▼
+                 Backend connection
+                          │
+                          ▼
+                  Java application
+And underneath that:
+Client IP
+Source port
+Destination IP
+Destination port
+Protocol
+        ↓
+      5-tuple
+        ↓
+   Flow / connection
+        ↓
+Backend mapping
+________________________________________
+17. The next question is where things get really deep
+We now know what the LB needs to do.
+Next we need to understand how it does it efficiently.
+Imagine:
+1,000,000 concurrent connections
+The LB can't simply do:
+while (true) {
+    acceptConnection();
+    new Thread(() -> handleConnection());
+}
+That would be a terrible design at large scale.
+Instead, high-performance network servers commonly use concepts like:
+Event loops
+Non-blocking I/O
+epoll / kqueue
+Connection tables
+Socket buffers
+Kernel networking
+User space vs kernel space
+Zero-copy techniques
+CPU affinity
+Load distribution across cores
+And suddenly our Java background becomes very useful.
+For example:
+Java NIO
+   ↓
+Selector
+   ↓
+epoll (Linux)
+   ↓
+Kernel event notification
+This is the same family of ideas behind high-performance servers and networking frameworks such as Netty.
+________________________________________
+Next lesson: L4 Load Balancer Internals
+We'll take one connection and follow it all the way down:
+Client
+   ↓
+NIC
+   ↓
+Kernel
+   ↓
+TCP stack
+   ↓
+Socket
+   ↓
+Load Balancer
+   ↓
+Backend selection
+   ↓
+NAT / forwarding
+   ↓
+Backend NIC
+   ↓
+Backend kernel
+   ↓
+Java/Netty/Tomcat
+Then we'll answer the really important question:
+How can a machine handle hundreds of thousands or millions of network connections without creating one OS thread per connection?
+
+Load Balancer — Lesson 3: L4 Internals
+Now we go inside the machine.
+Forget Spring Boot for a moment.
+Forget HTTP.
+Forget REST.
+We want to understand what happens when a TCP packet arrives at a load balancer.
+Our mental model:
+Client
+   │
+   │ Ethernet/IP/TCP packet
+   ▼
+┌─────────────────────────────┐
+│      Load Balancer          │
+│                             │
+│ NIC                         │
+│  ↓                          │
+│ Kernel networking           │
+│  ↓                          │
+│ TCP / socket processing     │
+│  ↓                          │
+│ LB forwarding logic         │
+│  ↓                          │
+│ Backend selection           │
+└─────────────┬───────────────┘
+              │
+              │ packet
+              ▼
+         Backend Server
+The big question:
+How does this work efficiently when there are 100,000+ connections?
+________________________________________
+1. First: what is a packet?
+Suppose the client sends:
+GET /orders/123
+At the application level, you think:
+HTTP request
+But the network doesn't send "an HTTP request" as one magical object.
+It gets encapsulated.
+Conceptually:
+┌───────────────────────────────────┐
+│ Ethernet Frame                    │
+│  ┌─────────────────────────────┐  │
+│  │ IP Packet                   │  │
+│  │  ┌───────────────────────┐  │  │
+│  │  │ TCP Segment           │  │  │
+│  │  │  ┌─────────────────┐  │  │  │
+│  │  │  │ HTTP data       │  │  │  │
+│  │  │  └─────────────────┘  │  │  │
+│  │  └───────────────────────┘  │  │
+│  └─────────────────────────────┘  │
+└───────────────────────────────────┘
+This is encapsulation.
+Each layer adds its own information.
+For example:
+Ethernet
+Source MAC
+Destination MAC
+IP
+Source IP
+Destination IP
+TCP
+Source port
+Destination port
+Sequence number
+Acknowledgment number
+Flags
+Window
+HTTP
+GET /orders/123
+This layering is important because an L4 load balancer doesn't need to understand all the way up to HTTP.
+It can operate using:
+IP + TCP
+________________________________________
+2. Packet arrives at the NIC
+Imagine:
+Client:
+
+49.205.10.25:52144
+connects to:
+Load Balancer:
+
+203.0.113.10:443
+The physical/network interface receives an Ethernet frame.
+Conceptually:
+Internet
+   │
+   ▼
+┌──────────┐
+│   NIC    │
+└────┬─────┘
+     │
+     ▼
+Kernel networking
+The NIC is not your application.
+It's hardware.
+The OS kernel then processes the incoming network traffic.
+________________________________________
+3. Kernel networking stack
+Very simplified:
+NIC
+ ↓
+Driver
+ ↓
+Network stack
+ ↓
+Ethernet processing
+ ↓
+IP processing
+ ↓
+TCP processing
+ ↓
+Socket
+Eventually, the kernel determines:
+"This packet belongs to this TCP connection."
+That requires maintaining TCP state.
+________________________________________
+4. TCP isn't stateless
+This is crucial.
+Suppose:
+Client → LB
+has:
+Source IP      = 49.205.10.25
+Source port    = 52144
+Destination IP = 203.0.113.10
+Dest port      = 443
+Protocol       = TCP
+The connection isn't simply:
+OPEN
+TCP maintains state such as:
+Sequence numbers
+Acknowledgment numbers
+Receive window
+Send window
+Connection state
+Retransmission information
+Timers
+Conceptually:
+TCP Connection
+┌──────────────────────────────┐
+│ src IP                       │
+│ src port                     │
+│ dst IP                       │
+│ dst port                     │
+│ state                        │
+│ sequence state               │
+│ acknowledgment state         │
+│ window information           │
+│ timers                       │
+└──────────────────────────────┘
+So when we said earlier:
+"The load balancer has connection state."
+This is what we're getting at.
+________________________________________
+5. TCP's 3-way handshake
+Let's go deeper.
+Client wants to establish:
+Client → LB
+Client sends:
+SYN
+Conceptually:
+Client                        LB
+  │                            │
+  │ -------- SYN ------------> │
+  │                            │
+The SYN contains an initial sequence number.
+For example:
+ISN = 1000
+The LB responds:
+SYN + ACK
+Conceptually:
+Client                        LB
+  │                            │
+  │ -------- SYN ------------> │
+  │                            │
+  │ <------ SYN + ACK -------- │
+  │                            │
+Then:
+ACK
+Client                        LB
+  │                            │
+  │ -------- ACK ------------> │
+  │                            │
+Connection established.
+Client ◄══════════════════════► LB
+            TCP connection
+________________________________________
+6. Why sequence numbers matter
+Imagine a packet gets lost.
+Packet 1
+Packet 2
+Packet 3
+Maybe packet 2 disappears.
+The receiver can detect missing data through sequence/acknowledgment mechanisms.
+TCP can then retransmit.
+So TCP isn't:
+send(bytes)
+It's more like:
+send bytes
+↓
+assign sequence numbers
+↓
+transmit
+↓
+receive acknowledgments
+↓
+detect loss
+↓
+retransmit
+↓
+control congestion
+That means the LB isn't simply forwarding meaningless blobs.
+It may be participating in or observing a stateful transport protocol.
+________________________________________
+7. Now the load balancer has a major architectural choice
+Suppose:
+Client
+   │
+   ▼
+LB
+   │
+   ▼
+Backend A
+How does traffic move?
+There are several fundamentally different approaches.
+One common architecture is proxying:
+Client
+   │
+   │ TCP connection A
+   ▼
+LB
+   │
+   │ TCP connection B
+   ▼
+Backend
+The LB terminates the client-side TCP connection and creates another TCP connection toward the backend.
+Conceptually:
+                Load Balancer
+
+       TCP #1             TCP #2
+Client ══════════► LB ══════════► Backend
+The LB is now actively participating in both connections.
+________________________________________
+8. Another possibility: packet forwarding
+A high-performance L4 load balancer may instead forward/transform packets without behaving like a traditional full proxy at the application level.
+Conceptually:
+Client
+   │
+   │ packet
+   ▼
+LB
+   │
+   │ transformed/forwarded packet
+   ▼
+Backend
+Now the LB can operate much closer to the packet-processing layer.
+This distinction matters tremendously for performance.
+A traditional proxy might need:
+packet
+ ↓
+kernel
+ ↓
+socket
+ ↓
+user space
+ ↓
+LB logic
+ ↓
+socket
+ ↓
+kernel
+ ↓
+NIC
+while specialized architectures can reduce expensive transitions.
+________________________________________
+9. User space vs kernel space
+This is one of the most important concepts for understanding high-performance networking.
+Normally:
+Application
+    │
+    │ system call
+    ▼
+Kernel
+    │
+    ▼
+NIC
+The kernel controls networking.
+For example:
+Java application
+      |
+      | read()
+      v
+Linux kernel
+      |
+      v
+Network stack
+      |
+      v
+NIC
+Why does the kernel do this?
+Because it manages:
+process isolation
+memory protection
+networking
+files
+sockets
+TCP/IP
+hardware
+But crossing between user space and kernel space isn't free.
+At massive packet rates, overhead matters.
+________________________________________
+10. Why normal proxying can become expensive
+Imagine:
+1,000,000 packets/sec
+A traditional path could involve:
+NIC
+ ↓
+Kernel
+ ↓
+Socket buffer
+ ↓
+User-space process
+ ↓
+LB logic
+ ↓
+Kernel
+ ↓
+NIC
+There can be:
+system calls
+memory copies
+context transitions
+locking
+cache misses
+At enough scale, these become significant.
+That's why high-performance networking systems use increasingly sophisticated techniques.
+________________________________________
+11. Event-driven networking
+Here's the key idea.
+Imagine 100,000 connections.
+A naïve server might think:
+Connection 1 → Thread 1
+Connection 2 → Thread 2
+Connection 3 → Thread 3
+...
+Connection 100000 → Thread 100000
+This is terrible.
+Threads consume memory.
+Threads require scheduling.
+Threads cause context switches.
+And most connections are idle most of the time.
+For example:
+100,000 connections
+but maybe only:
+500 are currently receiving data
+Why waste resources keeping 100,000 active threads?
+Instead:
+Use a small number of threads to monitor a large number of connections.
+That's the fundamental idea behind event-driven I/O.
+________________________________________
+12. Enter epoll
+On Linux, a central mechanism is:
+epoll
+Conceptually:
+                Event Loop
+                    │
+                    ▼
+                 epoll
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+     Socket 1    Socket 2    Socket 3
+        │           │           │
+       idle        data        idle
+Instead of:
+Thread 1 waits for Socket 1
+Thread 2 waits for Socket 2
+Thread 3 waits for Socket 3
+we can have:
+One event loop
+       |
+       +── monitor thousands of sockets
+When data arrives:
+Socket 2 → readable
+the OS reports:
+"Socket 2 is ready."
+Then the event loop processes it.
+________________________________________
+13. The fundamental difference
+Blocking model:
+Thread
+   |
+   └── wait for socket
+         ...
+         ...
+      data arrives
+         |
+         ▼
+      process
+Event-driven:
+             Event Loop
+                 |
+        ┌────────┼────────┐
+        ▼        ▼        ▼
+      sock1    sock2    sock3
+                 |
+              readable
+                 |
+                 ▼
+              process
+This is why systems such as:
+Netty
+Nginx
+HAProxy
+Envoy
+can handle enormous numbers of concurrent connections without creating one heavyweight thread per connection.
+________________________________________
+14. Now connect this to your Java knowledge
+You've probably seen:
+ExecutorService
+and:
+ThreadPoolExecutor
+A traditional server model could look conceptually like:
+accept()
+   ↓
+thread pool
+   ↓
+worker
+   ↓
+read request
+   ↓
+process
+Netty is much more event-driven.
+Conceptually:
+                  EventLoopGroup
+                        |
+          ┌─────────────┼─────────────┐
+          ▼             ▼             ▼
+      EventLoop 1   EventLoop 2   EventLoop 3
+          |             |             |
+       sockets        sockets       sockets
+The important idea:
+One event-loop thread can manage many channels/connections.
+The exact architecture is more nuanced than "one thread = many connections," but that's the mental model we need initially.
+________________________________________
+15. What does an event loop actually do?
+Conceptually:
+while (running) {
+
+    events = waitForIOEvents();
+
+    for (event : events) {
+
+        if (event.isReadable()) {
+            readData();
+        }
+
+        if (event.isWritable()) {
+            writeData();
+        }
+    }
+}
+The important operation is:
+waitForIOEvents()
+Instead of constantly doing:
+is socket 1 ready?
+is socket 2 ready?
+is socket 3 ready?
+...
+the kernel can efficiently tell the application which registered sockets are ready.
+________________________________________
+16. Why this is perfect for networking
+Network workloads often look like:
+Connection
+   |
+   | idle
+   | idle
+   | idle
+   |
+   | packet arrives
+   ▼
+process
+   |
+   | idle
+   | idle
+You don't need a dedicated thread doing nothing during those idle periods.
+Instead:
+Event loop
+   |
+   +── Socket A idle
+   +── Socket B idle
+   +── Socket C READY ← process
+   +── Socket D idle
+This is a fundamental scalability technique.
+________________________________________
+17. But there's a catch
+Suppose you're in an event loop:
+EventLoop Thread
+      |
+      ▼
+read request
+      |
+      ▼
+process request
+      |
+      ▼
+call database
+      |
+      |
+      | 500ms
+      |
+      ▼
+response
+If the DB call blocks the event-loop thread:
+EventLoop
+   |
+   └── BLOCKED
+what happens to other connections?
+Connection A → waiting
+Connection B → waiting
+Connection C → waiting
+Connection D → waiting
+This is why event-driven systems are extremely sensitive to blocking operations.
+You may need:
+Event Loop
+     |
+     +── I/O events
+     |
+     +── dispatch
+           |
+           ▼
+      Worker pool
+           |
+           ▼
+     blocking work
+This is one of the reasons understanding your Java execution model matters when you're designing high-throughput systems.
+________________________________________
+18. Now imagine a 32-core machine
+You don't necessarily want:
+1 event-loop thread
+for everything.
+You can have:
+CPU 0 → EventLoop 0
+CPU 1 → EventLoop 1
+CPU 2 → EventLoop 2
+...
+CPU 31 → EventLoop 31
+Conceptually:
+                 Load Balancer
+                      │
+        ┌─────────────┼─────────────┐
+        ▼             ▼             ▼
+   EventLoop 1   EventLoop 2   EventLoop 3
+        │             │             │
+     sockets       sockets       sockets
+This allows work to be distributed across cores.
+Now we're entering another world:
+CPU cache locality
+CPU affinity
+NUMA
+lock contention
+false sharing
+RSS
+NIC queues
+These are advanced performance topics.
+We don't need to dive into all of them yet, but you should recognize that the architecture goes far below Java.
+________________________________________
+19. A critical distinction: connection vs request
+Let's return to our original architecture:
+Client
+   │
+   │ TCP connection
+   ▼
+LB
+   │
+   │ TCP connection
+   ▼
+Java server
+Suppose the connection stays open.
+Then:
+TCP connection
+      |
+      ├── Request 1
+      ├── Request 2
+      ├── Request 3
+      └── Request 4
+The LB may associate the connection with one backend.
+That means:
+Connection
+     ↓
+Backend A
+and all traffic on that connection may continue toward A.
+This is why:
+Load balancing connections is not always equivalent to load balancing HTTP requests.
+This distinction becomes especially important with:
+HTTP keep-alive
+HTTP/2
+WebSockets
+gRPC
+long polling
+Server-Sent Events
+We'll eventually examine each.
+________________________________________
+20. Now let's break the LB
+Suppose:
+Client
+   |
+   | connection
+   v
+LB
+   |
+   v
+Backend A
+Backend A dies.
+The LB's connection state might say:
+Connection X → Backend A
+But:
+A = dead
+What happens to:
+Connection X?
+It cannot magically continue.
+The connection may fail.
+The client may receive:
+connection reset
+timeout
+5xx
+depending on exactly where the failure happens.
+Then the client might retry.
+And now we reach one of the most important system-design chains:
+Backend failure
+      ↓
+Connection failure
+      ↓
+Client timeout
+      ↓
+Retry
+      ↓
+Additional traffic
+      ↓
+Other backends overloaded
+      ↓
+More latency
+      ↓
+More timeouts
+      ↓
+More retries
+This is how a small backend failure can become a retry storm.
+Later we'll study how:
+timeouts
+retry budgets
+exponential backoff
+jitter
+circuit breakers
+bulkheads
+rate limiting
+prevent this.
+________________________________________
+21. The complete L4 mental model
+You should now mentally see:
+                     CLIENT
+                        │
+                        │
+                  Ethernet frame
+                        │
+                        ▼
+                       NIC
+                        │
+                        ▼
+                Linux kernel
+                        │
+                 IP processing
+                        │
+                 TCP processing
+                        │
+                        ▼
+                   Connection
+                        │
+                        ▼
+                  Load Balancer
+                        │
+             ┌──────────┴──────────┐
+             │                     │
+       backend selection       connection state
+             │                     │
+             └──────────┬──────────┘
+                        │
+                        ▼
+                   forwarding
+                        │
+                        ▼
+                    Backend
+                        │
+                        ▼
+                    Java JVM
+And at scale:
+100,000 connections
+        ↓
+Event-driven I/O
+        ↓
+epoll
+        ↓
+Event loops
+        ↓
+Small number of threads
+        ↓
+Many sockets
+________________________________________
+22. One subtle but extremely important insight
+A load balancer is sitting at the intersection of three different worlds:
+               Load Balancer
+                     │
+       ┌─────────────┼─────────────┐
+       ▼             ▼             ▼
+   Networking     Algorithms    Distributed
+                              Systems
+Networking
+TCP
+IP
+NAT
+packets
+connections
+NIC
+kernel
+Algorithms
+Round Robin
+Least Connections
+Weighted
+Hashing
+Consistent Hashing
+Distributed systems
+Health
+Failures
+Retries
+Timeouts
+Availability
+Consistency
+Backpressure
+A senior engineer needs all three mental models.
+________________________________________
+23. Your checkpoint
+Before we proceed, make sure these are clear:
+A.
+HTTP
+  ↓
+TCP
+  ↓
+IP
+  ↓
+Ethernet
+is layered/encapsulated rather than one single thing.
+B.
+A TCP connection maintains state:
+sequence numbers
+ACKs
+windows
+connection state
+C.
+A proxy-style LB can have:
+Client ↔ LB
+LB ↔ Backend
+as separate connections.
+D.
+An L4 LB can make decisions without understanding HTTP.
+E.
+A huge number of connections doesn't require one thread per connection.
+Instead:
+epoll
+ ↓
+event loop
+ ↓
+many sockets
+F.
+A connection and an HTTP request are not the same thing.
+
+Part A — What exactly is a Socket?
+Don't think of a socket as something mysterious.
+Think of it as:
+An operating-system object representing one endpoint of network communication.
+Your Java code sees something like:
+Java
+  ↓
+Socket
+  ↓
+Operating System
+  ↓
+TCP
+  ↓
+Network
+A socket is not the network connection itself in the conceptual sense; it's the OS interface/handle through which a process interacts with that network endpoint.
+________________________________________
+1. Think about a file
+In Linux, many things are represented through file descriptors.
+For example:
+File
+ ↓
+file descriptor
+ ↓
+read()
+write()
+Network sockets work similarly:
+Socket
+ ↓
+file descriptor
+ ↓
+read()
+write()
+For example, conceptually:
+int fd = socket(...);
+The OS gives the process a descriptor:
+fd = 57
+Then:
+read(57, ...)
+write(57, ...)
+can interact with the socket.
+So when we say:
+"Socket 57 is ready to read"
+we mean:
+"The OS knows that network data associated with socket 57 can now be consumed without blocking."
+________________________________________
+2. Why do we need a socket?
+Imagine your Java server is listening on:
+10.0.0.10:8080
+The operating system needs some way to represent:
+"I want to receive TCP connections arriving at port 8080."
+Your server creates a listening socket.
+Conceptually:
+Java application
+      │
+      │ socket()
+      ▼
+Linux
+      │
+      ▼
+Listening socket
+      │
+      ▼
+10.0.0.10:8080
+Then:
+bind()
+listen()
+accept()
+are involved.
+________________________________________
+3. Listening socket vs connected socket
+This is extremely important.
+Suppose your Spring Boot application listens on:
+0.0.0.0:8080
+There is a listening socket.
+              Server
+                 │
+                 ▼
+       Listening Socket
+             :8080
+Now three clients connect:
+Client A ──────────────┐
+Client B ──────────────┼──► Server :8080
+Client C ──────────────┘
+The OS doesn't have one socket representing all three conversations.
+Conceptually, you now get:
+Listening Socket
+       │
+       ├──► Connection Socket A
+       │
+       ├──► Connection Socket B
+       │
+       └──► Connection Socket C
+This is one of the most important things to understand.
+________________________________________
+4. Why do we need separate sockets?
+Because the server needs to distinguish:
+Client A
+from:
+Client B
+Suppose:
+Client A:
+49.205.10.25:50001
+and:
+Client B:
+49.205.10.26:50002
+both connect to:
+Server:
+10.0.0.10:8080
+The OS can identify their TCP flows using the connection tuple:
+Client A:
+
+49.205.10.25:50001
+        ↓
+10.0.0.10:8080
+and:
+Client B:
+
+49.205.10.26:50002
+        ↓
+10.0.0.10:8080
+So conceptually:
+                 Server
+                   │
+             :8080 listening
+                   │
+        ┌──────────┴──────────┐
+        ▼                     ▼
+   Socket A              Socket B
+        │                     │
+   Client A               Client B
+________________________________________
+5. Now your question: "Request waits for socket"
+My previous wording was too loose.
+A request doesn't wait for a socket.
+A better statement is:
+A thread/event loop waits for a socket to become ready for I/O.
+For example:
+Client
+   │
+   │ sends TCP data
+   ▼
+Network
+   │
+   ▼
+Server NIC
+   │
+   ▼
+Linux kernel
+   │
+   ▼
+Socket receive buffer
+The data now exists inside the OS.
+The Java application hasn't necessarily read it yet.
+The OS can tell the event loop:
+"Socket #57 has data available."
+Then:
+Event Loop
+     │
+     ▼
+Socket #57 is readable
+     │
+     ▼
+read()
+     │
+     ▼
+data
+That's what I meant.
+________________________________________
+6. What does "socket is readable" mean?
+This is another important distinction.
+It does not necessarily mean:
+"A complete HTTP request is available."
+It can mean:
+A read operation can make progress without blocking.
+For example, the network might deliver:
+GET /orders
+in pieces.
+First packet:
+GET /ord
+Second packet:
+ers/123 HTTP/1.1
+The TCP layer reassembles the byte stream.
+The application ultimately sees a stream of bytes.
+So:
+Socket
+   ↓
+bytes
+   ↓
+HTTP parser
+   ↓
+HTTP request
+That's a very important layer separation.
+________________________________________
+Part B — Connection vs HTTP Request
+Now let's fix the second concept.
+This is probably the more important one.
+________________________________________
+1. Connection
+A TCP connection is a communication channel between two endpoints.
+For example:
+Client                         Server
+49.205.10.25:50001 ─────────► 10.0.0.10:8080
+Once TCP handshake completes:
+Client ═══════════════════════ Server
+             TCP connection
+The connection can remain open.
+________________________________________
+2. HTTP request
+An HTTP request is data sent over that connection.
+For example:
+GET /users/101 HTTP/1.1
+Host: example.com
+So think:
+TCP connection
+      │
+      │ carries bytes
+      ▼
+HTTP request
+The connection is the communication channel.
+The HTTP request is a message/data transmitted through that channel.
+________________________________________
+3. One connection can carry one request
+The simplest case:
+Client
+   │
+   │ TCP connection
+   ▼
+Server
+
+GET /users/1
+Then connection closes.
+Conceptually:
+Connection
+└── HTTP Request #1
+________________________________________
+4. But one connection can carry multiple requests
+This is where it gets interesting.
+With HTTP keep-alive:
+Client
+   │
+   │ TCP connection
+   ▼
+Server
+The client can send:
+Request 1:
+GET /users/1
+
+Request 2:
+GET /users/2
+
+Request 3:
+GET /users/3
+So:
+             ONE TCP CONNECTION
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+     Request 1    Request 2    Request 3
+That's the key.
+Connection ≠ Request
+A connection is the pipe.
+Requests are messages travelling through the pipe.
+________________________________________
+5. Real-world analogy
+Imagine a railway track.
+Railway track
+     │
+     ├── Train 1
+     ├── Train 2
+     └── Train 3
+The railway track is analogous to:
+TCP connection
+The trains are analogous to:
+HTTP requests
+You don't build a new railway track every time a new train travels.
+Similarly:
+TCP connection
+can carry:
+HTTP request 1
+HTTP request 2
+HTTP request 3
+...
+________________________________________
+6. Why this matters to Load Balancing
+Suppose:
+Client
+   │
+   │ ONE TCP connection
+   ▼
+Load Balancer
+   │
+   ▼
+Backend A
+The client sends:
+GET /users/1
+GET /users/2
+GET /users/3
+The LB may have associated that connection with:
+Backend A
+So conceptually:
+TCP Connection #123
+        │
+        ├── HTTP Request 1 ──► A
+        ├── HTTP Request 2 ──► A
+        └── HTTP Request 3 ──► A
+This is why I said:
+Load balancing a connection is not necessarily the same as load balancing individual HTTP requests.
+Later, when we study HTTP/2, this gets even more interesting.
+________________________________________
+Part C — Now let's start Lesson 4
+Now that sockets and connections are clear, let's actually build the decision-making part of a Load Balancer.
+Load Balancer — Lesson 4
+Backend Selection: Round Robin
+We have:
+                 Load Balancer
+                       │
+                 New connection
+                       │
+                       ▼
+              ┌─────────────────┐
+              │ Which backend?  │
+              └────────┬────────┘
+                       │
+             ┌─────────┼─────────┐
+             ▼         ▼         ▼
+            A          B         C
+The LB needs an algorithm.
+We'll start with the simplest.
+________________________________________
+1. Round Robin
+Suppose:
+Backend servers:
+
+A
+B
+C
+Requests arrive:
+R1
+R2
+R3
+R4
+R5
+R6
+Round Robin does:
+R1 → A
+R2 → B
+R3 → C
+R4 → A
+R5 → B
+R6 → C
+Visualized:
+Request        Backend
+
+R1 ───────────► A
+R2 ───────────► B
+R3 ───────────► C
+R4 ───────────► A
+R5 ───────────► B
+R6 ───────────► C
+________________________________________
+2. Internal state
+What does the LB actually need to remember?
+Very little.
+Something like:
+servers = [A, B, C]
+
+nextIndex = 0
+Then:
+select():
+
+    server = servers[nextIndex]
+
+    nextIndex =
+        (nextIndex + 1) % servers.size()
+
+    return server
+Java:
+class RoundRobin {
+
+    private final List<Server> servers;
+    private final AtomicInteger index = new AtomicInteger();
+
+    Server next() {
+        int i = Math.floorMod(
+            index.getAndIncrement(),
+            servers.size()
+        );
+
+        return servers.get(i);
+    }
+}
+The core algorithm is tiny.
+But now let's think like a senior engineer.
+________________________________________
+3. Why AtomicInteger?
+Imagine:
+Thread 1 → next()
+Thread 2 → next()
+Thread 3 → next()
+Thread 4 → next()
+All threads access:
+index
+Suppose index currently equals:
+5
+If two threads do:
+read index
+increment index
+without synchronization, they can race.
+Conceptually:
+Thread A                 Thread B
+
+read 5
+                         read 5
+
+write 6
+                         write 6
+We expected:
+5 → 6 → 7
+but got:
+5 → 6
+One increment was lost.
+That's a race condition.
+________________________________________
+4. Atomic increment
+An atomic operation gives us a conceptual guarantee:
+getAndIncrement()
+behaves as one indivisible state transition.
+Thread A:
+5 → 6
+
+Thread B:
+6 → 7
+So:
+R1 → A
+R2 → B
+R3 → C
+rather than potentially:
+R1 → A
+R2 → A
+because of a race.
+________________________________________
+5. But is Round Robin actually fair?
+Here's our first deliberate failure.
+Suppose:
+A = powerful machine
+B = powerful machine
+C = tiny machine
+Round Robin says:
+A → 33%
+B → 33%
+C → 33%
+But perhaps:
+A can handle 10,000 req/sec
+B can handle 10,000 req/sec
+C can handle 1,000 req/sec
+Round Robin doesn't care.
+It distributes requests, not capacity.
+________________________________________
+6. Different request costs
+This is even more important.
+Suppose we have:
+R1 = GET /health
+     1 ms
+
+R2 = GET /users
+     5 ms
+
+R3 = POST /generate-report
+     10 seconds
+Round Robin sees:
+R1
+R2
+R3
+as three equal units.
+But they aren't.
+Imagine:
+A:
+100 tiny requests
+
+B:
+100 tiny requests
+
+C:
+100 report-generation requests
+All have exactly the same request count.
+But their workloads are completely different.
+This is a foundational insight:
+Request count is not the same thing as workload.
+________________________________________
+7. Connection count has the same problem
+Suppose:
+A → 10 connections
+B → 10 connections
+C → 10 connections
+Looks balanced.
+But:
+A → 10 idle connections
+
+B → 10 active connections
+
+C → 10 connections doing expensive DB queries
+Connection count alone isn't enough either.
+This leads to the next algorithm.
+________________________________________
+8. Least Connections
+Instead of asking:
+"Which server is next?"
+we ask:
+"Which server currently has the fewest active connections?"
+Suppose:
+A → 100 active connections
+B → 20 active connections
+C → 50 active connections
+New connection:
+             New Connection
+                    │
+                    ▼
+              choose minimum
+                    │
+                    ▼
+                   B
+So:
+New connection → B
+After accepting it:
+A → 100
+B → 21
+C → 50
+Next one:
+A → 100
+B → 21
+C → 50
+
+→ B
+Eventually:
+A → 100
+B → 100
+C → 100
+assuming connections have similar characteristics.
+________________________________________
+9. Now we encounter another internal problem
+How does the LB know:
+A → 100
+B → 21
+C → 50
+It needs state.
+Conceptually:
+class Backend {
+    AtomicInteger activeConnections;
+}
+When a connection is assigned:
+activeConnections.incrementAndGet();
+When it closes:
+activeConnections.decrementAndGet();
+Now we have a much more interesting system than Round Robin.
+________________________________________
+10. The race condition
+Suppose:
+A → 10
+B → 10
+Two threads simultaneously ask:
+"Which has fewer connections?"
+Both see:
+A = 10
+B = 10
+Both select B.
+Then:
+B → 12
+A → 10
+So even though we wanted:
+request 1 → A
+request 2 → B
+we got:
+request 1 → B
+request 2 → B
+This is called a selection race.
+This is one reason a production load balancer needs carefully designed concurrent state management.
+________________________________________
+11. And now a deeper problem
+Imagine:
+A → 10 connections
+B → 10 connections
+C → 10 connections
+and we need to find the minimum.
+A naïve implementation:
+for each backend:
+    inspect activeConnections
+find minimum
+That's:
+O(N)
+for every selection.
+If:
+N = 10
+who cares?
+But:
+N = 10,000
+and:
+1,000,000 selections/sec
+then the design becomes much more interesting.
+And this is exactly the kind of thing I want you to start thinking about:
+An algorithm isn't enough. You must ask what it costs at the scale where it's being used.
+________________________________________
+12. Why Round Robin remains popular
+Despite its simplicity, Round Robin is extremely useful when:
+servers are similar
+requests are relatively uniform
+backend capacity is similar
+Its advantages:
+O(1) selection
+minimal state
+simple implementation
+easy concurrency
+predictable distribution
+That's a powerful engineering lesson:
+The simplest algorithm that satisfies the workload is often better than a sophisticated algorithm.
+________________________________________
+13. But production systems need more
+Imagine:
+A → 16 CPU
+B → 16 CPU
+C → 4 CPU
+Equal distribution is bad.
+We could assign weights:
+A → weight 4
+B → weight 4
+C → weight 1
+Then approximately:
+A → 44%
+B → 44%
+C → 11%
+This gives us:
+Weighted Round Robin
+Conceptually:
+A A A A
+B B B B
+C
+So the distribution reflects capacity.
+But then another question appears:
+How do we determine the weights?
+CPU?
+RAM?
+Network bandwidth?
+Measured latency?
+Requests/sec?
+And should the weight remain static?
+That's a much harder engineering question.
+________________________________________
+The bigger picture
+We've now gone from:
+Round Robin
+to:
+Round Robin
+     ↓
+Why equal distribution?
+     ↓
+Different server capacities
+     ↓
+Weighted Round Robin
+     ↓
+Different request costs
+     ↓
+Connection-aware routing
+     ↓
+Least Connections
+     ↓
+Concurrent state
+     ↓
+Race conditions
+     ↓
+Algorithmic complexity
+This is the style we'll use for the entire course.
+Not:
+"Least Connections is a load-balancing algorithm."
+Instead:
+What information does the LB need? How does it obtain it? Where is that state stored? How is it updated concurrently? What happens when the server dies? What happens when servers have different capacity? What does the algorithm cost at 1M requests/sec?
+Load Balancer — Lesson 5
+Why Round Robin and Least Connections Fail
+So far we have:
+                    Load Balancer
+                         |
+              "Which backend?"
+                         |
+        ┌────────────────┼────────────────┐
+        ▼                ▼                ▼
+   Round Robin    Least Connections   Weighted RR
+Today we're going to break each one.
+That's important because real system design is mostly about understanding:
+When does an apparently good algorithm stop being good?
+________________________________________
+1. First: Round Robin
+Suppose we have:
+Backend A
+Backend B
+Backend C
+Round Robin:
+Request 1 → A
+Request 2 → B
+Request 3 → C
+Request 4 → A
+Request 5 → B
+Request 6 → C
+Implementation:
+class RoundRobin {
+
+    private final List<Backend> backends;
+    private final AtomicInteger counter = new AtomicInteger();
+
+    Backend next() {
+        int index =
+            Math.floorMod(
+                counter.getAndIncrement(),
+                backends.size()
+            );
+
+        return backends.get(index);
+    }
+}
+Complexity:
+Selection: O(1)
+Memory:     O(N)
+Beautifully simple.
+But now:
+What does "one request" mean?
+Round Robin assumes:
+Request A ≈ Request B ≈ Request C
+But that's often completely false.
+________________________________________
+2. Requests don't cost the same
+Imagine your Java application has:
+GET /health
+takes:
+1 ms
+while:
+GET /orders/123
+takes:
+20 ms
+and:
+POST /generate-report
+takes:
+5000 ms
+Round Robin sees:
+Request
+Request
+Request
+It doesn't know:
+1 ms
+20 ms
+5000 ms
+So:
+R1 → A
+R2 → B
+R3 → C
+looks balanced.
+But the actual CPU/DB workload could be wildly different.
+________________________________________
+3. This gives us our first important equation
+A backend's load isn't simply:
+number of requests
+It's more like some combination of:
+Load ≈ request rate × cost per request
+For example:
+A:
+1000 req/sec × 1 ms
+versus:
+B:
+1000 req/sec × 500 ms
+Same request rate.
+Completely different load.
+This is why simply saying:
+"The load balancer distributes traffic evenly"
+is not enough.
+________________________________________
+4. Let's make the example worse
+Suppose:
+A → 100 requests/sec
+B → 100 requests/sec
+C → 100 requests/sec
+Round Robin looks perfect.
+But suppose each backend currently has:
+A → 10ms average latency
+B → 10ms average latency
+C → 1000ms average latency
+Now:
+A ✓
+B ✓
+C 🔥
+Yet Round Robin keeps doing:
+A
+B
+C
+A
+B
+C
+A
+B
+C
+It doesn't care that C is dying.
+________________________________________
+5. Weighted Round Robin
+So we introduce weights.
+Suppose:
+A = weight 5
+B = weight 3
+C = weight 2
+Total:
+5 + 3 + 2 = 10
+Approximate distribution:
+A → 50%
+B → 30%
+C → 20%
+Conceptually:
+A A A A A
+B B B
+C C
+Now we can represent different backend capacities.
+________________________________________
+6. But where did those weights come from?
+This is a much harder question than it initially appears.
+Suppose:
+A = 32 CPU cores
+B = 16 CPU cores
+C = 8 CPU cores
+You might use:
+A = 4
+B = 2
+C = 1
+Reasonable.
+But then:
+A has fast NVMe
+B has slow disk
+C has a very fast database connection
+CPU capacity doesn't tell the whole story.
+Or:
+A → 32 cores
+B → 16 cores
+but B is running a much cheaper endpoint.
+Now CPU count isn't enough.
+So weights are often:
+configuration or an approximation of capacity, not an exact measurement of current load.
+________________________________________
+7. Static weights vs dynamic weights
+Static:
+A = 5
+B = 3
+C = 2
+The LB doesn't continuously change them.
+Simple.
+Dynamic:
+A latency → 10ms
+B latency → 15ms
+C latency → 500ms
+and the system adjusts routing based on observed behavior.
+Much more sophisticated.
+Now you've entered the world of:
+adaptive load balancing
+latency-aware routing
+least-loaded routing
+EWMA
+outlier detection
+We'll get there later.
+________________________________________
+8. Now let's look at Least Connections
+Round Robin asks:
+"Who is next?"
+Least Connections asks:
+"Who currently has the fewest connections?"
+Suppose:
+A → 100 connections
+B → 30 connections
+C → 50 connections
+New connection:
+→ B
+So:
+A → 100
+B → 31
+C → 50
+Another:
+→ B
+Now:
+A → 100
+B → 32
+C → 50
+Seems smarter.
+But let's break it.
+________________________________________
+9. Connection count ≠ workload
+Imagine:
+A → 10 connections
+B → 10 connections
+C → 10 connections
+Looks perfectly balanced.
+But:
+A:
+10 idle keep-alive connections
+
+B:
+10 active requests
+
+C:
+10 expensive database operations
+Actual situation:
+A → almost no work
+B → moderate
+C → overloaded
+Yet Least Connections sees:
+10
+10
+10
+and says:
+"Perfectly balanced!"
+It isn't.
+________________________________________
+10. Why keep-alive makes this particularly interesting
+Remember:
+TCP connection
+      |
+      ├── Request 1
+      ├── Request 2
+      ├── Request 3
+      └── ...
+A connection can remain open even when nothing is happening.
+So:
+100 open connections
+doesn't mean:
+100 active requests
+That's a very important distinction.
+________________________________________
+11. HTTP/2 makes it even worse
+With HTTP/2:
+ONE TCP connection
+       |
+       ├── Stream 1
+       ├── Stream 2
+       ├── Stream 3
+       ├── Stream 4
+       └── Stream 5
+Now one connection can have many concurrent streams.
+So:
+Backend A → 1 TCP connection
+Backend B → 20 TCP connections
+doesn't necessarily mean B has more traffic.
+A could have:
+1 connection
+100 concurrent HTTP/2 streams
+while B has:
+20 connections
+20 streams total
+Least Connections could make a terrible decision.
+________________________________________
+12. So what do we actually want?
+What we really want is something closer to:
+Which backend can handle this work best RIGHT NOW?
+That requires knowing something about:
+CPU
+memory
+active requests
+queue depth
+latency
+network
+database pressure
+But obtaining all that information introduces overhead.
+And now we hit an important distributed-systems tradeoff:
+The more information you collect about system state, the more expensive and potentially stale that information becomes.
+________________________________________
+13. The "perfect information" problem
+Imagine the LB asks every backend:
+"How busy are you?"
+Suppose there are:
+1000 backend servers
+Every millisecond.
+You'd create:
+1000 × 1000
+or potentially huge amounts of monitoring traffic depending on frequency.
+And even worse:
+LB asks A:
+"I'm at 10% load."
+
+LB asks B:
+"I'm at 10% load."
+Milliseconds later:
+A → 95%
+B → 20%
+The information the LB has is already stale.
+This is called stale state.
+________________________________________
+14. Now we reach a beautiful algorithm
+Power of Two Choices
+This is one of my favorite load-balancing algorithms because the idea is incredibly simple.
+Instead of checking:
+all 1000 servers
+the LB randomly selects:
+two servers
+Then asks:
+Which of these two is less loaded?
+Suppose:
+Randomly chosen:
+
+A → 80 active connections
+B → 20 active connections
+Choose:
+B
+That's it.
+________________________________________
+15. Why not inspect all servers?
+Suppose:
+N = 10,000 servers
+Finding the minimum:
+O(N)
+means inspecting 10,000 servers.
+Power of Two Choices:
+Choose random A
+Choose random B
+Compare
+That's approximately:
+O(1)
+per decision.
+Yet surprisingly, this produces very good balancing behavior under many workloads.
+________________________________________
+16. The algorithm
+Conceptually:
+Backend choose(List<Backend> servers) {
+
+    Backend a = randomServer();
+    Backend b = randomServer();
+
+    if (a.activeConnections() <= b.activeConnections()) {
+        return a;
+    }
+
+    return b;
+}
+That's basically it.
+No global sorting.
+No scanning every server.
+No complicated data structure.
+________________________________________
+17. Why does this work?
+Imagine:
+100 servers
+and:
+99 servers are reasonably loaded
+1 server is overloaded
+Randomly choosing two gives you a decent chance of avoiding the overloaded server.
+More importantly, if you keep choosing the less-loaded of two random candidates, the probability of repeatedly putting work onto already-loaded machines drops dramatically compared with pure random assignment.
+The key insight:
+You don't need perfect knowledge of the entire system to make much better decisions.
+That's extremely useful in distributed systems.
+________________________________________
+18. Compare the algorithms
+Algorithm	Information required	Selection cost	Major weakness
+Round Robin	None	O(1)	Doesn't know load
+Weighted RR	Static weights	O(1)	Weights may become inaccurate
+Least Connections	All connection counts	O(N) naïvely	Connection count ≠ actual work
+Random	None	O(1)	Can produce uneven distribution
+Power of Two	Two load measurements	O(1)	Still relies on imperfect load metric
+The progression is important:
+Round Robin
+    ↓
+"We don't know anything."
+
+Weighted RR
+    ↓
+"We know approximate capacity."
+
+Least Connections
+    ↓
+"We know current connection counts."
+
+Power of Two
+    ↓
+"We don't need perfect global knowledge."
+________________________________________
+19. Now let's introduce latency
+Suppose:
+Backend A → 10ms
+Backend B → 20ms
+Backend C → 500ms
+If we send equal traffic:
+A → 33%
+B → 33%
+C → 33%
+C becomes a bottleneck.
+But why is C slow?
+Could be:
+CPU saturation
+GC pause
+database latency
+network problem
+disk I/O
+thread pool exhaustion
+downstream service failure
+The LB doesn't necessarily know the root cause.
+It can observe:
+Requests to C are taking 500ms.
+Now we could use latency as a signal.
+________________________________________
+20. EWMA — a useful advanced concept
+A common technique for smoothing measurements is:
+Exponentially Weighted Moving Average
+You don't need to memorize the equation yet.
+The basic idea is:
+new measurement
+      ↓
+combine with historical measurements
+      ↓
+smoothed estimate
+Instead of reacting wildly:
+10ms
+500ms
+10ms
+500ms
+10ms
+we get a smoother estimate:
+10ms
+108ms
+88ms
+170ms
+138ms
+...
+The exact behavior depends on the weighting factor.
+This is useful because raw latency is noisy.
+________________________________________
+21. But now comes the distributed-systems problem
+Suppose C suddenly becomes slow.
+The LB notices:
+C → 500ms
+So it sends less traffic to C.
+Good.
+But suppose every load balancer instance independently does this.
+You have:
+LB1 → observes C
+LB2 → observes C
+LB3 → observes C
+LB4 → observes C
+They may all have different views.
+LB1:
+C = 500ms
+
+LB2:
+C = 100ms
+
+LB3:
+C = 300ms
+
+LB4:
+C = 50ms
+Why?
+Because measurements are local and occur at different times.
+Now we have:
+Distributed state is not perfectly synchronized.
+This theme will appear again and again throughout your system-design journey.
+________________________________________
+22. A dangerous feedback loop
+Let's imagine:
+C becomes slow
+        ↓
+LB sends less traffic to C
+        ↓
+A and B receive more traffic
+        ↓
+A and B become overloaded
+        ↓
+A and B become slow
+        ↓
+LB sends traffic elsewhere
+        ↓
+C gets traffic again
+        ↓
+...
+You can end up with unstable behavior.
+This is why adaptive routing isn't simply:
+if latency > threshold:
+    send zero traffic
+Real systems need smoothing, thresholds, outlier detection, recovery strategies, and often gradual traffic shifting.
+________________________________________
+23. Health checks are not enough
+This is a very important senior-level distinction.
+Suppose:
+Backend A
+is responding:
+HTTP 200 OK
+to:
+GET /health
+So the LB says:
+A = healthy ✓
+But meanwhile:
+A:
+CPU = 99%
+DB pool = exhausted
+request queue = 50,000
+p99 latency = 8 seconds
+Health check:
+200 OK
+System:
+🔥🔥🔥
+Therefore:
+Alive does not mean healthy, and healthy does not necessarily mean capable of accepting more traffic.
+This becomes extremely important when we later study:
+Circuit breakers
+Load shedding
+Rate limiting
+Backpressure
+Bulkheads
+________________________________________
+24. Let's connect this back to Java
+Imagine your Java service has:
+Tomcat thread pool = 200
+and:
+200 requests currently running
+Now:
+request 201
+arrives.
+It may have to wait.
+Conceptually:
+             Java Backend
+                  |
+       ┌──────────┴──────────┐
+       ▼                     ▼
+ Running requests       Waiting queue
+       │                     │
+   200 threads           request 201
+The LB may still think:
+"Backend is healthy."
+But the application is experiencing queueing.
+And this is where queueing theory begins to matter.
+________________________________________
+25. Little's Law
+For system-design interviews and real performance engineering, one relationship is extremely useful:
+L = λW
+Where:
+L = average number of items in the system
+λ = arrival rate
+W = average time in system
+In request terms:
+Concurrent requests
+    =
+Request rate × Average latency
+Example:
+1000 requests/sec
+×
+0.2 sec average latency
+=
+200 concurrent requests
+So:
+1000 req/sec
+200ms latency
+means approximately:
+200 requests in flight
+This is a very powerful connection between:
+traffic
+concurrency
+latency
+________________________________________
+26. And now something clicks
+Suppose:
+Backend A:
+100 req/sec
+10ms latency
+Approximate concurrency:
+100 × 0.01 = 1
+So around:
+1 request in flight
+Now:
+Backend B:
+100 req/sec
+2 seconds latency
+Concurrency:
+100 × 2 = 200
+Same request rate.
+But:
+A → ~1 concurrent request
+B → ~200 concurrent requests
+This is why:
+Request rate alone is not enough to understand load.
+And:
+Connection count alone is not enough either.
+________________________________________
+27. The real engineering question
+When we say:
+"Balance traffic."
+we should really ask:
+What are we balancing?
+Possibilities:
+Connections?
+Requests?
+CPU?
+Latency?
+Queue depth?
+Active work?
+Memory?
+Network?
+Database capacity?
+There is no universal answer.
+The right metric depends on the workload.
+________________________________________
+28. This is the mindset I want you to develop
+Don't memorize:
+Round Robin
+Least Connections
+Power of Two
+Instead, whenever you see an algorithm, ask:
+What information does it need?
+Round Robin → index
+Least Connections → connection counts
+Power of Two → two load measurements
+Where does the information live?
+local memory?
+shared state?
+backend reports?
+metrics system?
+How fresh is it?
+real-time?
+10ms old?
+1 second old?
+What's the cost?
+CPU
+network
+memory
+locks
+contention
+What happens when the information is wrong?
+That's where real distributed-systems engineering begins.
+________________________________________
+29. Your Load Balancer knowledge so far
+We have now built:
+                    LOAD BALANCER
+                         │
+           ┌─────────────┴──────────────┐
+           │                            │
+       Networking                  Selection
+           │                            │
+       TCP/socket                 Round Robin
+       kernel                     Weighted RR
+       epoll                      Least Connections
+       event loop                 Power of Two
+           │                            │
+           └─────────────┬──────────────┘
+                         │
+                      Failures
+                         │
+              ┌──────────┼──────────┐
+              ▼          ▼          ▼
+            latency    overload    stale state
+________________________________________
+30. One more important concept before we leave this lesson
+Imagine:
+Backend A
+Backend B
+Backend C
+Now:
+Backend B crashes.
+What should happen?
+Round Robin's list:
+[A, B, C]
+must somehow become:
+[A, C]
+But who discovers that B is dead?
+Possibilities:
+LB health check
+Service registry
+Kubernetes
+Cloud control plane
+Backend registration
+Connection failure
+And how quickly?
+100ms?
+1 second?
+10 seconds?
+And what happens to connections already assigned to B?
+And what happens when B comes back?
+And what if B isn't dead, merely slow?
+And what if the health check succeeds but actual requests fail?
+These questions lead us directly to our next lesson.
+________________________________________
+Next Lesson — Load Balancer Health Checks & Failure Detection
+We'll build this from scratch:
+                 Load Balancer
+                      │
+          ┌───────────┼───────────┐
+          ▼           ▼           ▼
+         A ✓         B ?         C ✓
+                      │
+                 health check
+                      │
+                 ┌────┴────┐
+                 ▼         ▼
+              Liveness   Readiness
+We'll investigate:
+•	TCP health checks 
+•	HTTP health checks 
+•	/health, /live, /ready 
+•	active vs passive health checks 
+•	timeout vs failure 
+•	consecutive failure thresholds 
+•	recovery thresholds 
+•	flapping servers 
+•	slow-but-alive servers 
+•	connection draining 
+•	graceful shutdown 
+•	why removing a server instantly can break real users 
+•	what happens during rolling deployments
+
+Lesson 6 — How does a Load Balancer know a server is alive?
+Suppose we have:
+                    Load Balancer
+                  /       |       \
+                 /        |        \
+                ▼         ▼         ▼
+              A ✓       B ✓       C ✓
+Everything is fine.
+Now:
+Backend B
+    ↓
+CRASH
+Reality:
+                    Load Balancer
+                  /       |       \
+                 ▼        ▼        ▼
+                A        B 💀      C
+But the LB doesn't magically know B died.
+It needs failure detection.
+And this is much harder than it sounds.
+________________________________________
+1. The first naive idea
+The LB could simply send traffic to B:
+LB
+ |
+ | GET /orders/123
+ ▼
+B
+If B doesn't respond:
+timeout
+LB concludes:
+B might be dead
+This is called passive failure detection.
+The LB learns about health while handling real traffic.
+________________________________________
+2. Passive health checking
+Imagine:
+Request 1 → B → timeout
+Request 2 → B → timeout
+Request 3 → B → timeout
+After several failures:
+B = unhealthy
+So:
+Before:
+
+A ✓
+B ✓
+C ✓
+
+
+After:
+
+A ✓
+B ✗
+C ✓
+The LB stops sending traffic to B.
+Simple.
+But there is a problem.
+________________________________________
+3. Real users discover the failure first
+Suppose B has just crashed.
+The first user request:
+User
+  ↓
+LB
+  ↓
+B 💀
+The user experiences:
+timeout
+Only after that does the LB learn:
+B is dead.
+That's undesirable.
+We would rather detect failure before users encounter it.
+So we introduce:
+Active Health Checks
+________________________________________
+4. Active health check
+The LB periodically asks:
+"Are you alive?"
+For example:
+LB ───────► B
+           GET /health
+B responds:
+HTTP/1.1 200 OK
+LB:
+B = healthy ✓
+Then after some interval:
+LB ───────► B
+           GET /health
+Again:
+200 OK
+So:
+B = healthy
+________________________________________
+5. What happens when B crashes?
+Before:
+LB ───────► B
+           /health
+             ↓
+           200 OK
+After crash:
+LB ───────► B 💀
+           /health
+             ↓
+          timeout
+LB marks:
+B = unhealthy
+and removes B from the backend selection pool.
+Now:
+                    LB
+                  /    \
+                 ▼      ▼
+                A       C
+No new requests go to B.
+________________________________________
+6. But there's a subtle problem
+What does this mean?
+GET /health → 200 OK
+Does it mean:
+"This server can successfully process production traffic?"
+Not necessarily.
+This distinction is extremely important.
+________________________________________
+7. Liveness vs Readiness
+Consider a Java Spring Boot application.
+The JVM is alive:
+JVM ✓
+But:
+Database 💀
+Redis 💀
+Kafka 💀
+Thread pool exhausted
+The process is alive.
+But can it actually serve requests?
+Maybe not.
+So we separate:
+Liveness
+from:
+Readiness
+________________________________________
+8. Liveness
+Liveness asks:
+Is the application process alive enough that restarting it might help?
+Conceptually:
+GET /live
+Response:
+200 OK
+means:
+Application process appears alive.
+If liveness fails repeatedly, an orchestrator such as Kubernetes may restart the application.
+________________________________________
+9. Readiness
+Readiness asks:
+Should this instance receive traffic right now?
+This is different.
+Suppose:
+JVM = alive ✓
+Database connection = unavailable ✗
+The process is alive.
+But maybe it shouldn't receive traffic.
+So:
+/live
+→ 200 OK
+
+/ready
+→ 503 Service Unavailable
+Then:
+Process = alive
+Traffic eligibility = NO
+That's a powerful distinction.
+________________________________________
+10. Think about deployment
+Imagine we're deploying version 2.
+We start:
+Server A → version 1
+Server B → version 1
+Server C → version 1
+Then launch:
+Server D → version 2
+D starts:
+JVM starting...
+Spring Boot initializing...
+DB pool initializing...
+Caches warming...
+Kafka consumers starting...
+If the LB immediately sends traffic:
+LB → D
+we could send production requests to a server that isn't ready.
+So D should initially be:
+D = alive
+D = NOT READY
+Only after initialization:
+D = READY
+Then:
+LB → D
+This is why readiness is crucial during deployments.
+________________________________________
+11. Now let's go deeper
+Suppose our health check runs every:
+5 seconds
+And B crashes immediately after a successful check.
+Timeline:
+12:00:00 → health check ✓
+12:00:01 → B crashes
+12:00:02 → B dead
+12:00:03 → B dead
+12:00:04 → B dead
+12:00:05 → health check ✗
+The LB could potentially continue considering B healthy for several seconds.
+This gives us an important concept:
+Failure detection is not instantaneous.
+There is always some detection delay.
+________________________________________
+12. Health-check interval
+Suppose:
+interval = 5 sec
+The LB checks:
+0s
+5s
+10s
+15s
+...
+Smaller interval:
+1 sec
+means faster detection.
+But now the LB creates more health-check traffic.
+Suppose:
+10,000 servers
+At:
+1 health check/sec
+that's:
+10,000 health requests/sec
+just for monitoring.
+So:
+faster detection
+        ↕
+more monitoring overhead
+This is a trade-off.
+________________________________________
+13. But one failed health check shouldn't necessarily kill a server
+Suppose:
+Health check #1 → timeout
+Was B really dead?
+Maybe:
+network packet lost
+temporary GC pause
+CPU spike
+LB overloaded
+network congestion
+If the LB immediately removes B:
+B ✗
+it may create unnecessary traffic redistribution.
+So production systems commonly use failure thresholds.
+For example:
+3 consecutive failures → unhealthy
+________________________________________
+14. Example
+Suppose:
+threshold = 3
+Health checks:
+Check 1 → failure
+Check 2 → success
+Check 3 → failure
+Check 4 → failure
+Check 5 → failure
+Only after three consecutive failures:
+B = unhealthy
+So:
+F
+S
+F
+F
+F
+The final three failures trigger removal.
+________________________________________
+15. Recovery is also dangerous
+Suppose B crashed.
+The LB removes it:
+A ✓
+B ✗
+C ✓
+B restarts.
+Immediately:
+B → 200 OK
+Should the LB instantly send:
+100% traffic → B
+?
+No.
+Imagine B is still warming up.
+Maybe:
+JVM started
+but
+cache = cold
+DB pool = warming
+JIT = warming
+connections = not established
+So recovery needs a success threshold too.
+For example:
+3 consecutive successful checks → healthy
+________________________________________
+16. Now we have two state transitions
+Failure:
+Healthy
+   ↓
+failure
+   ↓
+failure
+   ↓
+failure
+   ↓
+Unhealthy
+Recovery:
+Unhealthy
+   ↓
+success
+   ↓
+success
+   ↓
+success
+   ↓
+Healthy
+This prevents reacting to every tiny network fluctuation.
+________________________________________
+17. The server that keeps changing state
+Now we encounter a nasty case.
+Suppose:
+B
+is unstable.
+Health checks:
+✓
+✗
+✓
+✗
+✓
+✗
+The LB keeps doing:
+Healthy
+   ↓
+Unhealthy
+   ↓
+Healthy
+   ↓
+Unhealthy
+   ↓
+...
+This is called flapping.
+It can create instability:
+traffic → B
+traffic removed
+traffic → B
+traffic removed
+...
+And every time B is removed, its traffic gets pushed onto A and C.
+So one unstable server can indirectly overload healthy servers.
+________________________________________
+18. This is a feedback loop
+Imagine:
+B becomes slow
+      ↓
+LB removes B
+      ↓
+A + C receive more traffic
+      ↓
+A + C become overloaded
+      ↓
+A + C become slow
+      ↓
+LB removes A/C
+      ↓
+traffic shifts again
+This is no longer merely:
+"Is B alive?"
+It's a system stability problem.
+That's the kind of thing senior engineers need to recognize.
+________________________________________
+19. Health check timeout
+Suppose:
+LB → B
+GET /health
+What if B never responds?
+The LB cannot wait forever.
+It needs:
+healthCheckTimeout = 1 second
+So:
+send request
+     ↓
+wait
+     ↓
+1 sec
+     ↓
+no response
+     ↓
+FAIL
+Otherwise one dead backend can cause the health-check thread to block indefinitely.
+________________________________________
+20. Important distinction: timeout ≠ server crash
+Suppose:
+health check timeout
+We only know:
+The LB did not receive a valid response within the configured time.
+We don't know exactly why.
+Possibilities:
+B crashed
+B is overloaded
+network packet lost
+network partition
+B has a long GC pause
+LB cannot reach B
+B's health endpoint is blocked
+This is a fundamental distributed-systems concept:
+Failure is often observed indirectly.
+The LB cannot see "B is dead."
+It observes:
+"I can't successfully communicate with B."
+That's different.
+________________________________________
+21. Network partition
+This leads to one of the most important concepts we'll later revisit in CAP.
+Suppose:
+           Network
+        XXXXXXXXXXXXX
+B is actually healthy:
+B ✓
+But the LB cannot reach it:
+LB ───────X─────── B
+The LB concludes:
+B = unavailable
+From LB's perspective:
+B is unreachable
+From B's perspective:
+"I'm perfectly healthy!"
+Both can be correct.
+This is why distributed systems cannot simply ask:
+"Is the server alive?"
+They have to reason about reachability and observability.
+________________________________________
+22. Active vs passive health checks
+Let's compare.
+	Active	Passive
+How?	Dedicated health request	Observe real requests
+Detect before user traffic?	Usually yes	No
+Extra traffic?	Yes	No
+Can detect endpoint-specific problems?	Depends on check	Yes
+Can detect network failure?	Yes	Yes
+Can observe real workload?	Limited	Yes
+A robust production architecture can use both.
+________________________________________
+23. A powerful combination
+Imagine:
+                    Load Balancer
+                         |
+              ┌──────────┴──────────┐
+              │                     │
+        Active checks          Real traffic
+              │                     │
+              ▼                     ▼
+        /ready endpoint       request failures
+              │                     │
+              └──────────┬──────────┘
+                         ▼
+                    Health state
+So:
+Active check says:
+"Are you ready?"
+
+Passive observations say:
+"Are real requests actually succeeding?"
+Much richer information.
+________________________________________
+24. But now we have a subtle issue
+Suppose B is receiving:
+1000 requests/sec
+and suddenly we decide:
+B = unhealthy
+What happens to existing connections?
+Suppose:
+Client
+   │
+   │ TCP connection
+   ▼
+LB
+   │
+   ▼
+B
+There might already be:
+100 active requests
+If the LB simply kills B's connections:
+💥
+users may see:
+connection reset
+500
+timeout
+partial response
+So we need another concept.
+Connection Draining
+________________________________________
+25. Connection draining
+Suppose B is being removed.
+Instead of:
+B → DEAD immediately
+we say:
+B → DRAINING
+Meaning:
+Don't send new traffic to B, but allow existing work to finish.
+State:
+Healthy
+   ↓
+Draining
+   ↓
+Removed
+During draining:
+New request ──X──► B
+but:
+Existing request ─────► B
+                      finish
+This is extremely useful during:
+deployments
+autoscaling
+maintenance
+instance termination
+rolling updates
+________________________________________
+26. Example
+Suppose:
+B has 50 active requests
+We want to terminate B.
+Without draining:
+kill B
+ ↓
+50 requests potentially fail
+With draining:
+stop new requests
+ ↓
+50 → 40 → 20 → 5 → 0
+ ↓
+terminate B
+Much safer.
+________________________________________
+27. But what if a request takes 30 minutes?
+Now draining can become dangerous.
+Imagine:
+B
+ └── request running for 30 minutes
+If we wait forever:
+B never terminates
+So draining needs a maximum drain timeout.
+Example:
+Drain timeout = 30 sec
+After 30 seconds:
+remaining requests
+       ↓
+force termination
+This creates a trade-off:
+long drain
+    ↓
+fewer failed requests
+but
+slower deployments
+versus:
+short drain
+    ↓
+faster deployment
+but
+more interrupted requests
+Again:
+There is rarely a perfect setting.
+________________________________________
+28. Graceful shutdown in Java
+This becomes very relevant to your Java background.
+Suppose your Spring Boot application receives:
+SIGTERM
+during deployment.
+A production-friendly sequence is:
+SIGTERM
+   ↓
+Application enters shutdown
+   ↓
+Readiness becomes false
+   ↓
+LB stops sending NEW traffic
+   ↓
+Existing requests finish
+   ↓
+Connection draining
+   ↓
+Application terminates
+Notice the ordering.
+You don't want:
+kill JVM
+   ↓
+LB discovers dead server
+because users may receive failures.
+Instead:
+remove from traffic
+   ↓
+finish existing work
+   ↓
+shutdown
+This is one of the most important deployment patterns to understand.
+________________________________________
+29. Let's put the entire lifecycle together
+A backend might move through:
+                 ┌───────────────┐
+                 │   STARTING    │
+                 └───────┬───────┘
+                         │
+                   readiness OK
+                         │
+                         ▼
+                 ┌───────────────┐
+                 │    HEALTHY    │
+                 └───────┬───────┘
+                         │
+                  failure threshold
+                         │
+                         ▼
+                 ┌───────────────┐
+                 │   UNHEALTHY   │
+                 └───────┬───────┘
+                         │
+                 recovery checks
+                         │
+                         ▼
+                 ┌───────────────┐
+                 │    HEALTHY    │
+                 └───────────────┘
+And during deployment:
+HEALTHY
+   │
+   │ shutdown requested
+   ▼
+DRAINING
+   │
+   │ active requests finish
+   ▼
+REMOVED
+This is a much more realistic model than:
+UP / DOWN
+________________________________________
+30. Now let's build a simplified health checker
+Conceptually:
+class HealthChecker {
+
+    void check(Backend backend) {
+
+        try {
+            Response response =
+                httpGet(
+                    backend.url() + "/ready",
+                    Duration.ofSeconds(1)
+                );
+
+            if (response.statusCode() == 200) {
+                backend.recordSuccess();
+            } else {
+                backend.recordFailure();
+            }
+
+        } catch (TimeoutException e) {
+            backend.recordFailure();
+
+        } catch (IOException e) {
+            backend.recordFailure();
+        }
+    }
+}
+And backend state:
+class Backend {
+
+    int consecutiveFailures;
+    int consecutiveSuccesses;
+
+    boolean healthy;
+
+    void recordFailure() {
+        consecutiveFailures++;
+        consecutiveSuccesses = 0;
+
+        if (consecutiveFailures >= 3) {
+            healthy = false;
+        }
+    }
+
+    void recordSuccess() {
+        consecutiveSuccesses++;
+        consecutiveFailures = 0;
+
+        if (consecutiveSuccesses >= 3) {
+            healthy = true;
+        }
+    }
+}
+This is simplified, but now you can see that a health check isn't merely:
+if (200) healthy
+else unhealthy
+There is state and history.
+________________________________________
+31. One thing I'd change in production
+Don't make the health checker itself a single blocking thread:
+check A
+wait
+check B
+wait
+check C
+wait
+...
+If one server takes:
+1 second
+you can delay checks for everyone.
+Instead, health checks should be scheduled/concurrent, with carefully controlled resource usage.
+And at very large scale, you have to think about:
+threads
+connections
+timers
+event loops
+timeouts
+DNS
+TLS handshakes
+metrics
+The monitoring system itself can become a bottleneck.
+________________________________________
+32. The deep lesson
+A load balancer isn't simply:
+Client → LB → Server
+It's actually maintaining a belief about backend state:
+LB's belief:
+
+A → probably healthy
+B → probably unhealthy
+C → probably healthy
+Notice the word:
+probably
+The LB never has perfect knowledge.
+It makes decisions based on observations.
+That is a fundamental distributed-systems idea.
+________________________________________
+33. What we've learned
+You should now be able to reason about:
+Active health check
+Passive health check
+Liveness
+Readiness
+Failure threshold
+Recovery threshold
+Timeout
+Network partition
+Flapping
+Connection draining
+Graceful shutdown
+Stale health information
+And more importantly:
+"Is server B alive?"
+has transformed into:
+"Can I currently observe B successfully enough
+to justify sending new traffic to it?"
+That is the deeper mental model.
+________________________________________
+Next Lesson — Load Balancer Architecture Internals
+Next we're going inside the LB itself.
+We'll trace:
+Client
+   ↓
+NIC
+   ↓
+Kernel
+   ↓
+Socket
+   ↓
+accept()
+   ↓
+event loop / epoll
+   ↓
+connection state
+   ↓
+HTTP parsing
+   ↓
+backend selection
+   ↓
+upstream connection
+   ↓
+TCP connection
+   ↓
+Backend
+And we'll answer a question that separates basic knowledge from deep knowledge:
+How can one load balancer handle hundreds of thousands or millions of concurrent connections without creating one Java thread per connection?
+That will take us into epoll, event loops, non-blocking I/O, socket buffers, file descriptors, readiness notifications, and the C10K/C10M problems.
+That is where the networking internals get really interesting.
+
+Load Balancer — Lesson 7
+Architecture Internals: NIC → Socket → Kernel → Event Loop → Backend
+Our goal is to understand this path:
+Client
+   │
+   │ Ethernet / IP / TCP
+   ▼
+┌───────────────────────┐
+│   Load Balancer Host  │
+│                       │
+│  NIC                  │
+│   ↓                   │
+│  Kernel               │
+│   ↓                   │
+│  Socket               │
+│   ↓                   │
+│  epoll                │
+│   ↓                   │
+│  Event Loop           │
+│   ↓                   │
+│  HTTP Parser          │
+│   ↓                   │
+│  LB Algorithm         │
+│   ↓                   │
+│  Backend Connection   │
+└───────────┬───────────┘
+            │
+            ▼
+        Backend
+We're going to dissect every layer.
+________________________________________
+1. Start with the physical reality
+Suppose your browser wants:
+GET /orders/123
+It doesn't send a Java String directly to the server.
+Eventually, the request becomes bytes.
+Conceptually:
+HTTP
+ ↓
+TCP
+ ↓
+IP
+ ↓
+Ethernet
+ ↓
+Network
+Something like:
++-------------------+
+| Ethernet Header   |
++-------------------+
+| IP Header         |
++-------------------+
+| TCP Header        |
++-------------------+
+| HTTP bytes        |
++-------------------+
+The network carries bits.
+The operating system turns those incoming bits into structures your application can read.
+________________________________________
+2. The NIC
+The first major component on the load-balancer machine is the:
+Network Interface Card (NIC).
+Think:
+Internet
+    │
+    │ electrical / optical / radio signals
+    ▼
+   NIC
+The NIC receives packets.
+But your Java application isn't directly reading electrical signals.
+The NIC and operating system cooperate to move packets into memory.
+A simplified path:
+Network
+   ↓
+NIC
+   ↓
+DMA
+   ↓
+RAM
+   ↓
+Linux kernel networking stack
+   ↓
+Socket receive buffer
+The important term here is:
+DMA — Direct Memory Access
+The NIC can transfer packet data into memory without the CPU manually copying every byte from the hardware.
+This dramatically reduces CPU overhead.
+________________________________________
+3. The kernel gets involved
+Once the packet enters the machine:
+NIC
+ ↓
+Kernel networking stack
+Linux processes layers roughly like:
+Ethernet
+   ↓
+IP
+   ↓
+TCP
+   ↓
+Socket
+The kernel looks at the packet.
+For example:
+Destination IP:
+10.0.0.10
+
+Destination port:
+443
+It needs to determine:
+Which socket should receive this data?
+This brings us to the word you previously asked about.
+Socket
+________________________________________
+4. What exactly is a socket?
+A socket is not the network cable.
+A socket is an OS-managed communication endpoint.
+Think of it as:
+Application
+     │
+     │ read/write
+     ▼
+┌─────────────┐
+│   Socket    │
+└─────────────┘
+     │
+     ▼
+Kernel networking
+     │
+     ▼
+Network
+Your Java application interacts with the socket.
+The kernel handles the complicated networking underneath.
+________________________________________
+5. Server socket vs connected socket
+This is one of the most important distinctions.
+Suppose our load balancer listens on:
+0.0.0.0:443
+It creates a listening socket.
+Conceptually:
+socket()
+   ↓
+bind()
+   ↓
+listen()
+Then:
+┌─────────────────────────┐
+│ Listening Socket        │
+│ 0.0.0.0:443             │
+└─────────────────────────┘
+It means:
+"I'm willing to accept incoming TCP connections on port 443."
+It isn't yet a connection to one specific client.
+________________________________________
+6. Client connects
+Suppose:
+Client:
+192.168.1.20:53124
+
+LB:
+10.0.0.10:443
+The client establishes TCP.
+Conceptually:
+Client
+192.168.1.20:53124
+       │
+       │ TCP
+       ▼
+10.0.0.10:443
+Load Balancer
+TCP handshake:
+Client                    LB
+
+   SYN ──────────────────►
+
+       ◄──────────────── SYN + ACK
+
+   ACK ──────────────────►
+Now a TCP connection exists.
+________________________________________
+7. The listening socket isn't the actual conversation
+This is critical.
+The listening socket:
+0.0.0.0:443
+is used to accept connections.
+After the connection is accepted, the kernel creates/returns a connected socket associated with that particular client.
+Conceptually:
+Listening Socket
+      │
+      │ accept()
+      ▼
+Connected Socket
+      │
+      ├── Client IP
+      ├── Client port
+      ├── Server IP
+      ├── Server port
+      └── TCP state
+So:
+Listening socket
+=
+"Give me new connections."
+
+Connected socket
+=
+"Talk to this particular client."
+This distinction is fundamental.
+________________________________________
+8. Four pieces identify a TCP connection
+A TCP connection is associated with:
+Source IP
+Source Port
+Destination IP
+Destination Port
+For example:
+192.168.1.20 : 53124
+        ↓
+10.0.0.10 : 443
+Another client:
+192.168.1.21 : 53125
+        ↓
+10.0.0.10 : 443
+Both connect to the same server port:
+443
+but they're different connections.
+________________________________________
+9. What does accept() actually do?
+Consider simplified C-like server code:
+int server_fd = socket(...);
+
+bind(server_fd, ...);
+
+listen(server_fd, ...);
+
+while (1) {
+    int client_fd = accept(server_fd, ...);
+
+    // communicate with client_fd
+}
+Important:
+server_fd
+is the listening socket.
+And:
+client_fd
+represents the newly accepted connection.
+So:
+listen socket
+      │
+      │ accept()
+      ▼
+client socket
+________________________________________
+10. Now here's the problem
+Imagine:
+1,000,000 clients
+connecting to our LB.
+A naive design could do:
+Thread 1 → Client 1
+Thread 2 → Client 2
+Thread 3 → Client 3
+...
+Thread 1,000,000 → Client 1,000,000
+Obviously terrible.
+Why?
+Each thread consumes memory and scheduling resources.
+This leads us to an important historical problem.
+C10K Problem
+________________________________________
+11. C10K
+C10K roughly refers to the challenge of handling:
+10,000 concurrent connections on one machine.
+It became a famous systems problem because the traditional:
+one thread per connection
+model didn't scale well.
+And modern systems may need:
+100K
+1M+
+connections.
+So the architecture evolved toward:
+Many connections
+      ↓
+Few threads
+      ↓
+Event notification
+That's the key.
+________________________________________
+12. Instead of asking every socket...
+Imagine we have:
+Socket 1
+Socket 2
+Socket 3
+...
+Socket 100,000
+Naive application:
+check socket 1
+check socket 2
+check socket 3
+...
+check socket 100000
+Most sockets might have nothing to read.
+That's wasteful.
+We want the OS to tell us:
+"These 17 sockets are ready."
+That's the basic idea behind:
+epoll
+________________________________________
+13. epoll mental model
+Think of epoll as:
+                    Linux Kernel
+                         │
+             ┌───────────┴───────────┐
+             │                       │
+         Socket A                 Socket B
+         no data                  data ready
+             │                       │
+             └───────────┬───────────┘
+                         │
+                       epoll
+                         │
+                         ▼
+                  "B is ready"
+The application doesn't need to continuously inspect every socket.
+It asks the kernel:
+"Tell me which registered sockets
+are ready for I/O."
+________________________________________
+14. Event loop
+Now we can create a single event-loop thread:
+while (running) {
+
+    events = epoll_wait();
+
+    for (event : events) {
+
+        if (event.isReadable()) {
+            handleRead(event.socket);
+        }
+
+        if (event.isWritable()) {
+            handleWrite(event.socket);
+        }
+    }
+}
+Conceptually:
+                 Event Loop
+                     │
+              epoll_wait()
+                     │
+           ┌─────────┼─────────┐
+           ▼         ▼         ▼
+         Sock A    Sock C    Sock F
+         ready     ready     ready
+One thread can manage a huge number of sockets.
+________________________________________
+15. This is the key architectural shift
+Old model:
+Connection
+     ↓
+Thread
+Modern high-performance model:
+Connections
+     ↓
+Event loop
+     ↓
+Few threads
+Instead of:
+100,000 connections
+100,000 threads
+you might have:
+100,000 connections
+       ↓
+8 event-loop threads
+The exact architecture varies, but the principle is huge.
+________________________________________
+16. What does "ready" mean?
+Suppose:
+Client → LB
+and TCP data arrives.
+The kernel puts data into a receive buffer.
+Now the socket becomes readable.
+The event loop gets:
+READABLE
+Then:
+read(socket, buffer)
+copies/returns available data to the application.
+Similarly, if the socket can accept more outgoing data, it can become writable.
+So event-driven I/O revolves around:
+READABLE
+WRITABLE
+and other events.
+________________________________________
+17. Important: epoll doesn't read the data
+This is a common misunderstanding.
+epoll does not mean:
+"Here is the HTTP request."
+It means more like:
+"This socket currently has I/O work that your application may be able to perform."
+Then your application calls:
+read()
+or:
+recv()
+to actually retrieve bytes.
+So:
+epoll
+  ↓
+"socket 17 is ready"
+  ↓
+read(socket17)
+  ↓
+bytes
+________________________________________
+18. Where does HTTP enter?
+Suppose the bytes received are:
+GET /orders/123 HTTP/1.1\r\n
+Host: example.com\r\n
+Connection: keep-alive\r\n
+\r\n
+The kernel doesn't understand:
+GET
+/orders/123
+Host
+That's application-level protocol data.
+The Java load balancer has to parse it.
+So:
+TCP bytes
+    ↓
+HTTP parser
+    ↓
+HTTP request
+This gives us another important distinction:
+TCP
+=
+byte stream
+while:
+HTTP
+=
+application protocol encoded into those bytes
+________________________________________
+19. TCP doesn't preserve HTTP request boundaries
+This is extremely important.
+Suppose the client sends:
+Request A
+Request B
+TCP might deliver bytes to your application like:
+READ #1:
+"GET /ord"
+
+READ #2:
+"ers/123 HTTP/1.1\r\n..."
+
+READ #3:
+"GET /users/5 HTTP/1.1..."
+Or potentially multiple requests in one read.
+So the application cannot assume:
+1 read() = 1 HTTP request
+This is a critical networking concept.
+________________________________________
+20. Why?
+Because TCP is a:
+reliable ordered byte stream
+not:
+message-oriented protocol.
+Therefore your HTTP parser must reconstruct protocol messages from a stream of bytes.
+Conceptually:
+TCP stream
+──────────────────────────────►
+
+GET /orders/123 HTTP/1.1\r\n...
+              ↑
+        HTTP parser
+              ↓
+        complete request
+________________________________________
+21. Now the Load Balancer has work to do
+Once the LB parses:
+GET /orders/123
+it needs to determine:
+Which backend?
+So:
+Client
+   ↓
+TCP bytes
+   ↓
+socket
+   ↓
+epoll
+   ↓
+read()
+   ↓
+HTTP parser
+   ↓
+HTTP Request
+   ↓
+Load balancing algorithm
+   ↓
+Backend B
+This is the path we wanted to understand.
+________________________________________
+22. But the LB now needs another socket
+Remember:
+Client
+    ↓
+LB
+The LB also needs:
+LB
+    ↓
+Backend
+Therefore the LB is sitting between two network connections.
+Conceptually:
+Client
+   │
+   │ TCP connection #1
+   ▼
+┌───────────────┐
+│ Load Balancer │
+└───────────────┘
+   │
+   │ TCP connection #2
+   ▼
+Backend
+This is a critical mental model.
+The LB isn't magically forwarding a TCP packet from one machine to another in the basic reverse-proxy model.
+It may terminate the client connection and create a separate upstream connection.
+________________________________________
+23. Connection mapping
+Imagine:
+Client:
+10.1.1.5:51000
+
+LB:
+10.1.1.10:443
+
+Backend:
+10.1.2.20:8080
+There can be:
+Client ───── TCP #1 ───── LB
+
+LB ───────── TCP #2 ───── Backend
+The LB acts as an intermediary.
+The HTTP request is:
+read from client
+       ↓
+parse
+       ↓
+select backend
+       ↓
+write to backend
+Then response:
+Backend
+   ↓
+read
+   ↓
+LB
+   ↓
+write
+   ↓
+Client
+________________________________________
+24. This explains why Load Balancer ≠ just routing
+A Layer 4 load balancer and Layer 7 load balancer can work very differently.
+Layer 4
+The LB primarily works with:
+TCP
+IP
+connections
+It doesn't necessarily need to understand:
+GET /orders/123
+Layer 7
+The LB understands:
+HTTP
+headers
+path
+method
+cookies
+So it can do:
+/orders → Backend A
+
+/payments → Backend B
+
+/images → Backend C
+This is a major architectural difference.
+________________________________________
+25. Layer 4 mental model
+Client
+   │
+   │ TCP
+   ▼
+LB
+   │
+   │ TCP
+   ▼
+Backend
+LB may make decisions using:
+source IP
+destination IP
+source port
+destination port
+connection state
+But it doesn't necessarily parse HTTP.
+________________________________________
+26. Layer 7 mental model
+Client
+   │
+   │ HTTP
+   ▼
+LB
+   │
+   ├── parse URL
+   ├── inspect headers
+   ├── cookies
+   ├── authentication info
+   └── routing rules
+          │
+          ▼
+       Backend
+More intelligence.
+But also more work.
+________________________________________
+27. Now think about TLS
+Suppose the client uses:
+HTTPS
+The LB can either:
+TLS passthrough
+Client
+  │
+ HTTPS
+  ▼
+LB
+  │
+ HTTPS
+  ▼
+Backend
+The LB doesn't decrypt HTTP.
+Or:
+TLS termination
+Client
+  │
+ HTTPS
+  ▼
+LB
+  │
+decrypt
+  ↓
+ HTTP
+  ↓
+Backend
+Now the LB can inspect:
+URL
+headers
+cookies
+HTTP method
+and make Layer 7 decisions.
+But it takes on TLS cryptographic work.
+________________________________________
+28. And here's another scaling problem
+Imagine:
+1 million concurrent client connections
+The LB might need:
+1 million client sockets
+and potentially many upstream connections.
+So:
+Client connections
++
+Backend connections
+can be enormous.
+This is why high-performance LBs are heavily optimized around:
+event loops
+non-blocking I/O
+kernel networking
+memory allocation
+buffer management
+connection reuse
+________________________________________
+29. Why one thread per connection is bad
+Let's understand this more deeply.
+Suppose Java creates:
+Thread per connection
+Every thread needs stack memory.
+Even if the exact amount varies by JVM/platform/configuration, thread stacks aren't free.
+And then the OS must schedule those threads.
+With:
+100,000 threads
+you have enormous scheduling and memory overhead.
+But with:
+100,000 sockets
+       ↓
+8 event-loop threads
+the threads spend most of their time processing sockets that are actually ready.
+That's the central advantage of event-driven I/O.
+________________________________________
+30. Java's connection to this
+Since you're a Java developer, you should recognize this architecture.
+Modern Java networking can use:
+java.nio
+and:
+Selector
+Historically, Java NIO's Selector on Linux can map down to mechanisms such as:
+epoll
+Conceptually:
+Java application
+      ↓
+Selector
+      ↓
+OS-specific implementation
+      ↓
+epoll
+      ↓
+Linux kernel
+So when you use frameworks such as:
+Netty
+Reactor Netty
+Spring WebFlux
+you are working with event-driven networking concepts.
+________________________________________
+31. Netty mental model
+A simplified Netty architecture:
+                 Netty
+                   │
+          ┌────────┴────────┐
+          │                 │
+     Boss EventLoop     Worker EventLoops
+          │                 │
+     accept new         process I/O
+     connections         events
+Conceptually:
+Client
+   ↓
+Boss
+   ↓
+accept()
+   ↓
+Worker EventLoop
+   ↓
+read/write
+The exact architecture depends on configuration, but the event-loop principle is what matters.
+________________________________________
+32. Now let's examine the complete flow
+Suppose the user calls:
+https://api.example.com/orders/123
+A simplified path:
+Browser
+   │
+   │ DNS
+   ▼
+Load Balancer IP
+   │
+   │ TCP handshake
+   ▼
+LB listening socket :443
+   │
+   │ accept()
+   ▼
+Client connection socket
+   │
+   │ TLS handshake
+   ▼
+Encrypted bytes
+   │
+   │ decrypt
+   ▼
+HTTP bytes
+   │
+   │ parse
+   ▼
+HTTP request
+   │
+   │ select backend
+   ▼
+Backend connection socket
+   │
+   │ write
+   ▼
+Java Backend
+Response reverses the flow:
+Backend
+   ↓
+LB upstream socket
+   ↓
+LB
+   ↓
+Client socket
+   ↓
+Client
+________________________________________
+33. One thing you should notice
+The LB has state.
+For every connection it may need to track things like:
+client socket
+backend socket
+connection state
+TCP state
+HTTP parser state
+buffers
+TLS state
+selected backend
+timeouts
+health status
+So 1 million connections don't mean just:
+1 million numbers
+There can be significant memory usage.
+This is why memory-efficient connection handling matters.
+________________________________________
+34. Buffering is another hidden cost
+Suppose client sends:
+10 MB request body
+and backend is slow.
+The LB may receive data faster than it can forward it.
+Now:
+Client
+   │
+   │ FAST
+   ▼
+LB
+   │
+   │ SLOW
+   ▼
+Backend
+What happens?
+The LB may have to buffer some data.
+But buffers consume memory.
+If thousands of clients behave like this:
+1000 × 10 MB
+=
+10 GB
+Now your LB has a memory problem.
+This leads to another crucial concept:
+Backpressure
+The system needs to prevent a fast producer from overwhelming a slow consumer.
+We'll study this later in much more depth.
+________________________________________
+35. The LB therefore isn't just a router
+At scale, it is simultaneously dealing with:
+Networking
+TCP
+TLS
+HTTP
+Memory
+Buffers
+Concurrency
+Event loops
+Health checks
+Backend selection
+Timeouts
+Connection pooling
+Backpressure
+Failure detection
+That's why load balancing becomes a serious systems topic.
+________________________________________
+36. Your mental model should now be this
+Don't think:
+User
+ ↓
+Load Balancer
+ ↓
+Server
+Think:
+                   USER
+                     │
+                     ▼
+                   NIC
+                     │
+                     ▼
+               Linux Kernel
+                     │
+                TCP/IP stack
+                     │
+                     ▼
+             Listening Socket
+                     │
+                  accept()
+                     │
+                     ▼
+              Client Socket
+                     │
+                  epoll
+                     │
+                     ▼
+                Event Loop
+                     │
+                   read()
+                     │
+                     ▼
+               HTTP Parser
+                     │
+                     ▼
+             Routing Decision
+                     │
+                     ▼
+             Upstream Socket
+                     │
+                     ▼
+                Backend
+This is the architecture you should carry in your head.
+________________________________________
+37. The most important insight from this lesson
+Remember these four statements:
+1. Socket ≠ connection
+A socket is an OS abstraction representing a communication endpoint.
+2. Listening socket ≠ connected socket
+Listening socket
+→ accepts new connections
+
+Connected socket
+→ communicates with a particular peer
+3. epoll doesn't process HTTP
+It tells the application which registered file descriptors have I/O events ready.
+Then your application performs:
+read()
+write()
+accept()
+etc.
+4. TCP doesn't know HTTP requests
+TCP provides:
+ordered byte stream
+HTTP sits on top and gives meaning to those bytes.
+________________________________________
+38. One final diagram
+This is the diagram I want you to remember:
+                         NETWORK
+                            │
+                            ▼
+                         [ NIC ]
+                            │
+                           DMA
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │ Linux Kernel  │
+                    │               │
+                    │ Ethernet      │
+                    │ IP            │
+                    │ TCP           │
+                    └───────┬───────┘
+                            │
+                            ▼
+                     [ Socket Buffer ]
+                            │
+                            ▼
+                         epoll
+                            │
+                            ▼
+                     [ Event Loop ]
+                            │
+                         read()
+                            │
+                            ▼
+                      [ HTTP Parser ]
+                            │
+                            ▼
+                    [ LB Algorithm ]
+                            │
+                     choose Backend
+                            │
+                            ▼
+                  [ Upstream Socket ]
+                            │
+                            ▼
+                         Backend
+If you understand this diagram deeply, you've moved far beyond:
+"A load balancer distributes requests."
+You've started understanding how the machine actually handles those requests.
+________________________________________
+Next: Load Balancer — Lesson 8
+Next we go one level deeper into the actual TCP connection lifecycle:
+socket()
+   ↓
+bind()
+   ↓
+listen()
+   ↓
+SYN
+   ↓
+SYN-ACK
+   ↓
+ACK
+   ↓
+accept()
+   ↓
+read()/recv()
+   ↓
+write()/send()
+   ↓
+FIN / ACK
+   ↓
+close()
+We'll then connect this directly to your earlier question:
+Why can one TCP connection carry multiple HTTP requests?
+and understand:
+•	TCP 3-way handshake internally 
+•	SYN backlog 
+•	accept queue 
+•	listen(backlog) 
+•	what happens when the backlog fills 
+•	TCP connection states 
+•	TIME_WAIT 
+•	ephemeral ports 
+•	keep-alive 
+•	connection reuse 
+•	why opening a TCP connection for every HTTP request is expensive 
+•	HTTP/1.1 persistent connections 
+•	HTTP/2 multiplexing 
+•	and why all of this matters to a Java/Spring production system.
+
+Load Balancer — Lesson 8
+TCP Connection Lifecycle
+Before we discuss sophisticated load-balancing algorithms, I want you to understand exactly what happens when:
+Client → Load Balancer
+creates a TCP connection.
+We will start from almost nothing.
+________________________________________
+1. Imagine the LB is listening
+Our load balancer has:
+IP: 10.0.0.10
+Port: 443
+Conceptually:
+10.0.0.10:443
+The server has created a listening socket:
+socket()
+   ↓
+bind()
+   ↓
+listen()
+The kernel is now essentially saying:
+"If TCP traffic arrives for port 443, I have a process interested in accepting it."
+________________________________________
+2. Client wants to connect
+Client:
+192.168.1.20:53124
+wants to communicate with:
+10.0.0.10:443
+The client doesn't immediately send:
+GET /orders
+First TCP must establish a connection.
+It starts with:
+SYN
+________________________________________
+3. SYN
+Client sends:
+Client                         LB
+
+  SYN ───────────────────────►
+The SYN basically means:
+"I want to establish a TCP connection."
+The packet contains TCP information including an initial sequence number.
+For example, conceptually:
+SYN
+Sequence Number = 1000
+________________________________________
+4. LB responds
+The LB responds:
+Client                         LB
+
+  SYN ───────────────────────►
+  
+       ◄──────────────── SYN + ACK
+Suppose the LB chooses:
+Sequence Number = 5000
+Acknowledgement = 1001
+Why 1001?
+Because the SYN consumes one sequence-number position.
+The LB is saying:
+"I received your SYN with sequence 1000. I'm starting my sequence at 5000."
+________________________________________
+5. Client sends ACK
+Client                         LB
+
+  SYN ───────────────────────►
+
+       ◄──────────────── SYN + ACK
+
+  ACK ───────────────────────►
+Now:
+TCP connection established
+This is the famous:
+TCP 3-way handshake
+1. SYN
+2. SYN + ACK
+3. ACK
+________________________________________
+6. Why three steps?
+Because both sides need to establish that communication works in both directions.
+Client effectively says:
+"I can send."
+Server responds:
+"I received your message,
+and I can send too."
+Client confirms:
+"I received your response."
+Now both sides have synchronized TCP state.
+________________________________________
+7. The connection is not HTTP yet
+This is critical.
+After:
+SYN
+SYN-ACK
+ACK
+we have:
+TCP connection
+We do not yet have:
+HTTP request
+Now the client can send application bytes.
+For HTTP:
+GET /orders/123 HTTP/1.1
+Host: example.com
+...
+So:
+TCP connection
+      ↓
+HTTP data
+HTTP is riding inside the TCP byte stream.
+________________________________________
+8. Where does accept() happen?
+Remember our listening socket?
+Listening socket
+10.0.0.10:443
+After the TCP connection has been established, the server application calls:
+accept()
+and obtains a connected socket.
+Conceptually:
+                  Listening socket
+                       :443
+                         │
+                     accept()
+                         │
+                         ▼
+                 Connected socket
+                         │
+                         ▼
+                 Client 192.168.1.20
+The connected socket is what the application uses to communicate with that client.
+________________________________________
+9. Now the backlog question
+This is where many developers have a shallow understanding.
+Suppose thousands of clients suddenly connect:
+Client 1 ──►
+Client 2 ──►
+Client 3 ──►
+...
+Client 10000 ──►
+But your application can't immediately call:
+accept()
+for every connection.
+Where do pending connections go?
+The kernel maintains queues related to connection establishment and acceptance.
+That's where the listen backlog becomes important.
+________________________________________
+10. listen(backlog)
+Conceptually:
+listen(server_fd, 1024);
+The backlog is a request to the OS to provide queue capacity for pending connections.
+Don't think:
+"There is one simple queue containing exactly 1024 connections."
+Modern Linux behavior is more nuanced, and there are separate stages/queues involved.
+The important mental model is:
+Incoming connection
+       ↓
+Kernel TCP processing
+       ↓
+Pending/established connection queues
+       ↓
+accept()
+       ↓
+Application
+________________________________________
+11. Why does the queue exist?
+Because:
+Network speed ≠ application speed
+Imagine:
+1000 connection attempts/sec
+but the application accepts:
+100 connections/sec
+You need some temporary buffering.
+Otherwise bursts can cause connection failures.
+This is a general systems principle:
+Producer
+   ↓
+Queue
+   ↓
+Consumer
+We will encounter this pattern everywhere:
+TCP backlog
+Kafka
+RabbitMQ
+Thread pools
+Databases
+________________________________________
+12. The two stages you should know
+For TCP on Linux, it helps to distinguish conceptually:
+SYN received
+      ↓
+SYN backlog / incomplete connection state
+      ↓
+handshake completes
+      ↓
+accept queue / completed connections
+      ↓
+accept()
+      ↓
+application
+Simplified:
+             TCP handshake
+                  │
+                  ▼
+          ┌───────────────┐
+          │ SYN / partial │
+          │   state       │
+          └───────┬───────┘
+                  │
+             handshake
+              completes
+                  │
+                  ▼
+          ┌───────────────┐
+          │ established  │
+          │   queue      │
+          └───────┬───────┘
+                  │
+               accept()
+                  │
+                  ▼
+              Application
+This is more accurate than imagining "the backlog" as one magical bucket.
+________________________________________
+13. What if the queue fills?
+Imagine:
+Application
+accept rate = 100/sec
+but:
+Incoming connections = 10,000/sec
+The queue can fill.
+Eventually:
+Queue
+████████████████████ FULL
+Now the OS can't simply keep buffering forever.
+Depending on the exact TCP/kernel configuration and situation, new connections may experience:
+drops
+retransmissions
+connection failures
+timeouts
+The important lesson:
+The load balancer can become overloaded before CPU reaches 100%.
+You can have bottlenecks in:
+connection queues
+file descriptors
+memory
+socket buffers
+network bandwidth
+CPU
+TLS handshakes
+event loops
+________________________________________
+14. This is why "requests per second" isn't enough
+Suppose LB #1:
+100,000 requests/sec
+LB #2:
+50,000 requests/sec
+You might think LB #1 is twice as powerful.
+Not necessarily.
+Maybe:
+LB #1:
+10,000 long-lived connections
+while:
+LB #2:
+1,000,000 long-lived connections
+Different workloads stress different resources.
+For load balancers we care about:
+connections/sec
+requests/sec
+concurrent connections
+bytes/sec
+TLS handshakes/sec
+CPU
+memory
+latency
+________________________________________
+15. Now TCP connection state
+TCP isn't simply:
+CONNECTED
+It has a state machine.
+You'll encounter states such as:
+LISTEN
+SYN-SENT
+SYN-RECEIVED
+ESTABLISHED
+FIN-WAIT
+CLOSE-WAIT
+TIME-WAIT
+CLOSED
+The most important one for our current path:
+LISTEN
+   ↓
+SYN-RECEIVED
+   ↓
+ESTABLISHED
+Then eventually:
+ESTABLISHED
+   ↓
+closing
+   ↓
+TIME-WAIT
+   ↓
+CLOSED
+________________________________________
+16. Data transfer
+Now we're established:
+Client
+  │
+  │ TCP connection
+  ▼
+LB
+Client sends:
+GET /orders/123
+TCP breaks application data into segments as needed.
+The receiving side gets an ordered byte stream.
+The application calls:
+read()
+and obtains available bytes.
+Again:
+TCP:
+"Here are bytes."
+
+HTTP:
+"These bytes represent GET /orders/123."
+________________________________________
+17. Multiple HTTP requests
+Suppose HTTP/1.1 keep-alive is enabled.
+Client doesn't need:
+TCP connect
+HTTP request
+TCP close
+
+TCP connect
+HTTP request
+TCP close
+
+TCP connect
+HTTP request
+TCP close
+Instead:
+TCP connection
+      │
+      ├── HTTP request 1
+      ├── HTTP response 1
+      ├── HTTP request 2
+      ├── HTTP response 2
+      ├── HTTP request 3
+      ├── HTTP response 3
+      └── ...
+This is connection reuse.
+We'll explore this deeply in Lesson 9.
+________________________________________
+18. Closing TCP
+Eventually one side wants to close.
+Suppose client initiates.
+It sends:
+FIN
+Conceptually:
+Client                         LB
+
+   FIN ──────────────────────►
+The LB acknowledges:
+       ◄──────────────── ACK
+Then the LB eventually sends its own:
+       ◄──────────────── FIN
+Client acknowledges:
+   ACK ──────────────────────►
+Conceptually:
+FIN
+ACK
+FIN
+ACK
+The exact state transitions are more nuanced, but that's the mental model.
+________________________________________
+19. Now meet TIME_WAIT
+This is an important production issue.
+After closing certain TCP connections, one side can enter:
+TIME_WAIT
+Why?
+Among other reasons, TCP needs to ensure that delayed packets from an old connection don't get confused with a future connection using the same connection tuple.
+It's a safety mechanism.
+________________________________________
+20. Why should you care as a Java developer?
+Imagine your application creates huge numbers of outbound connections:
+Java Service
+   ↓
+Database
+or:
+Java Service
+   ↓
+Redis
+or:
+Java Service
+   ↓
+Another API
+If you continuously create and close connections instead of reusing them:
+connect
+close
+connect
+close
+connect
+close
+...
+you can create:
+TIME_WAIT
+TIME_WAIT
+TIME_WAIT
+TIME_WAIT
+...
+and eventually encounter resource/port pressure.
+This is one reason connection pooling is so important.
+________________________________________
+21. Connection pooling
+Instead of:
+Request 1 → create TCP connection → close
+Request 2 → create TCP connection → close
+Request 3 → create TCP connection → close
+use:
+                Connection Pool
+             ┌──────┬──────┬──────┐
+             │ TCP1 │ TCP2 │ TCP3 │
+             └──┬───┴──┬───┴──┬───┘
+                │       │       │
+              reuse   reuse   reuse
+Application requests borrow existing connections.
+This reduces:
+TCP handshakes
+TLS handshakes
+CPU
+latency
+TIME_WAIT churn
+This concept will become very important when we discuss:
+Load Balancer
+Redis
+Databases
+Microservices
+HTTP clients
+________________________________________
+22. Now connect everything
+The complete sequence is:
+CLIENT
+   │
+   │ SYN
+   ▼
+LB kernel
+   │
+   │ SYN-ACK
+   ▼
+CLIENT
+   │
+   │ ACK
+   ▼
+LB
+   │
+   │
+   │ TCP ESTABLISHED
+   ▼
+accept()
+   │
+   ▼
+Connected Socket
+   │
+   │ HTTP bytes
+   ▼
+epoll
+   │
+   ▼
+read()
+   │
+   ▼
+HTTP parser
+   │
+   ▼
+Load Balancer logic
+   │
+   ▼
+Backend connection
+   │
+   ▼
+Backend
+That is the foundation.
+________________________________________
+23. And now you can answer your original question
+You originally asked:
+"What is a socket?"
+A much better answer now is:
+A socket is an operating-system abstraction representing a network communication endpoint.
+For a server:
+Listening socket
+    ↓
+accept()
+    ↓
+Connected socket
+The connected socket represents communication with a specific peer.
+The application uses operations such as:
+accept()
+read()
+write()
+send()
+recv()
+close()
+while the OS handles:
+TCP
+IP
+packet processing
+retransmission
+ordering
+buffers
+connection state
+That is the level of understanding I want you to have.
+________________________________________
+Your mental checkpoint
+Before we move on, you should be able to explain this diagram yourself:
+Client
+   │
+   │ SYN
+   ▼
+TCP handshake
+   │
+   ▼
+ESTABLISHED
+   │
+   ▼
+accept()
+   │
+   ▼
+Connected Socket
+   │
+   ▼
+epoll
+   │
+   ▼
+read()
+   │
+   ▼
+HTTP bytes
+   │
+   ▼
+HTTP request
+And understand:
+listen()
+     ≠
+accept()
+and:
+listening socket
+     ≠
+connected socket
+and:
+TCP connection
+     ≠
+HTTP request
+and:
+TCP
+     ≠
+HTTP
+
+Load Balancer — Lesson 9
+HTTP Keep-Alive, Connection Reuse, HTTP/1.1 vs HTTP/2
+Now we're going to answer a very important production question:
+Why is creating a TCP connection for every HTTP request expensive, and how does connection reuse solve it?
+This is directly connected to what we just learned:
+TCP connection
+    ↓
+TCP handshake
+    ↓
+HTTP request
+    ↓
+HTTP response
+    ↓
+TCP close
+A naive system could do this for every request.
+That would be terrible at scale.
+________________________________________
+1. Start with the naive approach
+Imagine a client needs these three resources:
+GET /users/10
+GET /orders/20
+GET /payments/30
+The naive approach:
+Request 1:
+
+TCP connect
+     ↓
+HTTP request
+     ↓
+HTTP response
+     ↓
+TCP close
+
+
+Request 2:
+
+TCP connect
+     ↓
+HTTP request
+     ↓
+HTTP response
+     ↓
+TCP close
+
+
+Request 3:
+
+TCP connect
+     ↓
+HTTP request
+     ↓
+HTTP response
+     ↓
+TCP close
+Every HTTP request causes a new TCP connection.
+That means repeated work.
+________________________________________
+2. What does TCP connection establishment cost?
+Remember the three-way handshake:
+Client                         Server
+
+   SYN ───────────────────────►
+
+       ◄──────────────── SYN-ACK
+
+   ACK ───────────────────────►
+Only after that can application data normally flow.
+So we have:
+TCP handshake
+      ↓
+HTTP request
+      ↓
+HTTP response
+That handshake costs network round-trip time and CPU/kernel work.
+Suppose:
+Client ↔ Server RTT = 50 ms
+The TCP establishment alone can add roughly one RTT before application data can proceed under the usual handshake timing.
+So:
+~50 ms
+can be spent simply establishing the connection.
+And HTTPS makes the story even more interesting.
+________________________________________
+3. HTTPS adds TLS
+With HTTPS:
+Client
+   │
+   │ TCP handshake
+   ▼
+TCP established
+   │
+   │ TLS handshake
+   ▼
+TLS established
+   │
+   │ HTTP
+   ▼
+Request
+So conceptually:
+TCP
+ ↓
+TLS
+ ↓
+HTTP
+Now we're paying for:
+TCP handshake
++
+TLS handshake
++
+HTTP request
+And cryptographic operations aren't free either.
+________________________________________
+4. The obvious optimization
+Instead of:
+Request
+ ↓
+connect
+ ↓
+response
+ ↓
+close
+we can do:
+connect once
+     ↓
+request 1
+     ↓
+response 1
+     ↓
+request 2
+     ↓
+response 2
+     ↓
+request 3
+     ↓
+response 3
+     ↓
+...
+This is:
+Persistent connection
+The TCP connection remains open.
+________________________________________
+5. HTTP Keep-Alive
+Conceptually:
+Client
+   │
+   │ TCP connection
+   ▼
+Load Balancer
+   │
+   ├── HTTP request #1
+   ├── HTTP response #1
+   │
+   ├── HTTP request #2
+   ├── HTTP response #2
+   │
+   ├── HTTP request #3
+   ├── HTTP response #3
+   │
+   └── ...
+We pay:
+TCP handshake
+once.
+Then reuse the established connection.
+This is a massive performance improvement.
+________________________________________
+6. Why is this so important?
+Imagine:
+100,000 HTTP requests
+Without connection reuse:
+100,000 TCP handshakes
+With connection reuse:
+perhaps hundreds/thousands of TCP connections
+serving those 100,000 requests
+The exact number depends on:
+concurrency
+connection lifetime
+server limits
+client behavior
+HTTP version
+request latency
+pool configuration
+But the basic principle is:
+Don't repeatedly pay the cost of establishing expensive connections when you can reuse them.
+________________________________________
+7. Connection pooling
+Now let's move from a single connection to a real application.
+Suppose your Java service needs to call:
+Payment Service
+You don't usually want:
+Thread 1 → create connection → request → close
+Thread 2 → create connection → request → close
+Thread 3 → create connection → request → close
+Instead, maintain a pool.
+             HTTP Connection Pool
+
+        ┌────────┬────────┬────────┐
+        │ Conn 1 │ Conn 2 │ Conn 3 │
+        └────────┴────────┴────────┘
+             ↑        ↑       ↑
+             └────────┴───────┘
+                    reuse
+Threads borrow connections when needed.
+________________________________________
+8. Connection pool ≠ thread pool
+Very important.
+A Java application might have:
+Thread Pool
+and separately:
+HTTP Connection Pool
+They solve different problems.
+Thread pool
+Controls:
+How much application work executes concurrently?
+Connection pool
+Controls:
+How many network connections are available/reused?
+You can have:
+200 application threads
+but:
+50 HTTP connections
+or:
+50 threads
+and:
+200 connections
+Whether that makes sense depends on the workload.
+________________________________________
+9. Now an important question
+Suppose we have one persistent TCP connection.
+Can we send:
+Request A
+Request B
+Request C
+at exactly the same time?
+With traditional HTTP/1.1 request/response handling, there's a limitation.
+This leads to:
+HTTP/1.1 Head-of-Line Blocking
+Let's understand it.
+________________________________________
+10. HTTP/1.1 persistent connection
+Suppose:
+Client
+   │
+   │ one TCP connection
+   ▼
+Server
+We send:
+Request A
+and wait:
+Response A
+Then:
+Request B
+and:
+Response B
+This is straightforward.
+But imagine A is slow.
+Request A
+   ↓
+Server takes 5 seconds
+Now B wants to be processed.
+Depending on how requests are sent/handled, B can get stuck behind A on the same connection.
+Conceptually:
+Request A ────────────────►
+                           5 seconds
+Response A ◄───────────────
+
+Request B ────────────────►
+This is a form of head-of-line blocking at the HTTP/1.1 application level.
+________________________________________
+11. Solution: multiple connections
+HTTP/1.1 clients commonly use multiple persistent connections.
+Instead of:
+Client
+  │
+  └── Connection 1
+we have:
+Client
+  ├── Connection 1
+  ├── Connection 2
+  ├── Connection 3
+  └── Connection 4
+Then:
+Request A → Connection 1
+Request B → Connection 2
+Request C → Connection 3
+Request D → Connection 4
+Now a slow A doesn't necessarily prevent B from proceeding.
+But there's a cost:
+More connections
+     ↓
+More sockets
+     ↓
+More memory
+     ↓
+More TCP state
+     ↓
+More TLS state
+     ↓
+More server resources
+We want a better solution.
+________________________________________
+12. Enter HTTP/2
+HTTP/2 changes the model significantly.
+Instead of:
+One connection
+    ↓
+One request at a time
+HTTP/2 supports:
+Multiplexing
+One TCP connection can carry multiple concurrent HTTP streams.
+Conceptually:
+                One TCP connection
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+     Stream 1       Stream 3       Stream 5
+      /users         /orders        /payment
+So:
+TCP connection
+       │
+       ├── HTTP/2 stream 1
+       ├── HTTP/2 stream 3
+       ├── HTTP/2 stream 5
+       ├── HTTP/2 stream 7
+       └── ...
+This is much more efficient.
+________________________________________
+13. HTTP/2 frames
+HTTP/2 doesn't send everything as one giant textual HTTP message in the way HTTP/1.1 does.
+HTTP/2 breaks communication into binary frames.
+Conceptually:
+TCP byte stream
+───────────────────────────────────────────►
+
+┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
+│Frame │ │Frame │ │Frame │ │Frame │
+└──────┘ └──────┘ └──────┘ └──────┘
+Each frame belongs to a stream.
+For example:
+Frame A → Stream 1
+Frame B → Stream 3
+Frame C → Stream 1
+Frame D → Stream 5
+Frame E → Stream 3
+So one connection can interleave data belonging to many requests.
+________________________________________
+14. Visual comparison
+HTTP/1.1
+TCP Connection 1
+│
+├── Request A
+├── Response A
+├── Request B
+├── Response B
+└── Request C
+    Response C
+Potentially need multiple connections for concurrency.
+HTTP/2
+ONE TCP CONNECTION
+│
+├── Stream 1 ─ Request A ─ Response A
+│
+├── Stream 3 ─ Request B ─ Response B
+│
+├── Stream 5 ─ Request C ─ Response C
+│
+└── Stream 7 ─ Request D ─ Response D
+Much better utilization.
+________________________________________
+15. But HTTP/2 has a deeper problem
+Don't think:
+"HTTP/2 solved all head-of-line blocking."
+It solved a major HTTP-level problem.
+But HTTP/2 still runs over:
+TCP
+And TCP itself provides one ordered byte stream.
+Suppose packets arrive:
+Packet 1
+Packet 2
+Packet 3
+Packet 4
+but packet 2 is lost:
+Packet 1 ✓
+Packet 2 ✗
+Packet 3 ✓
+Packet 4 ✓
+TCP must maintain ordering.
+So the application can be blocked waiting for the missing packet.
+Conceptually:
+TCP
+─────────────────────────────
+Frame 1 ✓
+Frame 2 ✗
+Frame 3 ✓
+Frame 4 ✓
+         ↓
+     TCP waits
+         ↓
+  retransmit Frame 2
+Even though Stream 3's data might be available, TCP's ordered byte stream can cause blocking.
+That's TCP-level head-of-line blocking.
+________________________________________
+16. And this leads to HTTP/3
+HTTP/3 changes the transport.
+Instead of:
+HTTP/2
+   ↓
+TCP
+HTTP/3 uses:
+HTTP/3
+   ↓
+QUIC
+   ↓
+UDP
+Conceptually:
+HTTP/1.1
+     ↓
+    TCP
+
+HTTP/2
+     ↓
+    TCP
+
+HTTP/3
+     ↓
+   QUIC
+     ↓
+    UDP
+________________________________________
+17. Why UDP?
+This often confuses developers.
+People sometimes say:
+"UDP is faster than TCP."
+That's too simplistic.
+HTTP/3 doesn't use UDP because UDP magically makes networking faster.
+QUIC is implemented over UDP and provides many transport features itself, including:
+reliability
+ordering within streams
+congestion control
+encryption integration
+connection management
+The crucial difference is that QUIC supports independent streams.
+________________________________________
+18. QUIC streams
+Imagine:
+QUIC connection
+│
+├── Stream 1
+├── Stream 2
+├── Stream 3
+└── Stream 4
+Suppose Stream 2 loses a packet:
+Stream 1 → continues
+Stream 2 → waits for retransmission
+Stream 3 → continues
+Stream 4 → continues
+The loss doesn't necessarily block unrelated streams at the transport level.
+That's one of the major architectural advantages.
+________________________________________
+19. Compare the evolution
+Now you should see the historical progression:
+HTTP/1.0
+   │
+   │ new connection per request
+   ▼
+Expensive
+Then:
+HTTP/1.1
+   │
+   │ persistent connections
+   ▼
+Reuse TCP connections
+Then:
+HTTP/1.1
+   │
+   │ multiple connections
+   ▼
+More concurrency
+Then:
+HTTP/2
+   │
+   │ multiplexing
+   ▼
+Many streams / one TCP connection
+Then:
+HTTP/3
+   │
+   │ QUIC
+   ▼
+Independent streams + modern transport
+________________________________________
+20. Now bring the Load Balancer back
+This is where our current topic becomes interesting.
+Suppose:
+100,000 clients
+       ↓
+Load Balancer
+       ↓
+100 backend servers
+The LB has to manage connections on both sides.
+Potentially:
+Clients
+   ↓
+many client connections
+   ↓
+LB
+   ↓
+many backend connections
+   ↓
+Servers
+And connection reuse can happen on both sides.
+________________________________________
+21. Client-side connection reuse
+Browser
+   │
+   │ persistent connection
+   ▼
+Load Balancer
+The browser may send many requests through the same connection.
+________________________________________
+22. Backend-side connection reuse
+The LB can maintain reusable connections to backends:
+LB
+│
+├── Backend A connection pool
+│    ├── conn 1
+│    ├── conn 2
+│    └── conn 3
+│
+├── Backend B connection pool
+│    ├── conn 1
+│    ├── conn 2
+│    └── conn 3
+│
+└── Backend C connection pool
+     ├── conn 1
+     ├── conn 2
+     └── conn 3
+This can dramatically reduce repeated TCP/TLS establishment.
+________________________________________
+23. This introduces a subtle production problem
+Suppose:
+100,000 client connections
+but only:
+5,000 backend connections
+That means the LB is doing:
+many clients
+      ↓
+fewer backend connections
+This is one reason a load balancer can be very useful.
+It can aggregate traffic.
+But it also means the LB itself becomes a major resource consumer.
+________________________________________
+24. Connection limits become important
+A production LB needs limits such as:
+maximum client connections
+maximum backend connections
+maximum connections per backend
+maximum requests per connection
+connection idle timeout
+request timeout
+TLS handshake timeout
+Why?
+Because without limits, one misbehaving client can consume resources indefinitely.
+Example:
+Client opens connection
+       ↓
+sends nothing
+       ↓
+keeps connection open
+       ↓
+repeat 1 million times
+The LB can run out of:
+memory
+file descriptors
+connection tracking capacity
+event-loop resources
+This leads directly into timeouts, rate limiting, and resilience, which we'll study later.
+________________________________________
+25. File descriptors
+Here's another internal Linux concept you should know.
+Sockets are represented to user-space programs through file descriptors.
+Conceptually:
+Java / native process
+        │
+        ├── fd 3 → listening socket
+        ├── fd 4 → client connection
+        ├── fd 5 → client connection
+        ├── fd 6 → backend connection
+        └── ...
+This is why a server can eventually hit:
+Too many open files
+even if the "files" aren't normal files.
+Sockets consume file descriptors too.
+This is a very real production issue.
+________________________________________
+26. So now the LB architecture becomes richer
+                        Load Balancer
+                              │
+          ┌───────────────────┼───────────────────┐
+          │                   │                   │
+       Sockets             Event loops          Buffers
+          │                   │                   │
+       epoll                read/write        backpressure
+          │
+          ▼
+    Client connections
+          │
+          ▼
+     HTTP processing
+          │
+          ▼
+   Routing algorithm
+          │
+          ▼
+    Backend pool
+          │
+          ▼
+   Persistent connections
+________________________________________
+27. A real-world latency thought experiment
+Suppose:
+TCP RTT = 50ms
+TLS setup = additional network/CPU cost
+HTTP request = 10ms server processing
+A fresh connection for every request means you repeatedly pay connection-establishment costs.
+But with a persistent connection:
+Connect once
+     ↓
+Request 1
+Request 2
+Request 3
+Request 4
+...
+the connection setup cost is amortized across many requests.
+This is why connection reuse is one of the simplest and most powerful performance optimizations in distributed systems.
+________________________________________
+28. But don't blindly make pools huge
+A common beginner mistake:
+"More connections = more performance."
+No.
+Suppose backend supports:
+1000 concurrent requests
+and your LB creates:
+100,000 connections
+You may create:
+memory pressure
+context switching
+TLS state
+kernel overhead
+connection contention
+backend overload
+The optimal connection count depends on:
+request concurrency
+latency
+CPU
+backend capacity
+network bandwidth
+protocol
+connection lifetime
+This is a capacity planning problem.
+________________________________________
+29. Senior-level mental model
+Don't think:
+"HTTP Keep-Alive means connection stays open."
+Think:
+Connection establishment
+        ↓
+expensive
+        ↓
+reuse connection
+        ↓
+amortize handshake cost
+        ↓
+reduce latency
+        ↓
+reduce CPU
+        ↓
+reduce connection churn
+        ↓
+reduce TIME_WAIT / socket pressure
+Then:
+HTTP/1.1
+    ↓
+persistent connections
+    ↓
+multiple connections for concurrency
+Then:
+HTTP/2
+    ↓
+multiplexing
+    ↓
+many streams over fewer TCP connections
+Then:
+HTTP/3
+    ↓
+QUIC
+    ↓
+independent transport streams
+That's the evolution.
+________________________________________
+30. One important correction to remember
+Don't say:
+"HTTP/2 uses one TCP connection."
+That's not necessarily true.
+HTTP/2 can multiplex many streams over a TCP connection, but implementations can use more than one connection depending on circumstances.
+Likewise:
+"HTTP/3 uses UDP directly."
+More accurately:
+HTTP/3
+  ↓
+QUIC
+  ↓
+UDP
+QUIC provides the transport semantics.
+________________________________________
+31. The complete picture
+You've now learned:
+Client
+   │
+   │ TCP handshake
+   ▼
+TCP connection
+   │
+   │ TLS handshake (HTTPS)
+   ▼
+TLS connection
+   │
+   │ HTTP
+   ▼
+HTTP request
+   │
+   ▼
+Load Balancer
+   │
+   │ route
+   ▼
+Backend
+And instead of repeating:
+TCP
+TLS
+HTTP
+close
+for every request:
+TCP
+TLS
+   │
+   ├── Request 1
+   ├── Request 2
+   ├── Request 3
+   └── Request N
+we reuse the connection.
+________________________________________
+Your checkpoint
+You should now be able to explain these without memorizing definitions:
+Question 1
+Why is this expensive?
+Request
+ ↓
+TCP handshake
+ ↓
+TLS handshake
+ ↓
+HTTP
+ ↓
+close
+Question 2
+Why does connection pooling improve performance?
+Question 3
+Why can HTTP/1.1 need multiple connections?
+Question 4
+What problem does HTTP/2 multiplexing solve?
+Question 5
+Why can HTTP/2 still experience transport-level head-of-line blocking?
+Question 6
+Why did HTTP/3 introduce QUIC?
+Question 7
+Why does a Load Balancer care about connection pooling?
+If these are clear, next we'll move to the actual brain of the Load Balancer: how it chooses Backend A vs Backend B vs Backend C.
+
+Load Balancer — Lesson 10
+How Does the Load Balancer Choose a Backend?
+Now we reach the core decision-making logic of a load balancer.
+We have:
+                    Clients
+                       │
+                       ▼
+                ┌─────────────┐
+                │ Load        │
+                │ Balancer    │
+                └──────┬──────┘
+                       │
+             Which backend?
+                       │
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+       Server A     Server B     Server C
+The LB has to answer one question for every incoming request/connection:
+Where should I send this traffic?
+That sounds simple.
+It isn't.
+________________________________________
+1. First: what information does the LB have?
+Suppose:
+Backend A → 10.0.0.11
+Backend B → 10.0.0.12
+Backend C → 10.0.0.13
+The LB maintains some internal representation of these servers.
+Conceptually:
+Backend Pool
+
+┌─────────────┐
+│ A           │
+│ IP           │
+│ port         │
+│ state        │
+│ connections  │
+│ weight       │
+└─────────────┘
+
+┌─────────────┐
+│ B           │
+│ IP           │
+│ port         │
+│ state        │
+│ connections  │
+│ weight       │
+└─────────────┘
+
+┌─────────────┐
+│ C           │
+│ IP           │
+│ port         │
+│ state        │
+│ connections  │
+│ weight       │
+└─────────────┘
+The exact implementation varies enormously.
+But conceptually, the LB needs:
+backend list
++
+backend health
++
+routing state
++
+algorithm state
+________________________________________
+2. Before choosing a backend: health
+Imagine:
+A ✓
+B ✓
+C ✗
+Server C has crashed.
+A naive Round Robin algorithm might do:
+A
+B
+C
+A
+B
+C
+That would be disastrous.
+So the LB first needs to know:
+Which servers are eligible to receive traffic?
+This introduces:
+Health Checks
+We'll cover health checks deeply later in this lesson.
+For now:
+All backends
+     ↓
+Remove unhealthy servers
+     ↓
+Healthy backend pool
+     ↓
+Load-balancing algorithm
+     ↓
+Selected backend
+________________________________________
+3. Algorithm #1 — Round Robin
+The simplest algorithm.
+Suppose:
+A
+B
+C
+Requests:
+R1 → A
+R2 → B
+R3 → C
+R4 → A
+R5 → B
+R6 → C
+Visual:
+             LB
+             │
+     ┌───────┼───────┐
+     ▼       ▼       ▼
+     A       B       C
+
+R1 ──► A
+R2 ──► B
+R3 ──► C
+R4 ──► A
+R5 ──► B
+R6 ──► C
+The LB essentially maintains:
+index = 0
+
+backend = backends[index]
+
+index = (index + 1) % N
+For:
+N = 3
+the sequence is:
+0
+1
+2
+0
+1
+2
+...
+________________________________________
+4. Internal implementation
+A simplified Java implementation:
+class RoundRobinBalancer {
+
+    private final List<Backend> backends;
+    private final AtomicInteger counter = new AtomicInteger();
+
+    Backend next() {
+        int index = Math.floorMod(
+            counter.getAndIncrement(),
+            backends.size()
+        );
+
+        return backends.get(index);
+    }
+}
+The important thing is not the Java syntax.
+The important thing is the state:
+counter
+and:
+modulo N
+So the algorithm is approximately:
+O(1)
+for selection.
+Very cheap.
+________________________________________
+5. But here's the problem
+Round Robin assumes:
+Every request costs approximately the same.
+That assumption is often wrong.
+Imagine:
+Request 1 → /health
+Request 2 → /products
+Request 3 → /generate-report
+These don't necessarily consume equal resources.
+Maybe:
+/health
+→ 1ms
+
+/products
+→ 10ms
+
+/generate-report
+→ 10 seconds
+Now imagine:
+A → 100 expensive requests
+B → 100 cheap requests
+C → 100 cheap requests
+Round Robin says:
+"Perfectly balanced!"
+But the CPU says:
+"Absolutely not."
+This is the first major lesson:
+Equal number of requests does not mean equal workload.
+________________________________________
+6. Connection vs request
+Another subtle problem.
+Suppose the LB operates at Layer 4 and uses:
+Least Connections
+It may see:
+A → 10 connections
+B → 10 connections
+C → 10 connections
+Looks balanced.
+But:
+A's connections → tiny requests
+B's connections → medium requests
+C's connections → 30-second requests
+Same connection count ≠ same workload.
+That's why real load balancing is much more complicated than:
+A → B → C → A → B → C
+________________________________________
+7. Weighted Round Robin
+Now suppose servers have different capacities.
+Server A → 4 CPU cores
+Server B → 8 CPU cores
+Server C → 16 CPU cores
+We don't necessarily want:
+A = 33%
+B = 33%
+C = 33%
+Maybe we want:
+A = 14%
+B = 29%
+C = 57%
+We assign weights:
+A → 1
+B → 2
+C → 4
+Then approximately:
+A
+B
+B
+C
+C
+C
+C
+A
+B
+B
+C
+...
+The exact algorithm can vary.
+The idea is:
+higher capacity
+      ↓
+higher weight
+      ↓
+more traffic
+________________________________________
+8. Why weights are useful in production
+Imagine a deployment:
+Old servers:
+A A A A A A
+
+New servers:
+B B
+You don't necessarily want the new servers immediately receiving 50% of production traffic.
+You could do:
+Old:
+weight = 10
+
+New:
+weight = 1
+Traffic becomes approximately:
+Old → 90%
+New → 10%
+Then gradually:
+10%
+→ 20%
+→ 30%
+→ 50%
+→ 100%
+This becomes related to:
+canary deployment
+blue-green deployment
+progressive delivery
+We'll revisit this in production architecture.
+________________________________________
+9. Algorithm #2 — Least Connections
+Now let's solve Round Robin's major weakness.
+Suppose:
+A → 100 active connections
+B → 20 active connections
+C → 10 active connections
+A new connection arrives.
+Least Connections chooses:
+C
+because:
+10 < 20 < 100
+So:
+new request
+    ↓
+inspect connection counts
+    ↓
+C
+________________________________________
+10. Internal data structure
+The LB needs something like:
+Backend     Connections
+
+A           100
+B            20
+C            10
+If there are only three servers, scanning is trivial.
+Backend best = backends.get(0);
+
+for (Backend backend : backends) {
+    if (backend.connections() < best.connections()) {
+        best = backend;
+    }
+}
+
+return best;
+Complexity:
+O(N)
+where N = number of backends.
+With:
+N = 100
+that's fine.
+But with huge backend pools, repeatedly scanning everything can become expensive.
+________________________________________
+11. The concurrency problem
+Now things get interesting.
+Suppose:
+Thread 1 → checks A = 10 connections
+Thread 2 → checks A = 10 connections
+Thread 3 → checks A = 10 connections
+Thread 4 → checks A = 10 connections
+All see A as the least loaded.
+They all choose A.
+Then:
+A = 14
+B = 10
+C = 10
+We just created a burst.
+So the LB needs concurrency-safe state.
+This is where our previous Java knowledge becomes relevant:
+AtomicInteger
+CAS
+locks
+concurrent data structures
+A real high-performance LB cannot simply use:
+connections++;
+without thinking about concurrent updates.
+________________________________________
+12. Least Connections isn't perfect either
+Suppose:
+A → 10 connections
+B → 20 connections
+but:
+A connections:
+mostly long-running requests
+
+B connections:
+mostly tiny requests
+Then:
+10 ≠ less work
+Again:
+Connections are only a proxy for workload.
+________________________________________
+13. Weighted Least Connections
+We can combine ideas.
+Suppose:
+A weight = 1
+B weight = 2
+A more capable server can tolerate more connections.
+Conceptually, we might compare:
+connections / weight
+Example:
+A:
+10 connections / 1 = 10
+
+B:
+15 connections / 2 = 7.5
+B may be considered less loaded.
+The exact implementation varies, but the principle is:
+load
+  ÷
+capacity
+rather than simply:
+load
+This is a much more useful mental model.
+________________________________________
+14. Algorithm #3 — IP Hash
+Now imagine a different requirement.
+Suppose:
+Client A → Server A
+We want that same client to repeatedly go to the same backend.
+Why?
+Maybe the application has local session state:
+Server A
+   ↓
+session data
+If the same client goes to:
+A → B → C
+the application may lose session state.
+One approach:
+hash(clientIP)
+        ↓
+     modulo N
+        ↓
+    backend
+Example:
+hash(192.168.1.10) % 3
+        ↓
+        1
+        ↓
+Server B
+So:
+192.168.1.10 → B
+192.168.1.10 → B
+192.168.1.10 → B
+________________________________________
+15. But IP hashing has a serious problem
+Imagine 1 million users behind one NAT.
+Their traffic may appear to originate from:
+203.0.113.10
+So:
+1,000,000 users
+       ↓
+same source IP
+       ↓
+same backend
+That can create a hotspot.
+This is why client IP is not necessarily a good representation of user identity.
+________________________________________
+16. Another problem: backend changes
+Suppose:
+A
+B
+C
+and:
+hash(clientIP) % 3
+Now C goes down.
+We have:
+A
+B
+and:
+hash(clientIP) % 2
+A huge number of clients may suddenly map to different servers.
+That can destroy cache locality and sessions.
+This is one reason we'll later study:
+Consistent Hashing
+It's specifically designed to reduce remapping when nodes are added or removed.
+We'll cover it deeply in Module 2.
+________________________________________
+17. Algorithm #4 — Random
+Very simple:
+backend = random(backends)
+Example:
+R1 → B
+R2 → A
+R3 → C
+R4 → B
+R5 → B
+R6 → A
+You might think:
+"Random sounds worse than Round Robin."
+Not necessarily.
+With enough requests, random selection can distribute traffic surprisingly well.
+But randomness alone doesn't know:
+backend health
+backend capacity
+current load
+latency
+So production algorithms often combine randomization with load information.
+________________________________________
+18. Algorithm #5 — Power of Two Choices
+This one is particularly interesting.
+Instead of checking every backend:
+A
+B
+C
+D
+E
+F
+G
+...
+choose two random servers:
+randomly select:
+
+B
+F
+Compare:
+B → 30 connections
+F → 12 connections
+Choose:
+F
+That's it.
+The algorithm is:
+choose two random servers
+        ↓
+compare load
+        ↓
+choose less loaded one
+It sounds almost too simple.
+But it can produce excellent load distribution.
+This is known as the:
+Power of Two Choices
+________________________________________
+19. Why is this clever?
+Checking all N servers:
+O(N)
+Checking two:
+O(1)
+You get surprisingly good distribution without requiring global knowledge of the entire backend pool for every decision.
+This is a beautiful distributed-systems principle:
+Small amounts of local information can produce surprisingly good global behavior.
+This concept is worth remembering far beyond load balancing.
+________________________________________
+20. Now: Health Checks
+We haven't forgotten the most important prerequisite.
+Suppose:
+A ✓
+B ✓
+C ✗
+The LB must stop routing traffic to C.
+How does it know?
+It actively probes the backend.
+For example:
+LB
+ │
+ │ GET /health
+ ▼
+Backend
+ │
+ │ 200 OK
+ ▼
+LB
+Then:
+C = healthy
+________________________________________
+21. Health checks are not always simple
+A basic health endpoint:
+GET /health
+might return:
+200 OK
+But what does that actually prove?
+Maybe:
+Java process alive ✓
+while:
+Database unavailable ✗
+Redis unavailable ✗
+Kafka unavailable ✗
+The application may still return:
+200 OK
+So there are different health concepts.
+________________________________________
+22. Liveness vs readiness
+This distinction is extremely important in modern distributed systems.
+Liveness
+Asks:
+"Is the application process alive?"
+Java process
+   ↓
+alive?
+Readiness
+Asks:
+"Can this instance actually serve traffic?"
+For example:
+Application
+    │
+    ├── Database ✓
+    ├── Required dependency ✓
+    └── Configuration ✓
+Then:
+READY
+If:
+Database ✗
+perhaps:
+NOT READY
+and the LB should stop sending user traffic there.
+________________________________________
+23. Health check frequency
+Suppose the LB checks every:
+5 seconds
+If a server crashes immediately after a successful health check:
+t=0 → healthy
+t=1 → server crashes
+t=2 → dead
+t=3 → dead
+t=4 → dead
+t=5 → health check discovers failure
+For several seconds, traffic might still be sent to the dead server.
+This is a trade-off.
+Check too frequently:
+more health-check traffic
+more CPU
+Check too slowly:
+slower failure detection
+________________________________________
+24. Failure detection is probabilistic/time-based
+Imagine:
+interval = 5 sec
+failure threshold = 3
+The LB might require:
+failure
+failure
+failure
+before declaring:
+UNHEALTHY
+Worst-case detection can therefore be significantly longer than the interval itself.
+This is a critical production design parameter.
+________________________________________
+25. Now combine the whole decision process
+A simplified LB request flow:
+Client
+  │
+  ▼
+Load Balancer
+  │
+  ├── Are there healthy backends?
+  │
+  ▼
+Healthy pool
+  │
+  ├── Round Robin?
+  ├── Least Connections?
+  ├── Weighted?
+  ├── Hash?
+  └── Power of Two?
+  │
+  ▼
+Selected backend
+  │
+  ▼
+Forward traffic
+________________________________________
+26. But there is a deeper issue
+Suppose:
+Backend A → healthy
+Backend B → healthy
+Backend C → healthy
+Health check says:
+✓ ✓ ✓
+But:
+A → 10ms latency
+B → 10ms latency
+C → 2 seconds latency
+All are technically healthy.
+Yet C is struggling.
+A basic health check doesn't necessarily capture this.
+This leads us toward:
+latency-aware routing
+load-aware routing
+adaptive load balancing
+Modern infrastructure can become much more sophisticated than simple Round Robin.
+________________________________________
+27. The real objective
+The objective isn't:
+"Give every server exactly the same number of requests."
+The real objective is closer to:
+Distribute work so that the overall system remains healthy, efficient, and low-latency.
+That distinction is extremely important.
+Think:
+                Goal
+                 │
+        ┌────────┼────────┐
+        ▼        ▼        ▼
+     latency  throughput  stability
+        │        │        │
+        └────────┼────────┘
+                 ▼
+         user experience
+________________________________________
+28. Algorithm comparison
+Algorithm	Main idea	Strength	Weakness
+Round Robin	Rotate servers	Very cheap	Ignores workload
+Weighted RR	Rotate according to capacity	Handles different server capacities	Still doesn't see current load
+Least Connections	Choose lowest active connections	Adapts to current connection load	Connections ≠ actual work
+Weighted Least Connections	Load relative to capacity	Better for heterogeneous servers	More state
+IP Hash	Same client tends toward same backend	Locality/session affinity	Hotspots/remapping
+Random	Random backend	Very simple	No load awareness
+Power of Two	Pick 2, choose better	Excellent efficiency	Needs load metric
+________________________________________
+29. What does a production LB actually do?
+Don't imagine:
+if algorithm == ROUND_ROBIN
+    use round robin
+and that's it.
+A production LB often has multiple layers:
+                   Incoming traffic
+                          │
+                          ▼
+                  Connection handling
+                          │
+                          ▼
+                    Health filtering
+                          │
+                          ▼
+                 Backend eligibility
+                          │
+                          ▼
+                   Routing policy
+                          │
+             ┌────────────┼────────────┐
+             ▼            ▼            ▼
+          weights      locality      load
+             │            │            │
+             └────────────┼────────────┘
+                          ▼
+                   Backend chosen
+                          │
+                          ▼
+                    Forward request
+And the routing decision may depend on:
+health
+weight
+connection count
+latency
+capacity
+hash
+zone
+region
+availability
+________________________________________
+30. The most important distinction
+There are actually two separate questions:
+Question A
+Which servers are eligible?
+Health / readiness
+Question B
+Among eligible servers, which one should receive the traffic?
+Load-balancing algorithm
+Don't mix them.
+                Backend pool
+                     │
+                     ▼
+               Health filter
+                     │
+                     ▼
+              Healthy servers
+                     │
+                     ▼
+             Routing algorithm
+                     │
+                     ▼
+             Selected backend
+This separation will help you understand production systems.
+________________________________________
+31. One final challenge
+Suppose you have:
+Server A:
+4 CPU
+8 GB RAM
+100 active connections
+
+Server B:
+16 CPU
+32 GB RAM
+200 active connections
+Which one should receive the next request?
+A beginner says:
+A → 100
+B → 200
+
+Choose A.
+But that's not necessarily correct.
+Normalize by capacity:
+A:
+100 / 4 = 25 connections per CPU
+
+B:
+200 / 16 = 12.5 connections per CPU
+Now B may actually be less loaded relative to its capacity.
+This is the beginning of capacity-aware load balancing.
+________________________________________
+What you should now understand
+The LB isn't simply:
+Client → A/B/C
+Internally:
+             Incoming connection/request
+                       │
+                       ▼
+                 Load Balancer
+                       │
+                       ▼
+               ┌───────────────┐
+               │ Backend Pool  │
+               └───────┬───────┘
+                       │
+                 Health filter
+                       │
+                       ▼
+               Healthy backends
+                       │
+                       ▼
+                Routing policy
+                       │
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+      Round Robin  Least Conn    Hash/etc.
+          │            │            │
+          └────────────┼────────────┘
+                       ▼
+                 Backend chosen
+And the fundamental trade-off is:
+Simple algorithm
+      ↓
+less state
+      ↓
+very fast
+
+More intelligent algorithm
+      ↓
+more state/metrics
+      ↓
+potentially better distribution
+
+System Design — Lesson 11
+L4 vs L7 Load Balancing: What Actually Happens Inside?
+We will treat this as a textbook chapter, not a list of definitions.
+The key question is:
+What does the load balancer actually see when traffic passes through it?
+Once you understand that, L4, L7, TLS termination, reverse proxying, and connection architecture become much easier.
+________________________________________
+11.1 The network stack we need
+A request travels through several layers.
+For our purposes:
+Application
+    │
+    │ HTTP
+    ▼
+Transport
+    │
+    │ TCP
+    ▼
+Network
+    │
+    │ IP
+    ▼
+Network Interface
+Consider:
+GET /orders/123 HTTP/1.1
+Host: shop.example.com
+Authorization: ...
+This is application-level information.
+TCP does not understand any of it.
+TCP sees something more like:
+Source IP
+Source Port
+
+Destination IP
+Destination Port
+
+Sequence Number
+Acknowledgment Number
+Flags
+Payload
+That distinction is the foundation of L4 vs L7.
+________________________________________
+11.2 What L4 actually sees
+Suppose:
+Client
+192.168.1.10:51520
+        │
+        │ TCP
+        ▼
+Load Balancer
+10.0.0.5:443
+The LB can inspect:
+Source IP
+Source Port
+Destination IP
+Destination Port
+TCP flags
+TCP connection state
+But it doesn't need to understand:
+GET /orders/123
+The TCP payload can effectively be treated as opaque bytes.
+So the decision can be:
+Client
+   │
+   │ TCP connection
+   ▼
+L4 Load Balancer
+   │
+   ├── destination port = 443
+   ├── source IP = ...
+   ├── protocol = TCP
+   │
+   ▼
+Backend
+The LB is primarily concerned with the connection/flow, not the HTTP meaning.
+________________________________________
+11.3 L4's crucial property
+Suppose the client sends:
+GET /orders/123
+The L4 LB doesn't need to parse:
+GET
+/orders/123
+Host
+Cookie
+Authorization
+It can simply forward the TCP traffic.
+Conceptually:
+Client TCP bytes
+       │
+       ▼
+    L4 LB
+       │
+       ▼
+Backend TCP bytes
+This is why L4 load balancing can be extremely efficient.
+________________________________________
+11.4 L7 sees something completely different
+Now consider an L7 load balancer.
+The LB needs to understand the application protocol.
+For HTTP:
+Client
+   │
+   │ HTTP request
+   ▼
+L7 Load Balancer
+   │
+   ├── Method = GET
+   ├── Path = /orders/123
+   ├── Host = shop.example.com
+   ├── Headers = ...
+   └── Cookies = ...
+Now the LB can make decisions based on application information.
+For example:
+/orders/*
+       ↓
+Order Service
+
+/payments/*
+       ↓
+Payment Service
+
+/products/*
+       ↓
+Product Service
+This is something a pure L4 LB cannot do by examining HTTP semantics.
+________________________________________
+11.5 Why does L7 need to read the request?
+Imagine:
+GET /payments/123
+The LB wants to know:
+"Should this go to the payment service?"
+The only way to know is to inspect the HTTP request.
+So:
+TCP payload
+    ↓
+HTTP parser
+    ↓
+HTTP request
+    ↓
+Routing rules
+    ↓
+Backend
+Now the LB isn't simply forwarding bytes.
+It's participating in the application protocol.
+________________________________________
+11.6 The biggest architectural difference
+Here's the most important diagram in this entire lesson.
+L4 forwarding
+Conceptually:
+Client
+   │
+   │ TCP connection
+   │
+   ▼
+L4 LB
+   │
+   │ forwarding traffic
+   │
+   ▼
+Backend
+The LB primarily forwards the connection/flow.
+L7 proxying
+Conceptually:
+Client
+   │
+   │ TCP connection #1
+   ▼
+L7 LB
+   │
+   │ TCP connection #2
+   ▼
+Backend
+These are two different connections.
+This is critical.
+________________________________________
+11.7 The client does NOT have a TCP connection directly to the backend
+With an L7 proxy:
+Client
+   │
+   │ Connection A
+   ▼
+Load Balancer
+   │
+   │ Connection B
+   ▼
+Backend
+There is no single TCP connection stretching through the LB.
+Instead:
+Connection A:
+Client ↔ LB
+
+Connection B:
+LB ↔ Backend
+The LB is an active participant in both.
+________________________________________
+11.8 Follow one request
+Let's trace:
+GET /orders/123
+Step 1 — Client establishes TCP
+Client
+   │
+   │ SYN
+   ▼
+LB
+TCP connection:
+Client ↔ LB
+is established.
+________________________________________
+Step 2 — HTTP request arrives
+Client
+   │
+   │ GET /orders/123
+   ▼
+LB
+The LB reads the HTTP request.
+________________________________________
+Step 3 — Routing decision
+The LB might have rules:
+/orders/* → Order Service
+/payments/* → Payment Service
+So:
+/orders/123
+      ↓
+Order Service
+________________________________________
+Step 4 — LB connects to backend
+The LB uses another TCP connection:
+LB
+ │
+ │ TCP
+ ▼
+Order Service
+Now:
+Client
+   │
+   │ TCP #1
+   ▼
+LB
+   │
+   │ TCP #2
+   ▼
+Order Service
+________________________________________
+Step 5 — LB forwards HTTP
+The LB sends an HTTP request over connection #2.
+Conceptually:
+Client
+  │
+  │ GET /orders/123
+  ▼
+LB
+  │
+  │ GET /orders/123
+  ▼
+Order Service
+________________________________________
+Step 6 — Response travels back
+Order Service
+      │
+      │ HTTP response
+      ▼
+     LB
+      │
+      │ HTTP response
+      ▼
+    Client
+So the complete flow is:
+             Connection #1
+Client ─────────────────────► LB
+                               │
+                               │ Connection #2
+                               ▼
+                         Order Service
+                               │
+                               │
+Client ◄───────────────────────┘
+That is the fundamental architecture of a reverse proxy/L7 load balancer.
+________________________________________
+11.9 Why is this distinction so powerful?
+Because the LB can now change things between the two connections.
+For example:
+Client → LB
+HTTPS
+but:
+LB → Backend
+HTTP
+The client has an encrypted connection to the LB.
+The LB decrypts it.
+Then it can send plain HTTP internally.
+Architecture:
+              TLS
+Client ─────────────► LB
+                      │
+                      │ HTTP
+                      ▼
+                   Backend
+This is:
+TLS termination
+________________________________________
+11.10 Why terminate TLS at the LB?
+Imagine 1,000 backend servers.
+If every backend independently handles TLS:
+Client
+  │
+  ▼
+LB
+  │
+  ├── TLS → Server A
+  ├── TLS → Server B
+  ├── TLS → Server C
+  ├── TLS → Server D
+  └── ...
+Every server has to handle:
+TLS handshake
+certificate
+encryption
+decryption
+cryptographic CPU
+Instead:
+Clients
+   │
+   │ HTTPS
+   ▼
+Load Balancer
+   │
+   │ HTTP / HTTPS
+   ▼
+Backend pool
+The LB centralizes TLS processing.
+This can simplify certificate management and reduce repeated TLS work across application servers.
+________________________________________
+11.11 But isn't HTTP between LB and backend dangerous?
+Yes, potentially.
+If:
+LB
+  │
+  │ HTTP
+  ▼
+Backend
+and the network between them is untrusted, traffic can be exposed.
+Therefore production architectures may use:
+Client
+   │
+   │ HTTPS
+   ▼
+LB
+   │
+   │ HTTPS
+   ▼
+Backend
+Now TLS exists on both sides.
+This is commonly called:
+TLS termination at LB
++
+TLS re-encryption to backend
+Conceptually:
+          TLS #1                 TLS #2
+Client ──────────► LB ─────────────────► Backend
+Two separate encrypted connections.
+________________________________________
+11.12 The LB can modify HTTP
+Because the L7 LB understands HTTP, it can potentially change the request.
+For example:
+Client
+   │
+   │ Host: shop.example.com
+   ▼
+LB
+The LB could add information such as:
+X-Forwarded-For
+X-Forwarded-Proto
+X-Forwarded-Host
+For example:
+Client IP:
+203.0.113.10
+The backend connection originates from the LB, so without additional metadata the backend might see:
+Source IP = LB IP
+The LB can preserve the original client information through headers.
+________________________________________
+11.13 Why does the backend care?
+Suppose your Java application wants to log:
+User request came from 203.0.113.10
+But the TCP connection is:
+LB → Java application
+The Java application sees the LB as the immediate network peer.
+Therefore infrastructure often propagates the original client information through:
+X-Forwarded-For
+or standardized mechanisms such as:
+Forwarded
+This is one reason reverse proxies are not transparent byte-forwarders.
+They actively participate in the request path.
+________________________________________
+11.14 L7 can route based on Host
+Suppose:
+api.example.com
+web.example.com
+admin.example.com
+All resolve to the same LB.
+The LB can inspect:
+Host
+and route:
+api.example.com
+       ↓
+API cluster
+
+web.example.com
+       ↓
+Web cluster
+
+admin.example.com
+       ↓
+Admin cluster
+The IP address alone wouldn't tell the LB which application the user intended.
+The HTTP Host header does.
+________________________________________
+11.15 L7 can route based on path
+Example:
+/orders/*
+/payments/*
+/users/*
+The LB can implement:
+/orders/*
+      ↓
+Order Service
+
+/payments/*
+      ↓
+Payment Service
+
+/users/*
+      ↓
+User Service
+This becomes extremely useful in microservices.
+________________________________________
+11.16 L7 can route based on headers
+Suppose you deploy:
+Version 1
+Version 2
+The LB could potentially route based on:
+X-API-Version
+or another application-level attribute.
+For example:
+X-API-Version: 2
+        ↓
+Service V2
+This is impossible for a pure L4 connection router unless some information outside HTTP is available to it.
+________________________________________
+11.17 L7 can route based on cookies
+Suppose a cookie contains:
+SESSION=abc123
+The LB can inspect it.
+Potentially:
+SESSION
+   ↓
+routing decision
+   ↓
+Backend
+This enables forms of:
+session affinity
+sticky sessions
+Again, the LB needs to understand HTTP/application data.
+________________________________________
+11.18 Why L7 costs more
+Now we can derive the performance difference instead of memorizing it.
+L4 can conceptually do:
+receive packets
+      ↓
+inspect connection information
+      ↓
+forward
+L7 needs:
+receive bytes
+      ↓
+TCP stream handling
+      ↓
+HTTP parsing
+      ↓
+headers
+      ↓
+path
+      ↓
+cookies
+      ↓
+routing rules
+      ↓
+possibly modify request
+      ↓
+send to backend
+More work means:
+CPU
+memory
+buffers
+latency
+complexity
+So the trade-off becomes:
+L4
+less application awareness
+       ↓
+less processing
+       ↓
+high throughput / lower overhead
+
+
+L7
+more application awareness
+       ↓
+more processing
+       ↓
+more routing capability
+Don't interpret this as:
+L4 is always faster.
+Real performance depends on implementation, hardware, TLS, protocol, traffic patterns, and configuration.
+________________________________________
+11.19 L4 doesn't mean "dumb"
+This is another misconception.
+An L4 load balancer can still perform sophisticated operations around:
+TCP connections
+source/destination
+health
+connection counts
+NAT
+timeouts
+connection tracking
+failover
+It simply isn't relying on HTTP semantics for its primary routing decision.
+________________________________________
+11.20 L7 doesn't mean "only HTTP"
+Layer 7 refers to application-layer protocols.
+Depending on the technology, an application-aware proxy can understand protocols beyond HTTP.
+But in modern web architectures, HTTP/HTTPS is the most important example.
+________________________________________
+11.21 The architectural trade-off
+Think about it as:
+                 L4
+                  │
+        "I care about the flow."
+                  │
+                  ▼
+          TCP / connection
+versus:
+                 L7
+                  │
+        "I care about the request."
+                  │
+                  ▼
+        HTTP / application data
+That is a much better mental model than memorizing:
+L4 = transport layer
+L7 = application layer
+________________________________________
+11.22 One request, two very different architectures
+L4-style flow
+Client
+  │
+  │ TCP flow
+  ▼
+L4 LB
+  │
+  │ forwarded flow
+  ▼
+Backend
+The LB doesn't need to understand:
+GET /orders
+L7-style proxy
+Client
+  │
+  │ TCP #1
+  ▼
+L7 LB
+  │
+  │ parse HTTP
+  │ choose backend
+  │ possibly modify request
+  │
+  │ TCP #2
+  ▼
+Backend
+This is the architectural distinction you should remember.
+________________________________________
+11.23 Now connect this to Reverse Proxy
+We're ready for the next conceptual connection.
+Look at what our L7 LB is doing:
+Client
+   │
+   ▼
+L7 LB
+   │
+   ├── receives request
+   ├── understands HTTP
+   ├── chooses backend
+   ├── creates/uses backend connection
+   ├── forwards request
+   └── returns response
+What is this architecture?
+It is fundamentally proxy behavior.
+The client doesn't directly communicate with the application server.
+Instead:
+Client
+   ↓
+Proxy
+   ↓
+Server
+That brings us to Reverse Proxy.
+And now you can see why Load Balancer and Reverse Proxy are related but not identical concepts.
+________________________________________
+Lesson 11 checkpoint
+Before moving on, make sure these statements make sense internally:
+1. L4 can route without understanding HTTP.
+
+2. L7 needs to understand application-level information
+   such as HTTP requests.
+
+3. Client → LB and LB → Backend are separate TCP
+   connections in a typical L7 reverse-proxy architecture.
+
+4. TLS can terminate at the LB.
+
+5. TLS can also be re-established between LB and backend.
+
+6. L7 can route using URL path, hostname, headers,
+   cookies, etc.
+
+7. L4 generally has less application-level processing,
+   while L7 provides richer request-aware routing.
+
