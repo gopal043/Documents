@@ -14222,3 +14222,2796 @@ Connection draining
 Zero-downtime deployment
 
 
+Lesson 19 — API Gateway Internals
+Part 1 — Why API Gateway Exists
+We now move forward.
+First question:
+Why did API Gateway become necessary if we already have a Load Balancer and Reverse Proxy?
+This distinction is extremely important.
+________________________________________
+19.1 Start with a simple system
+Imagine an application with one backend:
+Client
+   ↓
+Load Balancer
+   ↓
+Order Service
+Simple.
+The load balancer's main concern is:
+"Which server instance should receive this request?"
+For example:
+                 Load Balancer
+                 /     |     \
+                ↓      ↓      ↓
+             Order-1 Order-2 Order-3
+Its responsibility is primarily traffic distribution.
+________________________________________
+19.2 Now the company grows
+Our application becomes microservices:
+                   Clients
+                      │
+        ┌─────────────┼─────────────┐
+        ↓             ↓             ↓
+    Web App       Mobile App     Partner App
+And backend becomes:
+             Microservices
+
+          Order Service
+               │
+          Payment Service
+               │
+           User Service
+               │
+        Inventory Service
+               │
+       Notification Service
+Now the client needs to communicate with many services.
+The naive architecture becomes:
+Client
+  │
+  ├──→ Order Service
+  │
+  ├──→ Payment Service
+  │
+  ├──→ User Service
+  │
+  ├──→ Inventory Service
+  │
+  └──→ Notification Service
+This creates a problem.
+________________________________________
+19.3 The client now knows too much
+Suppose the mobile application needs to display:
+Order Details
+To construct the page it needs:
+User information
+Order information
+Product information
+Payment status
+Shipping information
+The mobile app might make:
+GET /users/123
+GET /orders/456
+GET /products/789
+GET /payments/456
+GET /shipping/456
+That's already 5 calls.
+The client now needs to understand:
+where each service lives
+which API belongs to which service
+authentication requirements
+versioning
+timeouts
+retries
+service failures
+response formats
+This creates client-side coupling.
+________________________________________
+19.4 The architecture gets ugly
+Imagine:
+                         Mobile App
+                             │
+             ┌───────────────┼────────────────┐
+             │               │                │
+             ▼               ▼                ▼
+        User Service    Order Service    Payment Service
+             │               │                │
+             ▼               ▼                ▼
+        Inventory       Shipping        Notification
+Now imagine 50 microservices.
+The client becomes aware of:
+50 service endpoints
+50 authentication policies
+50 versions
+50 failure behaviors
+That's terrible architecture.
+We need a boundary.
+________________________________________
+19.5 Introduce API Gateway
+Now:
+                         Client
+                            │
+                            ▼
+                     ┌─────────────┐
+                     │ API Gateway │
+                     └──────┬──────┘
+                            │
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                 ▼
+      User Service      Order Service    Payment Service
+The client knows only:
+api.company.com
+The gateway knows:
+User Service
+Order Service
+Payment Service
+Inventory Service
+...
+This is the first major reason API gateways exist.
+The API Gateway creates a stable external API boundary around a changing internal service topology.
+________________________________________
+19.6 But here's the deeper problem
+A gateway isn't merely:
+Client → Gateway → Service
+It can become a policy enforcement and request orchestration layer.
+For example:
+Client
+   ↓
+API Gateway
+   │
+   ├── Authentication
+   ├── Authorization
+   ├── Routing
+   ├── Rate limiting
+   ├── Request validation
+   ├── TLS termination
+   ├── Logging
+   ├── Metrics
+   ├── Tracing
+   ├── API versioning
+   └── Transformation
+   │
+   ▼
+Microservices
+Now you can see why it is a separate system-design component.
+________________________________________
+19.7 API Gateway vs Reverse Proxy
+This is an important distinction.
+A reverse proxy can do:
+Client
+  ↓
+Reverse Proxy
+  ↓
+Backend
+Its primary job is traffic forwarding and infrastructure-level handling.
+An API Gateway is more API-aware.
+For example:
+GET /api/v1/orders/123
+Gateway might understand:
+/v1/orders
+means:
+Order Service
+and:
+/v1/users
+means:
+User Service
+It can apply API-specific policies.
+________________________________________
+19.8 Don't think of Gateway as "just another proxy"
+Think in layers:
+                 Client
+                    │
+                    ▼
+             API Gateway
+                    │
+       ┌────────────┼────────────┐
+       │            │            │
+ Authentication   Routing     Policies
+       │            │            │
+       └────────────┼────────────┘
+                    ▼
+             Reverse Proxy
+                    │
+                    ▼
+             Load Balancing
+                    │
+                    ▼
+              Service
+In real implementations, these responsibilities can overlap and may be combined into one product.
+But conceptually, keeping the layers separate helps you reason correctly.
+________________________________________
+19.9 API Gateway request flow
+Let's follow one request internally.
+Client sends:
+GET /api/v1/orders/123
+Authorization: Bearer <token>
+The request reaches:
+Client
+   ↓
+Network
+   ↓
+API Gateway
+Now the gateway processes it.
+Conceptually:
+1. Accept connection
+2. Parse HTTP request
+3. Determine route
+4. Authenticate
+5. Authorize
+6. Apply policies
+7. Determine backend
+8. Forward request
+9. Receive response
+10. Transform response if necessary
+11. Return response
+We'll break these down individually.
+________________________________________
+19.10 Step 1 — Request parsing
+Gateway receives bytes.
+At the network level:
+TCP
+ ↓
+bytes
+HTTP parser turns those bytes into something conceptually like:
+Method = GET
+
+Path = /api/v1/orders/123
+
+Headers:
+    Authorization = ...
+    Accept = application/json
+Internally the gateway needs request structures.
+Conceptually:
+class HttpRequest {
+    HttpMethod method;
+    String path;
+    Headers headers;
+    Body body;
+}
+The actual implementation is considerably more optimized.
+________________________________________
+19.11 Step 2 — Route matching
+Gateway now asks:
+Which backend should handle /api/v1/orders/123?
+It might have routing configuration:
+/api/v1/users/**       → User Service
+/api/v1/orders/**      → Order Service
+/api/v1/payments/**    → Payment Service
+/api/v1/products/**    → Product Service
+The gateway performs route matching.
+Conceptually:
+Request path
+     ↓
+Routing table
+     ↓
+Matching rule
+     ↓
+Backend target
+________________________________________
+19.12 Internally, routing is a lookup problem
+Suppose we have:
+/api/users
+/api/orders
+/api/payments
+/api/products
+A naive implementation might scan every rule:
+for route in routes:
+    if route.matches(request):
+        return route.backend;
+That's:
+O(N)
+where N = number of routes.
+For a gateway with thousands of routes, that can become inefficient.
+So high-performance gateways can use specialized routing structures such as:
+Trie
+Radix Tree
+Prefix Tree
+Hash Map
+Compiled routing structures
+This is exactly the type of internal implementation detail we'll study.
+________________________________________
+19.13 Example: Trie-based routing
+Imagine routes:
+/api/users
+/api/orders
+/api/products
+A conceptual tree:
+/
+└── api
+     ├── users
+     ├── orders
+     └── products
+Request:
+/api/orders/123
+walks:
+/
+ ↓
+api
+ ↓
+orders
+ ↓
+123
+The gateway can identify:
+Order Service
+without scanning unrelated routes.
+________________________________________
+19.14 Step 3 — Authentication
+Now the gateway might inspect:
+Authorization: Bearer eyJ...
+It needs to determine:
+Who is this caller?
+Possible mechanisms:
+JWT
+OAuth2
+API keys
+mTLS
+session tokens
+Conceptually:
+Request
+   ↓
+Authentication
+   ↓
+Identity
+For example:
+userId = 123
+________________________________________
+19.15 Why put authentication at the gateway?
+Without centralized authentication:
+Client
+   ↓
+User Service → authenticate
+Client
+   ↓
+Order Service → authenticate
+Client
+   ↓
+Payment Service → authenticate
+Every service repeats infrastructure logic.
+With gateway:
+Client
+   ↓
+Gateway
+   ↓
+Authenticate
+   ↓
+Service
+Now services can focus more on business logic.
+But there is an important architectural caveat:
+Gateway authentication does not automatically eliminate service-level authorization.
+Suppose the gateway knows:
+user = Gopal
+But Order Service must still determine:
+Is Gopal allowed to access order 123?
+That's a business authorization decision.
+So:
+Authentication ≠ Authorization
+We'll go much deeper into this later when discussing security architecture.
+________________________________________
+19.16 Step 4 — Authorization
+Suppose the authenticated identity is:
+user = 123
+role = CUSTOMER
+Request:
+DELETE /api/v1/orders/456
+Gateway policy might say:
+CUSTOMER cannot call admin APIs
+So the gateway can reject:
+403 Forbidden
+before the request reaches the backend.
+This protects backend capacity.
+________________________________________
+19.17 Step 5 — Policy enforcement
+Now the gateway can enforce cross-cutting policies.
+Examples:
+maximum request size
+allowed HTTP methods
+allowed content types
+API version
+rate limit
+IP rules
+authentication
+authorization
+timeouts
+This creates an important property:
+                  Gateway
+                     │
+          ┌──────────┼──────────┐
+          ▼          ▼          ▼
+       Client A   Client B   Client C
+          │          │          │
+          └──────────┼──────────┘
+                     ▼
+              Common policies
+Instead of implementing the same policy independently in every service.
+________________________________________
+19.18 Step 6 — Determine backend
+After policy processing:
+/api/v1/orders/123
+might become:
+Order Service
+But now we have another layer.
+There might be multiple instances:
+Order Service
+     │
+ ┌───┼────┐
+ ▼   ▼    ▼
+O1  O2   O3
+The gateway may use:
+service discovery
+load balancing
+health status
+connection pooling
+to choose the actual instance.
+This is where the Gateway, Reverse Proxy, and Load Balancer concepts connect.
+________________________________________
+19.19 The full conceptual stack
+Client
+   │
+   ▼
+┌─────────────────────┐
+│ API Gateway         │
+│                     │
+│ Auth                │
+│ Authorization       │
+│ Routing             │
+│ Rate Limit          │
+│ Validation          │
+│ API Versioning      │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Reverse Proxy       │
+│                     │
+│ Connection Pool     │
+│ HTTP forwarding     │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Load Balancing       │
+└──────────┬──────────┘
+           │
+       ┌───┼───┐
+       ▼   ▼   ▼
+      O1  O2  O3
+Again, a real product may combine several of these layers.
+We're separating them conceptually to understand responsibilities.
+________________________________________
+19.20 The most important architectural reason
+Microservices introduce internal complexity.
+The client should not need to know that complexity.
+So:
+WITHOUT GATEWAY
+
+Client
+ ├── User Service
+ ├── Order Service
+ ├── Payment Service
+ ├── Inventory Service
+ ├── Shipping Service
+ └── Notification Service
+becomes:
+WITH GATEWAY
+
+Client
+      │
+      ▼
+API Gateway
+      │
+ ┌────┼─────┬──────┬───────┐
+ ▼    ▼     ▼      ▼       ▼
+User Order Payment Inventory Shipping
+The gateway acts as a boundary between external API consumers and internal service topology.
+That's the key mental model.
+________________________________________
+19.21 But we have created a new problem
+Look carefully:
+Client
+   ↓
+API Gateway
+   ↓
+Services
+Every request now passes through the gateway.
+What happens if:
+Gateway crashes?
+Potentially:
+ALL CLIENT REQUESTS
+        ↓
+       FAIL
+We've introduced a potential single point of failure.
+Therefore production gateways are themselves distributed:
+                 DNS / LB
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+       GW1         GW2         GW3
+        │           │           │
+        └───────────┼───────────┘
+                    ▼
+               Microservices
+This is a critical design principle:
+A gateway cannot be a single machine if it is on the critical path of every request.
+________________________________________
+19.22 Gateway scaling
+Suppose:
+10,000 requests/sec
+One gateway handles:
+2,000 requests/sec
+We need roughly:
+5 gateway instances
+plus headroom.
+Then:
+                 Load Balancer
+                      │
+          ┌───────────┼───────────┐
+          ▼           ▼           ▼
+         GW1         GW2         GW3
+The gateway itself becomes horizontally scalable.
+Now you have:
+Load Balancer
+      ↓
+API Gateway cluster
+      ↓
+Service cluster
+Notice the layering.
+________________________________________
+19.23 Gateway state becomes dangerous
+Suppose gateway instance 1 stores:
+session information
+rate-limit counters
+routing state
+authentication state
+in local memory.
+Then:
+Client A
+   ↓
+GW1
+next request:
+Client A
+   ↓
+GW2
+GW2 doesn't have GW1's state.
+Therefore scalable gateways should minimize local state or use shared/distributed state where necessary.
+This is one of the reasons distributed system design becomes difficult.
+________________________________________
+19.24 API Gateway is a potential bottleneck
+Suppose:
+Client traffic = 100k req/sec
+and gateway processing adds:
+2 ms/request
+That gateway layer now has a significant computational cost.
+Gateway processing might include:
+TLS
+HTTP parsing
+JWT verification
+routing
+logging
+metrics
+tracing
+rate limiting
+serialization
+Therefore the gateway itself must be highly optimized.
+________________________________________
+19.25 Why JWT verification can matter
+Suppose every request carries a JWT.
+Gateway verifies its signature.
+If using asymmetric cryptography:
+RSA / ECDSA
+verification consumes CPU.
+At:
+100,000 requests/sec
+even a small amount of CPU work becomes significant.
+Therefore production architecture may consider:
+token caching
+key caching
+efficient cryptographic libraries
+hardware acceleration
+gateway scaling
+Again:
+A cross-cutting feature becomes a system-wide cost when placed on the critical path.
+________________________________________
+19.26 Gateway aggregation
+Here's another powerful feature.
+Client needs:
+Order
+User
+Payment
+Instead of:
+Client
+ ├──→ User Service
+ ├──→ Order Service
+ └──→ Payment Service
+the gateway could expose:
+GET /customer-dashboard
+and internally:
+Gateway
+   ├──→ User Service
+   ├──→ Order Service
+   └──→ Payment Service
+Then aggregate responses:
+             Gateway
+          /     |      \
+         ↓      ↓       ↓
+       User   Order   Payment
+         \      |      /
+          \     |     /
+           Aggregation
+                ↓
+             Client
+This is called API composition / aggregation.
+It can reduce client round trips.
+But it creates another problem:
+The gateway is now doing business-flow orchestration.
+That's dangerous if taken too far.
+________________________________________
+19.27 Gateway becoming a "God service"
+Suppose we keep adding:
+authentication
+authorization
+routing
+aggregation
+business logic
+database queries
+transformations
+payments
+order calculations
+Eventually:
+API Gateway
+becomes a giant service containing business logic.
+That's an architectural smell.
+A healthy gateway generally handles:
+cross-cutting API concerns
+rather than becoming the application's business brain.
+________________________________________
+19.28 API Gateway vs BFF
+Another architecture we'll encounter later is:
+Backend For Frontend
+Instead of one generic gateway:
+                 Gateway
+                /       \
+             Mobile     Web
+we can have:
+                 API Layer
+                /         \
+               /           \
+          Mobile BFF      Web BFF
+               │             │
+               └──────┬──────┘
+                      ▼
+                 Microservices
+Why?
+Mobile and web may need different response shapes.
+This reduces client complexity without forcing one gateway API to satisfy every client.
+We'll revisit this when discussing API design and microservices architecture.
+________________________________________
+19.29 The request path we're building
+Our architecture is becoming:
+Client
+  │
+  ▼
+Load Balancer
+  │
+  ▼
+API Gateway
+  │
+  ├── Authentication
+  ├── Authorization
+  ├── Routing
+  ├── Validation
+  └── Policies
+  │
+  ▼
+Reverse Proxy / HTTP Client
+  │
+  ├── Connection Pool
+  └── Backend Selection
+  │
+  ▼
+Load Balancing
+  │
+  ▼
+Service Instance
+We have already learned the pieces individually.
+Now we're seeing how they fit together.
+________________________________________
+19.30 One important correction to our mental model
+Don't memorize:
+Load Balancer
+   ↓
+Reverse Proxy
+   ↓
+API Gateway
+as a mandatory physical chain.
+That would be wrong.
+Real systems can combine these functions.
+For example, one technology can simultaneously provide:
+TLS termination
+reverse proxy
+load balancing
+API routing
+authentication
+rate limiting
+The important thing is to understand responsibilities, not force every responsibility into a separate machine.
+________________________________________
+19.31 API Gateway's responsibility boundary
+Think of it like this:
+          EXTERNAL WORLD
+                │
+                ▼
+        ┌───────────────┐
+        │ API Gateway   │
+        └───────┬───────┘
+                │
+       INTERNAL WORLD
+                │
+       ┌────────┼────────┐
+       ▼        ▼        ▼
+    User      Order    Payment
+The gateway protects the internal architecture from external consumers.
+Therefore if internally you change:
+Order Service
+from:
+Order Service V1
+to:
+Order Service V2
+the client ideally shouldn't care.
+The gateway can route:
+/api/v1/orders → V1
+/api/v2/orders → V2
+That is another major capability:
+API versioning
+________________________________________
+19.32 Why API versioning belongs at the boundary
+Imagine:
+Mobile app version 1
+Mobile app version 2
+Web app
+Partner API
+They may all expect different contracts.
+The gateway can expose:
+/v1/orders
+/v2/orders
+and map those to appropriate internal services.
+This allows internal evolution without breaking all clients simultaneously.
+________________________________________
+19.33 Performance model
+At a high level:
+Total latency
+=
+Client → Gateway
++
+Gateway processing
++
+Gateway → Service
++
+Service processing
++
+Service → Gateway
++
+Gateway → Client
+The gateway adds work.
+Therefore we want:
+Gateway overhead << backend processing time
+But if the backend is extremely fast:
+Backend = 1 ms
+Gateway = 3 ms
+the gateway becomes a major part of total latency.
+This is why gateway design matters at high scale.
+________________________________________
+19.34 Failure model
+Possible gateway failures:
+Gateway process crash
+CPU saturation
+Memory exhaustion
+Connection pool exhaustion
+TLS overload
+Authentication dependency failure
+Routing configuration error
+Service discovery failure
+Rate-limit state failure
+Network failure
+Bad deployment
+And because gateway is on the critical path:
+Gateway failure
+      ↓
+many APIs fail simultaneously
+This is why gateway architecture eventually intersects strongly with:
+Timeout
+Retry
+Circuit Breaker
+Bulkhead
+Rate Limiting
+But we will not jump into those now.
+They belong to Module 4.
+________________________________________
+19.35 The API Gateway mental model
+Keep this picture:
+                        CLIENTS
+                           │
+                           ▼
+                 ┌──────────────────┐
+                 │   API GATEWAY    │
+                 │                  │
+                 │ Route            │
+                 │ Authenticate     │
+                 │ Authorize        │
+                 │ Validate         │
+                 │ Transform        │
+                 │ Version          │
+                 │ Observe          │
+                 └────────┬─────────┘
+                          │
+              ┌───────────┼────────────┐
+              ▼           ▼            ▼
+            User        Order        Payment
+           Service     Service       Service
+The gateway isn't primarily about making services faster.
+It's about controlling and shaping access to services.
+________________________________________
+Lesson 19 checkpoint
+You should now understand why API Gateway exists:
+Microservices
+     ↓
+Many internal endpoints
+     ↓
+Client becomes tightly coupled
+     ↓
+Gateway creates external API boundary
+And its major internal responsibilities:
+Request parsing
+       ↓
+Route matching
+       ↓
+Authentication
+       ↓
+Authorization
+       ↓
+Policy enforcement
+       ↓
+Backend selection
+       ↓
+Forwarding
+       ↓
+Response processing
+Important distinction
+Load Balancer
+→ Where should traffic go?
+
+Reverse Proxy
+→ How should traffic be forwarded?
+
+API Gateway
+→ What API request is this, who is calling, what policies apply,
+  and which internal service/API should handle it?
+These responsibilities can overlap in real products, but the mental separation is crucial.
+
+System Design — Lesson 20
+API Gateway Internals — Routing Engine & Service Discovery
+We are continuing API Gateway only. No repetition of Load Balancer or Reverse Proxy.
+The two things we need to understand today are:
+1.	How does the gateway decide which service should receive a request? 
+2.	How does it discover where that service actually lives? 
+These are two separate problems.
+________________________________________
+20.1 The problem
+Suppose the gateway receives:
+GET /api/v1/orders/123
+The gateway needs to determine:
+Which service?
+        ↓
+Order Service
+
+Which instance?
+        ↓
+10.0.4.21:8080
+So there are actually two decisions:
+Request
+   │
+   ▼
+┌──────────────────┐
+│ Route Matching   │
+└────────┬─────────┘
+         │
+         ▼
+Order Service
+         │
+         ▼
+┌──────────────────┐
+│ Service Discovery│
+└────────┬─────────┘
+         │
+         ▼
+10.0.4.21:8080
+Do not mix these.
+Routing
+Answers:
+Which logical service/API owns this request?
+Service discovery
+Answers:
+Where is that service currently running?
+This distinction becomes extremely important in microservices.
+________________________________________
+20.2 Start with static routing
+Imagine gateway configuration:
+/api/v1/users/**      → user-service
+/api/v1/orders/**     → order-service
+/api/v1/payments/**   → payment-service
+/api/v1/products/**   → product-service
+Incoming request:
+GET /api/v1/orders/123
+Gateway needs to find:
+/api/v1/orders/**
+Then:
+order-service
+is selected.
+This is route matching.
+________________________________________
+20.3 The naive implementation
+Suppose we store:
+List<Route> routes;
+and process:
+for (Route route : routes) {
+    if (route.matches(request.path())) {
+        return route;
+    }
+}
+Conceptually:
+Request
+   │
+   ▼
+Route 1 → match?
+   │ no
+   ▼
+Route 2 → match?
+   │ no
+   ▼
+Route 3 → match?
+   │ yes
+   ▼
+Backend
+If there are N routes:
+Worst case = O(N)
+For a small system:
+N = 20
+No problem.
+But consider a massive gateway:
+N = 10,000 routes
+and:
+100,000 requests/sec
+Scanning routes becomes wasteful.
+So the routing engine needs better data structures.
+________________________________________
+20.4 Exact matching
+Suppose routes are:
+/api/login
+/api/logout
+/api/profile
+We can use a hash map:
+Map<String, Route>
+Conceptually:
+"/api/login"   → LoginService
+"/api/logout"  → LogoutService
+"/api/profile" → ProfileService
+Request:
+/api/profile
+becomes:
+routeMap.get("/api/profile")
+Average lookup:
+O(1)
+Excellent.
+But real APIs don't consist only of exact paths.
+________________________________________
+20.5 Dynamic path parameters
+Consider:
+/api/users/123
+/api/users/456
+/api/users/789
+We don't want thousands of routes:
+/api/users/123
+/api/users/456
+/api/users/789
+Instead we define:
+/api/users/{userId}
+Now:
+/api/users/123
+matches:
+/api/users/{userId}
+and extracts:
+userId = 123
+The routing engine therefore has to understand path structure.
+________________________________________
+20.6 Prefix matching
+Another common rule:
+/api/users/**
+matches:
+/api/users
+/api/users/123
+/api/users/123/orders
+/api/users/123/orders/456
+So the gateway needs to understand:
+exact match
+prefix match
+parameter match
+wildcard match
+This makes simple HashMap lookup insufficient.
+________________________________________
+20.7 Trie
+A natural structure for hierarchical paths is a Trie.
+Imagine:
+/api/users
+/api/orders
+/api/products
+A simplified tree:
+ROOT
+ │
+ └── api
+      ├── users
+      │
+      ├── orders
+      │
+      └── products
+Now:
+/api/orders
+is found by walking:
+ROOT
+ ↓
+api
+ ↓
+orders
+The gateway isn't comparing the entire path against every route.
+It walks the path segments.
+________________________________________
+20.8 Dynamic parameters in a Trie
+Consider:
+/api/users/{userId}
+The tree might conceptually look like:
+ROOT
+ │
+ └── api
+      │
+      └── users
+            │
+            └── {parameter}
+Request:
+/api/users/123
+walks:
+api
+ ↓
+users
+ ↓
+123
+The final node says:
+route = UserService
+parameter userId = 123
+Now we have something much more powerful than simple string matching.
+________________________________________
+20.9 Multiple route types create precedence problems
+Suppose we have:
+/api/users/me
+/api/users/{userId}
+Request:
+/api/users/me
+Which route wins?
+It could match both:
+/api/users/me
+
+/api/users/{userId}
+userId = "me"
+Obviously we probably want:
+/api/users/me
+So routing engines need route precedence.
+Typically:
+Exact
+   ↓
+Static path
+   ↓
+Parameterized path
+   ↓
+Wildcard
+The exact rules depend on the gateway/framework.
+But the principle is universal:
+More specific routes should generally win over less specific routes.
+________________________________________
+20.10 Example
+Suppose:
+/api/users/me
+/api/users/{id}
+/api/users/**
+Request:
+/api/users/me
+Potential matches:
+1. /api/users/me
+2. /api/users/{id}
+3. /api/users/**
+The routing engine should choose:
+/api/users/me
+because it is most specific.
+For:
+/api/users/123
+the likely match becomes:
+/api/users/{id}
+For:
+/api/users/123/orders/history
+the wildcard may win:
+/api/users/**
+This is routing precedence.
+________________________________________
+20.11 Why this matters operationally
+A routing configuration error can send traffic to the wrong service.
+For example:
+/api/payments/**
+accidentally configured to:
+order-service
+The gateway may be perfectly healthy.
+The load balancer may be perfectly healthy.
+The order service may be perfectly healthy.
+Yet the system is broken.
+This is why gateway configuration is production-critical data.
+________________________________________
+20.12 Route configuration is data
+Think of:
+/api/v1/orders/** → order-service
+as data rather than code.
+The gateway needs some configuration source:
+Configuration
+      ↓
+Routing Engine
+      ↓
+Request
+      ↓
+Backend
+There are several ways to supply it.
+Static configuration
+routes:
+  - path: /api/v1/orders/**
+    service: order-service
+Gateway starts with this configuration.
+Simple.
+But what happens when the service location changes?
+________________________________________
+20.13 Microservices don't have permanent addresses
+This is where service discovery becomes necessary.
+Imagine:
+order-service
+has:
+Instance 1 → 10.0.1.10:8080
+Instance 2 → 10.0.1.11:8080
+Instance 3 → 10.0.1.12:8080
+Then instance 1 dies.
+A new instance starts:
+Instance 4 → 10.0.5.31:8080
+The gateway shouldn't require a developer to manually edit:
+10.0.1.10
+every time.
+This is why service discovery exists.
+________________________________________
+20.14 Logical name vs physical location
+This distinction is fundamental.
+The gateway wants:
+order-service
+not:
+10.0.1.10:8080
+because:
+order-service
+is a logical identity.
+While:
+10.0.1.10:8080
+is a physical location.
+So:
+Logical Service
+      │
+      ▼
+Service Discovery
+      │
+      ▼
+Physical Instances
+________________________________________
+20.15 Service registry
+One approach is a service registry.
+Conceptually:
+               Service Registry
+        ┌─────────────────────────┐
+        │                         │
+        │ order-service           │
+        │   10.0.1.10:8080       │
+        │   10.0.1.11:8080       │
+        │   10.0.1.12:8080       │
+        │                         │
+        │ user-service            │
+        │   10.0.2.10:8080       │
+        │   10.0.2.11:8080       │
+        └─────────────────────────┘
+Gateway asks:
+"Where is order-service?"
+Registry responds:
+10.0.1.10:8080
+10.0.1.11:8080
+10.0.1.12:8080
+Then the gateway chooses one.
+________________________________________
+20.16 How does the registry know instances exist?
+This is where things get interesting.
+There are two major models.
+Model A — Client registration
+Service starts:
+Order Service
+      │
+      │ REGISTER
+      ▼
+Service Registry
+It says:
+I am order-service.
+
+Address = 10.0.1.10
+Port = 8080
+Registry stores it.
+________________________________________
+20.17 But what if the service crashes?
+Suppose:
+10.0.1.10
+crashes.
+The registry might still have:
+order-service
+10.0.1.10
+That's dangerous.
+So registration usually needs some form of liveness mechanism.
+________________________________________
+20.18 Heartbeat
+Service periodically tells registry:
+I'm alive.
+For example:
+Service → Registry
+       heartbeat
+
+Service → Registry
+       heartbeat
+
+Service → Registry
+       heartbeat
+If heartbeats stop:
+Registry
+    ↓
+No heartbeat
+    ↓
+Instance suspected dead
+Eventually:
+remove instance
+________________________________________
+20.19 TTL model
+A common conceptual approach is:
+registration TTL = 30 seconds
+Service refreshes periodically:
+every 10 seconds
+If refreshes stop:
+TTL expires
+and registry removes the instance.
+This is similar to a lease.
+________________________________________
+20.20 Why heartbeat alone isn't enough
+Suppose the service is alive:
+Java process = alive
+but its application is broken:
+database connection pool = exhausted
+The service may still send heartbeats.
+Registry thinks:
+healthy
+But real requests fail.
+Therefore service discovery and health checking are related but not identical.
+A stronger system can combine:
+registration
++
+health checks
++
+application readiness
+________________________________________
+20.21 Server-side discovery
+There's another model.
+Client doesn't directly query registry.
+Instead:
+Client
+  ↓
+Load Balancer / Gateway
+  ↓
+Service Registry
+  ↓
+Service Instance
+The gateway/load balancer performs discovery.
+The client only knows:
+order-service
+This is common in gateway-based architectures.
+________________________________________
+20.22 Client-side vs server-side discovery
+Client-side
+Client
+   ↓
+Registry
+   ↓
+Choose instance
+   ↓
+Service
+The client needs discovery logic.
+Server-side
+Client
+   ↓
+Gateway / LB
+   ↓
+Registry
+   ↓
+Choose instance
+   ↓
+Service
+The infrastructure handles discovery.
+For external clients, server-side discovery is often preferable because you don't want every mobile/web client to understand internal service topology.
+________________________________________
+20.23 DNS-based service discovery
+You don't necessarily need a dedicated registry API.
+DNS itself can provide discovery.
+For example:
+order-service.internal
+might resolve to:
+10.0.1.10
+10.0.1.11
+10.0.1.12
+The gateway asks DNS:
+order-service.internal
+and receives addresses.
+This is conceptually:
+Gateway
+   │
+   │ DNS query
+   ▼
+DNS
+   │
+   ├── 10.0.1.10
+   ├── 10.0.1.11
+   └── 10.0.1.12
+________________________________________
+20.24 Why DNS caching creates a subtle problem
+Suppose DNS says:
+order-service
+→ 10.0.1.10
+→ 10.0.1.11
+Gateway caches this result.
+Then:
+10.0.1.10
+dies.
+But gateway's DNS cache still contains it.
+Now:
+Gateway → 10.0.1.10 → failure
+So service discovery has a freshness problem.
+This is a recurring distributed systems concept:
+How quickly can the system learn that reality changed?
+________________________________________
+20.25 TTL trade-off
+Suppose DNS TTL is:
+5 seconds
+Then changes propagate relatively quickly.
+But DNS infrastructure receives more queries.
+If TTL is:
+5 minutes
+DNS load decreases.
+But stale information lasts longer.
+So:
+Short TTL
+→ fresher
+→ more lookup overhead
+
+Long TTL
+→ cheaper
+→ potentially stale
+Again we're seeing the classic:
+freshness ↔ cost
+trade-off.
+________________________________________
+20.26 Service registry architecture
+A registry itself is a distributed system.
+It can't simply be:
+ONE SERVER
+because if it dies:
+all discovery fails
+So a production registry may be replicated:
+             Registry Cluster
+          ┌────────┬────────┐
+          ▼        ▼        ▼
+        Node A   Node B   Node C
+Now we have a new question:
+How do these registry nodes agree on membership information?
+That introduces distributed consensus and consistency.
+We will eventually encounter this territory when we study:
+CAP
+Replication
+Leader-Follower
+Distributed systems consistency
+We won't jump there now.
+________________________________________
+20.27 Gateway route vs service discovery
+Let's combine the two.
+Request:
+GET /api/v1/orders/123
+Phase 1 — Route matching
+Gateway determines:
+/api/v1/orders/**
+             ↓
+       order-service
+Phase 2 — Discovery
+Gateway asks:
+Where is order-service?
+Registry returns:
+10.0.1.10:8080
+10.0.1.11:8080
+10.0.1.12:8080
+Phase 3 — Instance selection
+Gateway chooses:
+10.0.1.11:8080
+Full flow:
+                 Request
+                    │
+                    ▼
+              Route Matcher
+                    │
+                    ▼
+              order-service
+                    │
+                    ▼
+             Service Discovery
+                    │
+                    ▼
+       ┌────────────┼────────────┐
+       ▼            ▼            ▼
+    Instance A   Instance B   Instance C
+       │            │
+       └───────┬────┘
+               ▼
+          Select one
+This is the core internal flow.
+________________________________________
+20.28 Service instances are dynamic
+This is the biggest reason discovery exists.
+At 10:00:
+order-service
+A
+B
+C
+At 10:01:
+A
+B
+C
+D
+At 10:02:
+B
+C
+D
+At 10:03:
+B
+C
+D
+E
+F
+The gateway should adapt automatically.
+This is called dynamic service topology.
+________________________________________
+20.29 Gateway needs a local view
+It would be inefficient if every request required:
+Request
+ ↓
+Gateway
+ ↓
+Registry
+ ↓
+Gateway
+ ↓
+Service
+Imagine:
+100,000 requests/sec
+You don't want:
+100,000 registry queries/sec
+Therefore gateway typically maintains a local representation:
+Gateway
+  │
+  └── Local service registry cache
+Conceptually:
+order-service
+    ↓
+[A, B, C]
+Gateway can then perform routing locally.
+________________________________________
+20.30 Push vs pull updates
+How does gateway's local view stay updated?
+Two broad approaches.
+Pull
+Gateway periodically asks:
+"Give me current instances."
+Gateway → Registry
+Gateway → Registry
+Gateway → Registry
+Push
+Registry sends changes:
+Registry
+   ↓
+"Instance D added"
+   ↓
+Gateway
+Push can reduce polling and provide faster updates, but requires more sophisticated event/update infrastructure.
+________________________________________
+20.31 Why local caching is powerful
+Without local caching:
+Request
+ ↓
+Registry lookup
+ ↓
+Service
+With local caching:
+Request
+ ↓
+Local routing state
+ ↓
+Service
+The gateway's critical request path becomes faster.
+But now we have a new problem:
+What if the local routing state is stale?
+Example:
+Registry:
+A = dead
+B = healthy
+Gateway cache:
+A = healthy
+B = healthy
+Gateway might still send traffic to A.
+Therefore discovery has a fundamental trade-off:
+Central lookup
+→ fresher
+→ more overhead
+
+Local cache
+→ faster
+→ potentially stale
+This exact trade-off will appear repeatedly throughout distributed systems.
+________________________________________
+20.32 Configuration update race
+Suppose you deploy:
+Order Service V2
+and change:
+/api/v1/orders
+routing.
+Gateway instances may update at different times:
+GW1 → new configuration
+GW2 → old configuration
+GW3 → new configuration
+Now two clients sending the same request can experience different routing.
+This is why configuration distribution must itself be designed carefully.
+________________________________________
+20.33 Hot reload vs restart
+One approach:
+Change configuration
+        ↓
+Restart gateway
+Simple but dangerous.
+If gateway restart takes:
+10 seconds
+and all instances restart simultaneously:
+Gateway unavailable
+Instead, systems may support:
+Hot configuration reload
+Meaning:
+Old routing table
+        ↓
+New routing table
+        ↓
+Atomically switch
+The important idea is:
+Don't mutate routing state halfway through a request.
+________________________________________
+20.34 Immutable routing snapshot
+A powerful implementation approach is:
+Current routing table
+treated as immutable.
+For example:
+RoutingTable V1
+Gateway receives new configuration:
+Build RoutingTable V2
+Then:
+atomic reference swap
+Conceptually:
+Before:
+
+current → V1
+
+
+After:
+
+current → V2
+Existing requests can finish using V1.
+New requests use V2.
+This avoids complicated locking around every route lookup.
+This is a very useful concurrency pattern:
+Build immutable state separately, then atomically publish it.
+________________________________________
+20.35 Java mental model
+A simplified implementation might look like:
+AtomicReference<RoutingTable> currentTable;
+Request path:
+RoutingTable table = currentTable.get();
+
+Route route = table.match(request.path());
+
+ServiceInstances instances =
+        discovery.get(route.service());
+
+Backend backend =
+        chooseInstance(instances);
+
+forward(request, backend);
+The real implementation can be far more optimized, but this mental model is valuable.
+Notice:
+RoutingTable
+and:
+Service Discovery
+are separate concepts.
+________________________________________
+20.36 Failure: registry unavailable
+Suppose:
+Gateway
+   ↓
+Registry
+   X
+What should happen?
+If the gateway requires the registry for every request:
+Registry down
+      ↓
+Gateway can't route
+      ↓
+All requests fail
+Bad architecture.
+If gateway already has cached discovery data:
+Registry down
+      ↓
+Gateway uses last known state
+      ↓
+Traffic continues
+This is much more resilient.
+But stale data can cause failures if topology changes significantly.
+So the gateway must decide:
+How long can I trust stale discovery information?
+That's a system-design trade-off.
+________________________________________
+20.37 Failure: instance disappears between discovery and request
+This is subtle.
+Gateway discovers:
+A
+B
+C
+chooses:
+B
+But immediately afterward:
+B crashes
+So:
+Discovery says:
+B healthy
+
+Reality:
+B dead
+This is a race condition in distributed state.
+No discovery mechanism can guarantee:
+"The instance will definitely remain alive after I discovered it."
+Therefore the request path still needs failure handling.
+We will later learn exactly how:
+Timeout
+Retry
+Circuit Breaker
+deal with this.
+________________________________________
+20.38 The key lesson
+Service discovery does not guarantee service availability.
+It only provides:
+best-known topology
+At time T.
+Then reality can change at:
+T + 1 ms
+This is one of the fundamental realities of distributed systems.
+________________________________________
+20.39 Full internal architecture
+Let's combine everything we've learned so far:
+                       CLIENT
+                          │
+                          ▼
+                 ┌─────────────────┐
+                 │   API Gateway   │
+                 └────────┬────────┘
+                          │
+                          ▼
+                  HTTP Request Parser
+                          │
+                          ▼
+                    Route Matcher
+                          │
+                 /api/v1/orders/**
+                          │
+                          ▼
+                    order-service
+                          │
+                          ▼
+                 Discovery Cache
+                          │
+             ┌────────────┼────────────┐
+             ▼            ▼            ▼
+           O1            O2            O3
+             │            │
+             └────────────┘
+                    │
+                    ▼
+               Instance
+                    │
+                    ▼
+              HTTP Forward
+                    │
+                    ▼
+              Order Service
+Behind the discovery cache:
+                    Service Registry
+                         │
+             ┌───────────┼───────────┐
+             ▼           ▼           ▼
+           O1            O2           O3
+The gateway periodically receives or pulls topology updates.
+________________________________________
+20.40 What you should now be able to explain
+If I ask:
+"How does an API Gateway route a request?"
+You should be able to reason:
+HTTP request
+    ↓
+Parse path/method
+    ↓
+Routing engine
+    ↓
+Match route
+    ↓
+Resolve logical service
+    ↓
+Use service discovery
+    ↓
+Get current/known instances
+    ↓
+Choose instance
+    ↓
+Forward request
+And if I ask:
+"Why don't we simply store IP addresses?"
+Your answer should be:
+Because service instances are ephemeral.
+
+Instances can:
+- start
+- stop
+- crash
+- scale
+- move
+- be replaced
+
+Therefore we need:
+logical service identity
+        ↓
+dynamic discovery
+        ↓
+current instance locations
+That's the important understanding.
+________________________________________
+20.41 The deeper connection
+You now have three levels:
+                    API
+                     │
+                     ▼
+              Route Matching
+                     │
+              "Who handles it?"
+                     │
+                     ▼
+             Service Discovery
+                     │
+              "Where is it?"
+                     │
+                     ▼
+             Instance Selection
+                     │
+              "Which one?"
+                     │
+                     ▼
+                  Backend
+This is an extremely useful mental model for microservice architecture.
+________________________________________
+20.42 Production trade-offs
+Decision	Benefit	Cost
+Static routes	Simple	Manual updates
+Dynamic routes	Flexible	More complexity
+Registry lookup per request	Fresh information	Latency + registry load
+Local discovery cache	Fast	Stale information
+Push updates	Fast topology changes	More infrastructure
+Pull updates	Simple	Polling delay
+Hot reload	No restart downtime	Complex state management
+Immutable routing snapshots	Fast/concurrency-friendly	Memory/version management
+________________________________________
+20.43 One concept to remember permanently
+Don't think:
+"Service discovery tells me where the service is."
+Think:
+Service discovery gives me a best-known, dynamically changing view of the service topology.
+That wording is much closer to how distributed systems actually behave.
+Because:
+Discovery State
+       ≠
+Reality
+There is always some possibility of:
+staleness
+race
+failure
+network partition
+That realization will become extremely important when we eventually reach CAP, replication, consistency, retries, circuit breakers, and distributed locks.
+________________________________________
+Lesson 20 complete
+We covered:
+•	Route matching 
+•	Exact routes 
+•	Prefix routes 
+•	Parameters 
+•	Wildcards 
+•	Trie concept 
+•	Route precedence 
+•	Logical service identity 
+•	Physical instance location 
+•	Service registry 
+•	Registration 
+•	Heartbeats 
+•	TTL 
+•	Client-side discovery 
+•	Server-side discovery 
+•	DNS discovery 
+•	Discovery caching 
+•	Push vs pull 
+•	Hot reload 
+•	Immutable routing snapshots 
+•	Discovery staleness 
+•	Registry failure 
+•	Instance disappearance race
+
+Lesson 21 — API Gateway Internals
+Request Pipeline, Filters, Authentication, Authorization & Transformation
+We are still inside API Gateway. Today we move from:
+“Which service should receive this request?”
+to:
+“What exactly happens to the request inside the gateway before it reaches that service?”
+The important concept is the request-processing pipeline.
+________________________________________
+21.1 The gateway is a pipeline
+A request doesn't simply enter and immediately get forwarded.
+Conceptually:
+Client
+  │
+  ▼
+┌──────────────────────────┐
+│      API Gateway         │
+│                          │
+│  1. Accept connection    │
+│  2. Parse HTTP           │
+│  3. Pre-filters          │
+│  4. Authentication       │
+│  5. Authorization        │
+│  6. Validation           │
+│  7. Rate-limit check     │
+│  8. Route matching       │
+│  9. Service discovery    │
+│ 10. Forward request      │
+│ 11. Receive response     │
+│ 12. Response filters     │
+│ 13. Return response      │
+└────────────┬─────────────┘
+             │
+             ▼
+       Backend Service
+The exact order differs by implementation.
+The important thing is that gateway processing is a chain of stages.
+________________________________________
+21.2 Why use filters?
+Imagine you have 100 APIs:
+/api/users
+/api/orders
+/api/payments
+/api/products
+...
+You need authentication for all of them.
+You could write:
+authenticate();
+routeUser();
+
+authenticate();
+routeOrder();
+
+authenticate();
+routePayment();
+This duplicates infrastructure logic.
+Instead:
+                   Gateway
+                      │
+             Authentication Filter
+                      │
+          ┌───────────┼───────────┐
+          ▼           ▼           ▼
+       Users        Orders      Payments
+Authentication is executed before the request reaches the service.
+This is the idea behind filters/middleware/interceptors.
+________________________________________
+21.3 Filter pipeline mental model
+Think:
+Request
+   │
+   ▼
+Filter 1
+   │
+   ▼
+Filter 2
+   │
+   ▼
+Filter 3
+   │
+   ▼
+Route Handler
+   │
+   ▼
+Backend
+For example:
+Request
+   │
+   ▼
+Logging
+   │
+   ▼
+Authentication
+   │
+   ▼
+Authorization
+   │
+   ▼
+Validation
+   │
+   ▼
+Rate Limit
+   │
+   ▼
+Routing
+   │
+   ▼
+Backend
+Each filter can:
+1.	inspect the request 
+2.	modify the request 
+3.	reject the request 
+4.	pass it forward 
+________________________________________
+21.4 A filter is basically a decision point
+Conceptually:
+Response filter(Request request, Chain chain) {
+
+    // inspect
+
+    if (!allowed(request)) {
+        return forbidden();
+    }
+
+    // continue
+    return chain.next(request);
+}
+The key operation is:
+chain.next()
+If the filter calls it:
+Filter → next filter
+If it doesn't:
+Filter → response
+The request never reaches the backend.
+________________________________________
+21.5 Example: authentication filter
+Request:
+GET /api/orders/123
+Authorization: Bearer eyJ...
+Pipeline:
+Request
+   │
+   ▼
+Authentication Filter
+   │
+   ├── token missing?
+   │       ↓
+   │     401
+   │
+   ├── token invalid?
+   │       ↓
+   │     401
+   │
+   └── token valid
+           ↓
+        next filter
+So authentication is a gate.
+________________________________________
+21.6 What authentication actually means
+The gateway needs to establish:
+WHO is calling?
+Suppose JWT contains claims conceptually:
+{
+  "sub": "123",
+  "role": "CUSTOMER"
+}
+Gateway validates the token.
+Then internally it can construct something like:
+Principal
+----------------
+userId = 123
+role   = CUSTOMER
+The request now has an identity attached.
+________________________________________
+21.7 Authentication vs authorization
+This distinction is extremely important.
+Authentication:
+WHO are you?
+Authorization:
+WHAT are you allowed to do?
+Example:
+JWT
+ ↓
+userId = 123
+role = CUSTOMER
+Authentication says:
+Identity = 123
+Authorization asks:
+Can CUSTOMER access /admin/users?
+Answer:
+NO
+So:
+Authentication
+      ↓
+Identity
+      ↓
+Authorization
+      ↓
+Permission
+________________________________________
+21.8 Why authorization is more complicated
+Suppose:
+GET /api/orders/500
+User:
+userId = 123
+Gateway knows:
+User 123 is authenticated.
+But can User 123 access Order 500?
+That depends on business data:
+Order 500
+owner = 123
+or:
+Order 500
+owner = 456
+The gateway may not know this.
+Therefore the Order Service often still needs to enforce resource-level authorization.
+This gives us an important rule:
+Gateway authorization is useful for coarse-grained policies; business authorization often belongs inside the service.
+________________________________________
+21.9 Don't put all security into the gateway
+Bad design:
+Gateway
+   │
+   └── ALL authorization decisions
+Why?
+Because the gateway might not understand business rules.
+Example:
+"Customer can cancel an order only
+within 30 minutes if payment hasn't settled."
+That's business logic.
+It belongs naturally in:
+Order Service
+not in a generic infrastructure gateway.
+So:
+Gateway
+→ coarse access control
+
+Service
+→ business authorization
+________________________________________
+21.10 Request context
+After authentication, gateway may attach identity information to the internal request.
+Conceptually:
+External request
+      │
+      ▼
+Authentication
+      │
+      ▼
+Principal
+      │
+      ▼
+Internal request
+For example:
+X-User-Id: 123
+X-User-Role: CUSTOMER
+This is only a conceptual example.
+In production, you must carefully protect these internal headers because clients must not be able to forge:
+X-User-Id: 999
+The gateway should strip untrusted incoming identity headers and generate trusted internal identity context itself.
+________________________________________
+21.11 Request transformation
+Suppose external API:
+POST /api/v1/orders
+accepts:
+{
+  "productId": 100,
+  "quantity": 2
+}
+But internal service expects:
+{
+  "product_id": 100,
+  "qty": 2
+}
+Gateway could transform:
+External Contract
+       ↓
+   Transformation
+       ↓
+Internal Contract
+This is useful when external and internal contracts evolve independently.
+________________________________________
+21.12 But transformation has a cost
+Suppose:
+Client JSON
+ ↓
+Parse
+ ↓
+Object
+ ↓
+Transform
+ ↓
+Object
+ ↓
+Serialize
+ ↓
+Internal JSON
+This consumes:
+CPU
+Memory
+Latency
+At:
+100 requests/sec
+probably negligible.
+At:
+100,000 requests/sec
+it becomes significant.
+This is why gateways should avoid unnecessary transformations.
+________________________________________
+21.13 Header transformation
+Transformation doesn't necessarily mean changing JSON.
+Gateway may add:
+X-Request-ID
+X-Correlation-ID
+X-User-ID
+X-API-Version
+or remove headers:
+Internal-Secret
+before forwarding.
+This is another common gateway responsibility.
+________________________________________
+21.14 Request ID
+Suppose one client request travels through:
+Gateway
+ ↓
+Order Service
+ ↓
+Payment Service
+ ↓
+Inventory Service
+How do we connect all logs?
+Gateway can generate:
+requestId = abc-123
+Then:
+Gateway
+requestId=abc-123
+
+Order
+requestId=abc-123
+
+Payment
+requestId=abc-123
+
+Inventory
+requestId=abc-123
+Now engineers can search:
+abc-123
+and reconstruct the request path.
+This becomes extremely important in distributed systems.
+________________________________________
+21.15 Request ID vs Trace ID
+They're related but not identical.
+A request ID may identify:
+one logical request
+Distributed tracing can represent:
+Trace
+ ├── Gateway span
+ ├── Order span
+ ├── Payment span
+ └── Database span
+The trace structure contains more information.
+Later, when we study observability and distributed systems, this becomes important.
+For now remember:
+Request ID
+→ correlation
+
+Trace
+→ distributed execution structure
+________________________________________
+21.16 Response pipeline
+Filters aren't only for requests.
+After backend returns:
+Backend
+   │
+   ▼
+Response
+   │
+   ▼
+Response Filters
+   │
+   ▼
+Client
+For example:
+Backend Response
+      ↓
+Add correlation header
+      ↓
+Remove internal headers
+      ↓
+Transform response
+      ↓
+Logging / metrics
+      ↓
+Client
+So conceptually there are two sides:
+             Request
+                ↓
+       ┌─────────────────┐
+       │ Request Filters │
+       └────────┬────────┘
+                ↓
+             Backend
+                ↓
+      ┌──────────────────┐
+      │ Response Filters │
+      └────────┬─────────┘
+               ↓
+            Client
+________________________________________
+21.17 A powerful implementation pattern
+A filter often looks conceptually like:
+Response execute(Request request) {
+
+    before(request);
+
+    Response response;
+
+    try {
+        response = next(request);
+    } finally {
+        after(request);
+    }
+
+    return response;
+}
+This allows the filter to execute logic:
+BEFORE backend
+and:
+AFTER backend
+For example:
+Start timer
+     ↓
+next()
+     ↓
+Backend
+     ↓
+Stop timer
+Now we can calculate:
+latency = end - start
+________________________________________
+21.18 Nested filter execution
+Suppose:
+Filter A
+Filter B
+Filter C
+Backend
+Execution can conceptually behave like:
+A.before
+   ↓
+B.before
+   ↓
+C.before
+   ↓
+Backend
+   ↓
+C.after
+   ↓
+B.after
+   ↓
+A.after
+This is similar to nested function calls.
+Think:
+A(
+   B(
+      C(
+         Backend()
+      )
+   )
+)
+This mental model is very useful.
+________________________________________
+21.19 Why ordering matters
+Suppose:
+Authentication
+Rate Limiting
+Logging
+Which runs first?
+The answer affects behavior.
+Example:
+Rate limit
+   ↓
+Authentication
+means even unauthenticated requests consume rate-limit capacity.
+Whereas:
+Authentication
+   ↓
+Rate limit
+allows rate limits based on:
+userId
+rather than just IP address.
+Therefore filter ordering is not cosmetic.
+It changes system behavior.
+________________________________________
+21.20 Another example: logging
+Suppose logging is:
+Logging
+   ↓
+Authentication
+Then the gateway can record:
+request started
+even if authentication fails.
+That's often desirable.
+If logging comes after authentication:
+Authentication
+   ↓
+Logging
+authentication failures might not reach normal request logging.
+So ordering is a system-design decision.
+________________________________________
+21.21 Filter pipeline example
+A realistic conceptual order could be:
+Incoming Request
+      │
+      ▼
+Request ID
+      │
+      ▼
+Access Logging
+      │
+      ▼
+Authentication
+      │
+      ▼
+Authorization
+      │
+      ▼
+Request Validation
+      │
+      ▼
+Rate Limiting
+      │
+      ▼
+Route Matching
+      │
+      ▼
+Service Discovery
+      │
+      ▼
+Forward
+      │
+      ▼
+Backend
+      │
+      ▼
+Response Filters
+      │
+      ▼
+Client
+Again, actual implementations can order these differently.
+________________________________________
+21.22 What happens if a filter fails?
+Suppose:
+Authentication
+fails.
+Pipeline:
+Request
+   ↓
+Logging
+   ↓
+Authentication
+   X
+The gateway immediately creates:
+401 Unauthorized
+and:
+Routing
+Authorization
+Backend
+may never execute.
+This is called short-circuiting.
+________________________________________
+21.23 Short-circuiting is powerful
+Consider:
+Request
+ ↓
+Authentication
+ ↓
+Authorization
+ ↓
+Validation
+ ↓
+Backend
+If authorization fails:
+Request
+ ↓
+Authentication ✓
+ ↓
+Authorization ✗
+ ↓
+403
+Why waste resources calling:
+service discovery
+connection pool
+backend
+database
+if we already know the request isn't allowed?
+Fail as early as possible.
+This is a general production engineering principle:
+Reject invalid work as early as safely possible.
+________________________________________
+21.24 But "early" has a trade-off
+Suppose authentication requires calling an external identity service:
+Gateway
+   ↓
+Identity Service
+Now every request depends on another network call.
+That can add latency:
+Gateway
+  ↓
+Auth service
+  ↓
+Gateway
+  ↓
+Backend
+So systems often use self-contained credentials such as signed tokens.
+For example:
+JWT
+can be verified locally using a public key.
+Then:
+Gateway
+   ↓
+Local cryptographic verification
+   ↓
+Backend
+No network call is necessary for every request.
+This is one reason JWT became popular.
+________________________________________
+21.25 JWT verification internally
+Conceptually:
+JWT
+ ├── Header
+ ├── Payload
+ └── Signature
+Gateway has a trusted public key.
+It verifies:
+signature == expected signature
+If valid:
+Token trusted
+If invalid:
+401
+But token validity also depends on claims such as:
+expiration
+issuer
+audience
+So verification isn't merely:
+"Can I mathematically verify this signature?"
+The gateway also needs to validate whether the token is appropriate for this API.
+________________________________________
+21.26 The gateway should not necessarily call the database
+A common beginner architecture is:
+Every request
+   ↓
+Gateway
+   ↓
+Database
+   ↓
+"Is this user valid?"
+This creates:
+Gateway
+    ↓
+Database bottleneck
+and makes the gateway tightly coupled to application data.
+Better:
+Signed identity
+      ↓
+Gateway
+      ↓
+Basic access control
+      ↓
+Service
+The service accesses its own data when business authorization requires it.
+________________________________________
+21.27 Request body validation
+Suppose:
+POST /api/orders
+Body:
+{
+  "productId": 100,
+  "quantity": -50
+}
+Gateway could reject obviously malformed requests.
+For example:
+quantity must be integer
+quantity must be > 0
+body must not exceed size limit
+But be careful.
+There's a difference between:
+syntactic validation
+and:
+business validation
+Gateway:
+JSON is valid
+required field exists
+body size acceptable
+Service:
+Product actually exists
+Product is available
+Customer can purchase it
+________________________________________
+21.28 Gateway should avoid business coupling
+Bad:
+Gateway
+  ↓
+"Does product have inventory?"
+Good:
+Gateway
+  ↓
+"Is this request structurally valid?"
+Then:
+Order Service
+  ↓
+"Can this order actually be created?"
+This boundary prevents the gateway from becoming a God service.
+________________________________________
+21.29 The gateway's real job
+At this point you can see the deeper pattern.
+The gateway is good at:
+Cross-cutting concerns
+such as:
+Authentication
+Authorization policies
+Routing
+Rate limiting
+Request size limits
+TLS
+Logging
+Tracing
+API versioning
+Protocol transformation
+It should generally avoid:
+Business workflows
+Business calculations
+Domain decisions
+Database ownership
+________________________________________
+21.30 The complete pipeline
+Let's put everything together:
+                         CLIENT
+                            │
+                            ▼
+                  ┌──────────────────┐
+                  │ Accept connection│
+                  └────────┬─────────┘
+                           ▼
+                    HTTP parsing
+                           │
+                           ▼
+                    Request ID
+                           │
+                           ▼
+                      Logging
+                           │
+                           ▼
+                   Authentication
+                           │
+                    ┌──────┴──────┐
+                    │             │
+                  fail           pass
+                    │             │
+                   401            ▼
+                            Authorization
+                                  │
+                           ┌──────┴──────┐
+                           │             │
+                         fail           pass
+                           │             │
+                          403            ▼
+                                  Validation
+                                       │
+                                       ▼
+                                  Rate Policy
+                                       │
+                                       ▼
+                                  Route Match
+                                       │
+                                       ▼
+                                Service Discovery
+                                       │
+                                       ▼
+                                Instance Selection
+                                       │
+                                       ▼
+                                  HTTP Forward
+                                       │
+                                       ▼
+                                  BACKEND
+                                       │
+                                       ▼
+                              Response Processing
+                                       │
+                                       ▼
+                                Response Filters
+                                       │
+                                       ▼
+                                    CLIENT
+That's the internal mental model you should retain.
+________________________________________
+21.31 One deeper performance issue
+Every filter adds work.
+Suppose:
+10 filters
+and each costs:
+0.1 ms
+Then gateway overhead is approximately:
+10 × 0.1
+= 1 ms
+before considering network forwarding and backend processing.
+Now at:
+100,000 requests/sec
+even tiny per-request costs matter.
+This is why high-performance gateways care about:
+allocation
+parsing
+serialization
+cryptography
+locks
+context switching
+network syscalls
+connection reuse
+We'll study the performance side later rather than mixing it into every lesson.
+________________________________________
+21.32 Threading model — the important conceptual point
+A gateway can be implemented using different concurrency models.
+For example:
+Thread-per-request
+Request 1 → Thread 1
+Request 2 → Thread 2
+Request 3 → Thread 3
+Easy to understand.
+But thousands of concurrent connections can mean many threads.
+Event-driven / asynchronous
+Event Loop
+   │
+   ├── Request A
+   ├── Request B
+   ├── Request C
+   └── Request D
+The same thread can coordinate many I/O operations.
+This is particularly useful because gateway workloads are often:
+receive
+ ↓
+inspect
+ ↓
+network I/O
+ ↓
+wait
+ ↓
+receive response
+ ↓
+send
+Lots of waiting, not necessarily lots of CPU computation.
+This is one reason reactive/event-driven architectures are popular for gateway infrastructure.
+________________________________________
+21.33 Why blocking is dangerous
+Imagine one gateway worker thread:
+Thread 1
+   ↓
+Request
+   ↓
+calls backend
+   ↓
+WAIT 200 ms
+If the thread is blocked waiting for I/O, it cannot efficiently process other work.
+At high concurrency this can cause:
+Thread exhaustion
+Therefore gateways often use:
+non-blocking I/O
+connection pooling
+event loops
+asynchronous processing
+depending on implementation.
+________________________________________
+21.34 The API Gateway is now becoming a real system
+We started with:
+Client → Gateway → Service
+But internally:
+                     API GATEWAY
+                          │
+              ┌───────────┴───────────┐
+              │                       │
+          Request Pipeline       Routing Engine
+              │                       │
+       ┌──────┼──────┐                │
+       ▼      ▼      ▼                ▼
+      Auth  Policy  Validation   Service Discovery
+       │      │      │                │
+       └──────┼──────┘                ▼
+              │                  Instance List
+              │                       │
+              └───────────┬───────────┘
+                          ▼
+                     HTTP Client
+                          │
+                          ▼
+                       Service
+This is why gateway engineering is more than:
+"Forward the request."
+________________________________________
+21.35 What we have completed
+For API Gateway we have now covered:
+Architecture
+•	Why API Gateway exists 
+•	Gateway vs Reverse Proxy 
+•	Gateway vs Load Balancer 
+•	External/internal boundary 
+•	Gateway clustering 
+Routing
+•	Route matching 
+•	Exact matching 
+•	Prefix matching 
+•	Parameters 
+•	Wildcards 
+•	Trie concept 
+•	Route precedence 
+Service Discovery
+•	Logical vs physical service 
+•	Registry 
+•	Registration 
+•	Heartbeats 
+•	TTL 
+•	DNS discovery 
+•	Client-side discovery 
+•	Server-side discovery 
+•	Discovery caching 
+•	Push/pull 
+•	Stale topology 
+•	Instance disappearance 
+Request Pipeline
+•	Filters 
+•	Middleware 
+•	Authentication 
+•	Authorization 
+•	Request validation 
+•	Request transformation 
+•	Response transformation 
+•	Short-circuiting 
+•	Request IDs 
+•	Trace concepts 
+•	Filter ordering 
+•	Blocking vs non-blocking processing
+
+
+
