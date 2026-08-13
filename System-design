@@ -17013,5 +17013,5045 @@ Request Pipeline
 •	Filter ordering 
 •	Blocking vs non-blocking processing
 
+Lesson 28 — API Gateway Internals
+Routing Engine: How a Gateway Finds the Correct Service
+We now move from TLS/network security into the actual decision-making core of the gateway:
+Given an incoming HTTP request, how does the gateway determine exactly where that request should go?
+We will not repeat TLS, connection pooling, service discovery, or load balancing. We are focusing specifically on the routing engine.
+________________________________________
+28.1 The problem
+Suppose a gateway receives:
+GET /api/v1/orders/123
+Host: api.example.com
+There may be hundreds or thousands of routes:
+/api/v1/users/**
+/api/v1/orders/**
+/api/v1/payments/**
+/api/v1/products/**
+/api/v1/inventory/**
+...
+The gateway has to determine:
+Which route matches?
+        ↓
+Which service?
+        ↓
+Which backend cluster?
+The naive implementation is:
+if (path.startsWith("/api/v1/users")) {
+    ...
+} else if (path.startsWith("/api/v1/orders")) {
+    ...
+} else if (path.startsWith("/api/v1/payments")) {
+    ...
+}
+This works for 10 routes.
+It becomes ugly and potentially expensive for thousands.
+So the gateway needs a routing data structure.
+________________________________________
+28.2 First mental model
+Think of the gateway routing table as:
+Incoming Request
+       │
+       ▼
+┌─────────────────┐
+│ Route Matcher   │
+└────────┬────────┘
+         │
+         ▼
+   Matching Route
+         │
+         ▼
+   Service Target
+         │
+         ▼
+ Service Discovery
+         │
+         ▼
+ Load Balancing
+         │
+         ▼
+ Backend
+The routing engine's job ends at:
+Matching Route → Target
+It does not necessarily select the final backend IP itself.
+That distinction matters.
+________________________________________
+28.3 What can a route match against?
+A real gateway can match more than just the path.
+A route may depend on:
+HTTP method
+Host
+Path
+Headers
+Query parameters
+Version
+Cookies
+Source metadata
+For example:
+IF
+
+Host = api.example.com
+AND
+Method = GET
+AND
+Path = /api/v1/orders/{id}
+
+THEN
+
+route → order-service
+So routing is really a predicate evaluation problem.
+________________________________________
+28.4 Route object
+Internally, imagine a route represented like:
+class Route {
+    String host;
+    Set<String> methods;
+    String pathPattern;
+    String service;
+}
+Example:
+host:
+api.example.com
+
+methods:
+GET
+
+path:
+ /api/v1/orders/{id}
+
+service:
+order-service
+The gateway loads these route definitions into memory.
+Why?
+Because routing happens for every request.
+You don't want:
+Request
+ ↓
+Database
+ ↓
+"What route matches?"
+for every request.
+That would add unnecessary network latency and load.
+________________________________________
+28.5 Route configuration vs route lookup
+These are two different operations.
+Configuration phase
+Route configuration
+       ↓
+Parse
+       ↓
+Validate
+       ↓
+Build routing structure
+       ↓
+Store in memory
+Request phase
+Request
+   ↓
+Lookup routing structure
+   ↓
+Match route
+This is a very important optimization principle:
+Do expensive work when configuration changes, not on every request.
+________________________________________
+28.6 Simple route lookup
+Suppose we have:
+/api/users
+/api/orders
+/api/payments
+A hash map can work well for exact paths:
+Map<Path, Route>
+Conceptually:
+"/api/users"    → UserRoute
+"/api/orders"   → OrderRoute
+"/api/payments" → PaymentRoute
+Lookup:
+/api/orders
+      ↓
+hash
+      ↓
+bucket
+      ↓
+OrderRoute
+Average lookup is approximately:
+O(1)
+for exact matching under normal hash-table assumptions.
+But real APIs contain:
+/api/orders/123
+/api/orders/456
+/api/orders/789
+We don't want a separate route for every ID.
+So we need pattern matching.
+________________________________________
+28.7 Path variables
+Consider:
+/api/orders/{id}
+Requests:
+/api/orders/123
+/api/orders/456
+/api/orders/999
+all match:
+/api/orders/{id}
+The gateway must recognize:
+/api
+/orders
+/{variable}
+This naturally leads to a tree structure.
+________________________________________
+28.8 Trie
+A common conceptual data structure for path routing is a Trie.
+Suppose routes are:
+/api/users
+/api/orders
+/api/payments
+We can represent them approximately as:
+ROOT
+ │
+ └── api
+      │
+      ├── users
+      │
+      ├── orders
+      │
+      └── payments
+Now add:
+/api/orders/{id}
+We get:
+ROOT
+ │
+ └── api
+      │
+      ├── users
+      │
+      ├── orders
+      │    │
+      │    └── {id}
+      │
+      └── payments
+Now consider:
+/api/orders/123
+The matcher walks:
+api
+ ↓
+orders
+ ↓
+{id}
+Match found.
+________________________________________
+28.9 Why a Trie is powerful
+Suppose you have:
+/api/v1/orders
+/api/v1/orders/{id}
+/api/v1/orders/{id}/items
+/api/v1/orders/{id}/payments
+The common prefix:
+/api/v1/orders
+is represented once.
+Conceptually:
+ROOT
+ │
+ └── api
+      │
+      └── v1
+           │
+           └── orders
+                │
+                ├── {id}
+                │    ├── items
+                │    └── payments
+                │
+                └── ...
+This is much more efficient than repeatedly scanning every route.
+________________________________________
+28.10 Path splitting
+Incoming path:
+/api/v1/orders/123/items
+can be tokenized:
+[
+  "api",
+  "v1",
+  "orders",
+  "123",
+  "items"
+]
+The router walks the tree.
+ROOT
+ ↓
+api
+ ↓
+v1
+ ↓
+orders
+ ↓
+123 → dynamic segment
+ ↓
+items
+At {id}, the router captures:
+id = 123
+This information can later be used by the backend or gateway filters.
+________________________________________
+28.11 Static vs dynamic segments
+Consider:
+/api/orders/123
+There are two types of path segments.
+Static:
+api
+orders
+Dynamic:
+123
+Route:
+/api/orders/{id}
+The router can therefore have:
+Static children
+Dynamic child
+Wildcard child
+Conceptually:
+orders
+ ├── 123
+ ├── 456
+ └── {id}
+But we don't actually want a node for every possible ID.
+Instead:
+orders
+ └── PARAMETER
+matches arbitrary values.
+________________________________________
+28.12 Route precedence
+Now we encounter a subtle problem.
+Suppose we have:
+/api/orders/{id}
+
+/api/orders/status
+Request:
+/api/orders/status
+Which route should match?
+Both could technically match:
+{id} = "status"
+But we probably want:
+/api/orders/status
+because it's more specific.
+Therefore routers need precedence rules.
+Usually:
+Exact/static match
+        ↓
+Parameterized match
+        ↓
+Wildcard match
+Conceptually:
+STATIC > PARAMETER > WILDCARD
+This is extremely important.
+________________________________________
+28.13 Example of precedence
+Routes:
+/api/orders/status
+/api/orders/{id}
+/api/orders/*
+Request:
+/api/orders/status
+Possible matches:
+Exact:
+YES
+
+{id}:
+YES
+
+Wildcard:
+YES
+Router chooses:
+/api/orders/status
+because it is the most specific.
+________________________________________
+28.14 Why order of route definitions is dangerous
+A naive router might simply do:
+for route in routes:
+    if matches(route):
+        return route
+Then:
+/api/orders/{id}
+could appear before:
+/api/orders/status
+and incorrectly capture:
+status
+This is why serious routing engines don't rely blindly on configuration order.
+They encode precedence into the routing structure.
+________________________________________
+28.15 Host-based routing
+Routing can also depend on hostname.
+Suppose:
+api.example.com
+admin.example.com
+mobile.example.com
+Request:
+Host: admin.example.com
+GET /users
+Could route to:
+admin-service
+while:
+Host: api.example.com
+GET /users
+routes to:
+user-service
+So conceptually the router may first select:
+Host
+ ↓
+Path
+ ↓
+Method
+________________________________________
+28.16 Why host lookup can be another tree/map
+You could have:
+Map<Host, RouteTree>
+like:
+api.example.com
+    ↓
+  RouteTree
+
+admin.example.com
+    ↓
+  RouteTree
+Then request processing becomes:
+Host lookup
+    ↓
+correct route tree
+    ↓
+path traversal
+This avoids checking every route belonging to every host.
+________________________________________
+28.17 HTTP method matching
+Consider:
+GET /orders
+POST /orders
+DELETE /orders/{id}
+Same path prefix, different operations.
+The router may store:
+/orders
+   ├── GET  → OrderList
+   └── POST → CreateOrder
+
+/orders/{id}
+   └── DELETE → DeleteOrder
+So after path matching:
+Path
+ ↓
+Method
+ ↓
+Route
+________________________________________
+28.18 A more realistic routing node
+Conceptually:
+class RouteNode {
+
+    Map<String, RouteNode> staticChildren;
+
+    RouteNode parameterChild;
+
+    RouteNode wildcardChild;
+
+    Map<HttpMethod, Route> terminalRoutes;
+}
+This isn't the implementation of every gateway.
+It's a useful simplified model.
+For:
+/api/orders/{id}
+the structure might look like:
+ROOT
+ │
+ └── api
+      │
+      └── orders
+           │
+           └── parameterChild
+                 │
+                 └── terminalRoutes
+                       ├── GET
+                       ├── PUT
+                       └── DELETE
+________________________________________
+28.19 Request matching algorithm
+Simplified pseudocode:
+match(node, segments, index):
+
+    if index == segments.length:
+        return terminal route
+
+    segment = segments[index]
+
+    if static child exists:
+        result = match(static child, index + 1)
+
+        if result exists:
+            return result
+
+    if parameter child exists:
+        result = match(parameter child, index + 1)
+
+        if result exists:
+            return result
+
+    if wildcard child exists:
+        return wildcard match
+
+    return no match
+Notice the order:
+STATIC
+  ↓
+PARAMETER
+  ↓
+WILDCARD
+That implements route precedence.
+________________________________________
+28.20 Why this is better than scanning routes
+Suppose:
+10,000 routes
+Naive:
+Request
+ ↓
+check route 1
+ ↓
+check route 2
+ ↓
+check route 3
+ ...
+ ↓
+check route 10,000
+Worst case:
+O(R)
+where R = number of routes.
+A structured route tree instead follows the path structure.
+If path has:
+5 segments
+the traversal is approximately based on the path depth rather than blindly scanning all routes.
+The exact complexity depends on:
+branching
+matching rules
+data structures
+wildcards
+regex
+host matching
+method matching
+But the key idea is:
+Precompute structure so request-time lookup doesn't scan the entire configuration.
+________________________________________
+28.21 Regex routing
+Some gateways support patterns like:
+^/api/users/[0-9]+$
+This is much more powerful.
+But it introduces cost.
+Regex matching can involve significantly more computation than simple segment lookup.
+Imagine:
+10,000 routes
+with complex regex expressions.
+A naive engine could potentially perform:
+request
+ ↓
+regex 1
+ ↓
+regex 2
+ ↓
+regex 3
+ ...
+This is expensive.
+Therefore production routers generally try to narrow candidates before expensive matching.
+________________________________________
+28.22 Routing as a two-stage process
+A useful model:
+Stage 1
+Cheap filtering
+    ↓
+small candidate set
+
+Stage 2
+Expensive matching
+    ↓
+exact route
+For example:
+Host
+ ↓
+HTTP method
+ ↓
+path prefix
+ ↓
+regex
+Rather than:
+every regex against every request
+This is a general high-performance system design principle:
+Reduce the search space before doing expensive work.
+________________________________________
+28.23 Route configuration loading
+Imagine configuration:
+routes:
+  - path: /api/orders
+    method: GET
+    service: order-service
+
+  - path: /api/orders/{id}
+    method: GET
+    service: order-service
+
+  - path: /api/payments
+    method: POST
+    service: payment-service
+Gateway startup:
+YAML/config
+    ↓
+Parser
+    ↓
+Validation
+    ↓
+Build route tree
+    ↓
+Publish immutable routing table
+Request:
+GET /api/orders/123
+does not parse YAML.
+It uses the already-built structure.
+________________________________________
+28.24 Why immutable routing structures are useful
+Suppose thousands of requests are simultaneously reading routes.
+If configuration changes constantly mutate the same tree:
+Thread A → reading
+Thread B → reading
+Thread C → modifying
+you create synchronization problems.
+A better approach is often:
+Old Route Table
+      ↓
+build new Route Table
+      ↓
+atomically publish new reference
+      ↓
+new requests use new table
+Conceptually:
+volatile RouteTable currentRoutes;
+Configuration update:
+RouteTable newTable = build(config);
+currentRoutes = newTable;
+Existing requests can continue using the old structure while new requests use the new one, depending on lifecycle/design.
+This is a powerful concurrency technique.
+________________________________________
+28.25 Why copy-and-swap is attractive
+Instead of:
+modify giant shared tree
+do:
+Config
+  ↓
+Build new tree
+  ↓
+Validate
+  ↓
+Publish
+This gives:
+Readers:
+almost no locking
+
+Writers:
+build offline
+Since route lookup happens extremely frequently and configuration changes are relatively rare, this is a good trade-off.
+This is an example of:
+Optimize for the hot path.
+________________________________________
+28.26 Route matching is on the hot path
+Suppose gateway handles:
+100,000 requests/sec
+Then routing occurs:
+100,000 times/sec
+If configuration changes:
+once per hour
+then routing is overwhelmingly more frequent.
+Therefore:
+request path = hot path
+configuration path = cold path
+We should spend complexity on optimizing request lookup rather than making configuration updates extremely cheap.
+________________________________________
+28.27 Route lookup and service discovery are different
+This distinction is critical.
+Suppose:
+GET /api/orders/123
+Route lookup says:
+/api/orders/{id}
+       ↓
+order-service
+It does not necessarily say:
+10.10.5.42:8080
+Service discovery then answers:
+order-service
+       ↓
+instances:
+10.10.5.42:8080
+10.10.5.43:8080
+10.10.5.44:8080
+Then load balancing selects one.
+So:
+HTTP Request
+    ↓
+Routing
+    ↓
+Logical Service
+    ↓
+Service Discovery
+    ↓
+Instance Set
+    ↓
+Load Balancing
+    ↓
+Connection Pool
+    ↓
+Backend
+Keep these layers separate in your mental model.
+________________________________________
+28.28 Why this separation matters
+Imagine the Order Service scales:
+3 instances
+   ↓
+100 instances
+Do we want to modify:
+/api/orders/{id}
+route every time?
+No.
+The route remains:
+/api/orders/{id}
+      ↓
+order-service
+Only the service-discovery information changes.
+This separation makes scaling possible.
+________________________________________
+28.29 Route matching example
+Request:
+POST https://api.example.com/api/v2/orders/784/items
+Suppose routes:
+1. GET  /api/v2/orders
+2. POST /api/v2/orders
+3. GET  /api/v2/orders/{id}
+4. POST /api/v2/orders/{id}/items
+5. /*
+Router:
+Host
+api.example.com
+matches.
+Path
+api
+ ↓
+v2
+ ↓
+orders
+ ↓
+784
+ ↓
+items
+Method
+POST
+Matches route 4.
+Result:
+order-service
+Then the routing engine hands off to the next subsystem.
+________________________________________
+28.30 Route parameters
+The router can also produce:
+{
+    "id": "784"
+}
+So:
+/api/v2/orders/{id}/items
+becomes:
+id = 784
+This is useful for:
+logging
+tracing
+authorization
+rewriting
+backend request generation
+________________________________________
+28.31 Path rewriting
+Gateway may receive:
+/api/v1/orders/123
+but backend expects:
+/internal/orders/123
+The gateway can perform:
+External path
+      ↓
+Route match
+      ↓
+Path transformation
+      ↓
+Internal path
+For example:
+/api/v1/orders/{id}
+→
+/internal/orders/{id}
+This is another reason the gateway must understand the request at the HTTP layer.
+________________________________________
+28.32 Routing and security
+Suppose:
+/admin/**
+must only be accessed by administrators.
+The route can be associated with:
+authentication policy
+authorization policy
+rate limit
+So a route can conceptually become:
+Route
+ ├── matcher
+ ├── target service
+ ├── authentication policy
+ ├── authorization policy
+ ├── rate-limit policy
+ └── transformations
+This is why API gateways become policy engines rather than simple proxies.
+________________________________________
+28.33 What happens if no route matches?
+Request:
+GET /something/unknown
+Router:
+No matching route
+       ↓
+404 / gateway-specific error
+Important:
+This isn't necessarily a backend 404.
+The request may never have reached any backend.
+That distinction matters during debugging.
+________________________________________
+28.34 What happens if multiple routes match?
+A good router needs deterministic precedence.
+For example:
+/api/orders/status
+/api/orders/{id}
+/api/*
+/*
+Request:
+/api/orders/status
+Potential matches:
+exact
+parameter
+prefix
+wildcard
+Router selects the most specific applicable route.
+You should never design a routing system where:
+"Whichever route happens to be checked first wins."
+unless that ordering is explicitly part of the contract.
+________________________________________
+28.35 Route table memory
+Suppose:
+100,000 routes
+The route tree consumes memory.
+Potential data:
+path nodes
+maps
+route metadata
+methods
+headers
+policies
+service references
+regex objects
+Memory efficiency therefore matters.
+For high-scale gateways, route representation can become a meaningful part of memory consumption.
+This is another reason to avoid unnecessary duplication of common prefixes.
+________________________________________
+28.36 Why a Trie compresses common prefixes
+Routes:
+/api/v1/users
+/api/v1/users/{id}
+/api/v1/orders
+/api/v1/orders/{id}
+/api/v1/payments
+All share:
+/api/v1
+A trie stores:
+api
+ ↓
+v1
+once.
+Then branches:
+       v1
+    /   |    \
+users orders payments
+This reduces duplication.
+________________________________________
+28.37 But a Trie isn't automatically the best structure
+Real routing engines can use combinations of:
+hash maps
+tries
+prefix trees
+radix trees
+finite-state structures
+compiled matchers
+depending on requirements.
+The important engineering principle is:
+Choose a data structure based on the matching operation.
+If you need:
+exact lookup
+hash maps are attractive.
+If you need:
+hierarchical prefix matching
+trees become attractive.
+If you need:
+complex patterns
+specialized matchers may be appropriate.
+________________________________________
+28.38 Radix tree idea
+A normal Trie might store:
+a
+p
+i
+/
+v
+1
+/
+o
+r
+d
+e
+r
+s
+A radix tree can compress chains of nodes.
+Instead:
+/api/v1/orders
+can be represented more compactly.
+Conceptually:
+ROOT
+  │
+  └── "/api/v1/"
+          │
+          ├── "orders"
+          ├── "users"
+          └── "payments"
+This can reduce node count and improve cache locality.
+The exact implementation varies.
+________________________________________
+28.39 Why CPU cache locality matters
+At high request rates, performance isn't only:
+Big-O
+Two algorithms can both be:
+O(log n)
+but have different real-world performance because of:
+memory allocations
+pointer chasing
+CPU cache misses
+branch prediction
+object layout
+A routing tree containing thousands of heap objects may cause more pointer chasing than a compact representation.
+This is where senior/staff-level performance reasoning begins.
+________________________________________
+28.40 Java implementation — simplified router
+Let's build a small conceptual implementation.
+class Node {
+
+    Map<String, Node> staticChildren = new HashMap<>();
+
+    Node parameterChild;
+
+    Map<String, String> handlers = new HashMap<>();
+}
+Adding:
+/api/orders/{id}
+would conceptually do:
+root
+  -> api
+  -> orders
+  -> parameterChild
+Then:
+parameterChild.handlers.put("GET", "order-service");
+Again, this is educational, not production gateway code.
+________________________________________
+28.41 Matching algorithm
+Simplified:
+Route match(Node node, String[] segments, int index, String method) {
+
+    if (index == segments.length) {
+        return findHandler(node, method);
+    }
+
+    String segment = segments[index];
+
+    // 1. Exact/static
+    Node staticNode = node.staticChildren.get(segment);
+
+    if (staticNode != null) {
+        Route result =
+            match(staticNode, segments, index + 1, method);
+
+        if (result != null) {
+            return result;
+        }
+    }
+
+    // 2. Parameter
+    if (node.parameterChild != null) {
+        Route result =
+            match(node.parameterChild, segments, index + 1, method);
+
+        if (result != null) {
+            return result;
+        }
+    }
+
+    return null;
+}
+The important part isn't the Java syntax.
+It's the algorithm:
+exact first
+parameter second
+wildcard last
+________________________________________
+28.42 Why recursion isn't necessarily used in production
+Our example uses recursion because it's easy to understand.
+A production implementation may prefer:
+iterative traversal
+because deep recursion can create:
+stack usage
+and unnecessary method-call overhead.
+For normal URL paths the depth is usually small, but high-performance implementations often carefully control allocations and call overhead.
+________________________________________
+28.43 Zero-allocation thinking
+Suppose gateway handles:
+1 million requests/sec
+and each routing operation creates:
+String[]
+List<String>
+temporary objects
+Then you're potentially creating millions of temporary objects.
+That creates:
+allocation pressure
+       ↓
+GC activity
+       ↓
+CPU consumption
+       ↓
+latency
+Therefore high-performance gateways may use techniques such as:
+buffer parsing
+string slices
+reusable objects
+compact structures
+specialized parsers
+The exact approach depends on the implementation.
+This is why "the algorithm is O(log n)" isn't sufficient for production performance analysis.
+________________________________________
+28.44 The complete routing engine
+Your mental picture should now be:
+                    HTTP Request
+                         │
+                         ▼
+                 ┌───────────────┐
+                 │ Request Parser│
+                 └───────┬───────┘
+                         │
+                    Host / Method
+                         │
+                         ▼
+                 ┌───────────────┐
+                 │ Route Matcher │
+                 └───────┬───────┘
+                         │
+                  Trie/Radix/etc.
+                         │
+                         ▼
+                   Matching Route
+                         │
+                ┌────────┴─────────┐
+                │                  │
+             Policies          Transform
+                │                  │
+                └────────┬─────────┘
+                         ▼
+                   Service Name
+                         │
+                         ▼
+                 Service Discovery
+                         │
+                         ▼
+                 Backend Instances
+                         │
+                         ▼
+                   Load Balancer
+                         │
+                         ▼
+                  Connection Pool
+                         │
+                         ▼
+                     Backend
+________________________________________
+28.45 The most important architectural separation
+Don't combine these concepts:
+Routing
+Service Discovery
+Load Balancing
+Connection Pool
+They answer four different questions.
+Routing
+Which logical service should handle this request?
+/api/orders → order-service
+Service Discovery
+Where are the instances of that service?
+order-service
+    ↓
+A, B, C
+Load Balancing
+Which instance should handle this request?
+A / B / C
+   ↓
+B
+Connection Pool
+Which existing network connection can I use to communicate with B?
+Pool B
+   ↓
+B2
+So the full chain is:
+Request
+ ↓
+Routing
+ ↓
+Service
+ ↓
+Discovery
+ ↓
+Instances
+ ↓
+Load Balancing
+ ↓
+Instance
+ ↓
+Connection Pool
+ ↓
+Connection
+ ↓
+Backend
+That separation is one of the key mental models of modern distributed systems.
+________________________________________
+Lesson 28 Complete
+You should now understand:
+•	Why routing needs a dedicated engine 
+•	Exact path matching 
+•	Path parameters 
+•	Wildcards 
+•	Route precedence 
+•	Host-based routing 
+•	HTTP-method matching 
+•	Trie-based routing 
+•	Radix-tree idea 
+•	Route configuration vs request-time lookup 
+•	Why route tables live in memory 
+•	Immutable route-table replacement 
+•	Hot path vs cold path 
+•	Regex routing costs 
+•	Candidate filtering 
+•	Path rewriting 
+•	Route parameters 
+•	Routing vs service discovery 
+•	Routing vs load balancing 
+•	Routing vs connection pooling 
+•	Memory/cache considerations 
+•	Allocation and GC considerations 
+The key idea
+A gateway does not search every backend for every request. It first converts the request into a route decision using an in-memory routing structure.
+And that route decision normally produces:
+Request
+   ↓
+Route
+   ↓
+Logical Service
+—not a raw IP address.
+
+Lesson 28 — API Gateway Internals
+Filter / Request Processing Pipeline
+We've finished the routing engine. Now we move to what happens after a route is selected and before the request reaches the backend.
+We will not repeat routing, TLS, connection pooling, or service discovery.
+________________________________________
+28.1 The problem
+Suppose this request arrives:
+POST /api/v1/orders
+Authorization: Bearer xyz
+Content-Type: application/json
+
+{
+  "productId": 101
+}
+The gateway has already determined:
+/api/v1/orders
+        ↓
+order-service
+But should it immediately forward the request?
+No.
+The gateway may need to perform:
+Authentication
+Authorization
+Rate limiting
+Request validation
+Header manipulation
+Tracing
+Logging
+Request transformation
+And importantly:
+These operations must happen in a controlled order.
+So we need a processing pipeline.
+________________________________________
+28.2 The mental model
+Think of the gateway as a chain:
+                    REQUEST
+                       │
+                       ▼
+              ┌────────────────┐
+              │ Authentication │
+              └───────┬────────┘
+                      ▼
+              ┌────────────────┐
+              │ Authorization  │
+              └───────┬────────┘
+                      ▼
+              ┌────────────────┐
+              │ Rate Limiting  │
+              └───────┬────────┘
+                      ▼
+              ┌────────────────┐
+              │ Transformation │
+              └───────┬────────┘
+                      ▼
+              ┌────────────────┐
+              │ Load Balancing │
+              └───────┬────────┘
+                      ▼
+                    BACKEND
+But there's another half:
+Backend response
+      ↑
+      │
+Response filters
+      ↑
+Gateway
+So the actual pipeline is closer to:
+Request
+  ↓
+Pre-filters
+  ↓
+Route
+  ↓
+Backend
+  ↓
+Post-filters
+  ↓
+Response
+________________________________________
+28.3 Why filters instead of one giant method?
+A naive gateway might have:
+handle(request) {
+
+    authenticate(request);
+
+    authorize(request);
+
+    checkRateLimit(request);
+
+    transform(request);
+
+    route(request);
+
+    callBackend();
+
+    transformResponse();
+
+    log();
+
+}
+This becomes a giant piece of code.
+Imagine 50 policies.
+Now you have:
+authentication
+authorization
+rate limiting
+CORS
+JWT
+logging
+metrics
+tracing
+compression
+headers
+rewriting
+caching
+...
+The code becomes tightly coupled.
+Instead:
+Filter 1
+   ↓
+Filter 2
+   ↓
+Filter 3
+   ↓
+Filter 4
+Each filter has one responsibility.
+________________________________________
+28.4 Filter as a function
+At its simplest, a filter is:
+Request
+   ↓
+Filter
+   ↓
+Request / response / termination
+Conceptually:
+interface Filter {
+
+    Response filter(Request request, Chain chain);
+}
+The filter can:
+1. inspect request
+2. modify request
+3. call next filter
+4. receive response
+5. modify response
+6. return response
+This is much more powerful than simply:
+request → function → request
+because filters can operate on both directions.
+________________________________________
+28.5 The Chain
+Imagine:
+Filter A
+   ↓
+Filter B
+   ↓
+Filter C
+   ↓
+Backend
+Filter A should not know the implementation details of Filter B.
+Instead:
+chain.next(request);
+Conceptually:
+A
+ ↓
+next()
+ ↓
+B
+ ↓
+next()
+ ↓
+C
+ ↓
+next()
+ ↓
+Backend
+This is the Chain of Responsibility pattern.
+________________________________________
+28.6 The important part: next()
+Consider:
+class AuthenticationFilter implements Filter {
+
+    Response filter(Request request, Chain chain) {
+
+        authenticate(request);
+
+        return chain.next(request);
+    }
+}
+The critical operation is:
+chain.next(request)
+It means:
+"I have finished my processing. Continue the pipeline."
+If the filter doesn't call it:
+authenticate(request);
+
+return unauthorized();
+the request stops.
+This gives us short-circuiting.
+________________________________________
+28.7 Short-circuiting
+Suppose:
+Request
+   ↓
+Authentication
+Token is invalid.
+We don't want:
+Authentication
+ ↓
+Authorization
+ ↓
+Rate limiter
+ ↓
+Backend
+Instead:
+Authentication
+      │
+      └── INVALID
+             ↓
+          401
+The request terminates immediately.
+This is called short-circuiting.
+________________________________________
+28.8 Why short-circuiting matters
+Imagine the backend is expensive.
+If an unauthenticated request is detected at the gateway:
+Client
+ ↓
+Gateway
+ ↓
+Authentication FAIL
+we save:
+backend CPU
+database connections
+network bandwidth
+connection-pool capacity
+latency
+Therefore security filters are often deliberately placed early.
+________________________________________
+28.9 Filter ordering
+Now we reach a difficult architectural problem.
+Suppose we have:
+Authentication
+Authorization
+Rate Limiting
+Logging
+Tracing
+What order?
+One possible pipeline:
+Tracing
+ ↓
+Logging
+ ↓
+Authentication
+ ↓
+Rate Limiting
+ ↓
+Authorization
+ ↓
+Routing
+ ↓
+Backend
+But different systems may make different choices.
+Why?
+Because order changes behavior.
+________________________________________
+28.10 Example: authentication vs rate limiting
+Suppose rate limiting is:
+100 requests/minute per user
+You need to know the user.
+So:
+Authentication
+      ↓
+identify user
+      ↓
+Rate Limiter
+makes sense.
+But suppose rate limiting is:
+1000 requests/sec per IP
+You don't necessarily need authentication.
+Then:
+IP extraction
+ ↓
+Rate limiter
+ ↓
+Authentication
+could make sense.
+So filter ordering is not arbitrary.
+It follows data dependencies and security requirements.
+________________________________________
+28.11 Example: tracing must be early
+Suppose:
+Tracing
+runs after authentication.
+Then an authentication failure might not receive a trace.
+Usually you want:
+Incoming request
+       ↓
+Create/extract trace context
+       ↓
+Everything else
+so the entire request lifecycle is observable.
+________________________________________
+28.12 Pre-filters and post-filters
+This is one of the most important concepts.
+A filter can execute code:
+before next()
+and:
+after next()
+Example:
+Response filter(Request request, Chain chain) {
+
+    long start = System.nanoTime();
+
+    // PRE
+    logRequest(request);
+
+    Response response = chain.next(request);
+
+    // POST
+    logResponse(response);
+
+    long duration = System.nanoTime() - start;
+
+    recordLatency(duration);
+
+    return response;
+}
+Flow:
+Filter
+ │
+ ├── pre-processing
+ │
+ ▼
+next()
+ │
+ ▼
+backend / later filters
+ │
+ ▼
+response
+ │
+ ├── post-processing
+ │
+ ▼
+return
+________________________________________
+28.13 This creates a stack
+Suppose:
+A
+ ↓
+B
+ ↓
+C
+ ↓
+Backend
+Each filter has pre/post logic.
+Execution looks like:
+A pre
+  B pre
+    C pre
+      Backend
+    C post
+  B post
+A post
+This is extremely important.
+The pipeline behaves somewhat like nested function calls.
+________________________________________
+28.14 Visualizing the stack
+A.pre
+ └── B.pre
+      └── C.pre
+           └── Backend
+           └── C.post
+      └── B.post
+ └── A.post
+So if you have:
+Logging
+Tracing
+Authentication
+Backend
+you can get:
+Logging PRE
+  ↓
+Tracing PRE
+  ↓
+Authentication PRE
+  ↓
+Backend
+  ↑
+Authentication POST
+  ↑
+Tracing POST
+  ↑
+Logging POST
+This allows a filter to measure the complete downstream execution time.
+________________________________________
+28.15 Context object
+Filters need to share information.
+For example:
+Authentication discovers:
+userId = 123
+Authorization needs that.
+Tracing generates:
+traceId = abc
+Logging needs that.
+Rate limiting may need:
+tenantId = XYZ
+So the gateway usually has some request context.
+Conceptually:
+class RequestContext {
+
+    Request request;
+
+    String traceId;
+
+    String userId;
+
+    String tenantId;
+
+    Map<String, Object> attributes;
+}
+Then:
+Authentication
+      ↓
+context.userId = 123
+      ↓
+Authorization
+      ↓
+reads context.userId
+________________________________________
+28.16 Why context is better than modifying random headers
+You could technically do:
+X-User-Id: 123
+inside the request.
+But that mixes:
+internal gateway state
+with:
+HTTP request data
+A dedicated context provides cleaner separation.
+Conceptually:
+Request
+   +
+Gateway execution context
+are different things.
+________________________________________
+28.17 But context can become dangerous
+Suppose 30 filters put data into:
+Map<String, Object>
+Now you have:
+"userId"
+"userid"
+"user_id"
+"authenticatedUser"
+"principal"
+etc.
+This creates hidden coupling.
+One filter assumes:
+context.get("userId")
+another filter forgets to populate it.
+So production systems usually need disciplined context contracts.
+________________________________________
+28.18 Mutable vs immutable request
+Suppose authentication wants to add:
+X-Authenticated-User: 123
+Should the original request object be modified?
+There are two broad approaches.
+Mutable
+request.headers.put(...)
+Easy and efficient.
+But multiple filters can accidentally modify the same object.
+Immutable
+newRequest = request.withHeader(...)
+Safer reasoning.
+But potentially creates more objects.
+Again:
+safety vs allocation/performance
+is a design trade-off.
+________________________________________
+28.19 Threading model
+Now something important for your Java background.
+A gateway can process thousands of concurrent requests.
+It does not necessarily mean:
+1 request
+=
+1 Java thread
+Modern gateways commonly use asynchronous/non-blocking processing.
+Conceptually:
+Thread
+  ↓
+receive request
+  ↓
+start async operation
+  ↓
+do other work
+  ↓
+operation completes
+  ↓
+continue pipeline
+The exact model depends on the gateway/framework.
+________________________________________
+28.20 Blocking filter — dangerous
+Suppose your gateway uses an event-loop architecture.
+One event-loop thread handles many connections.
+Then somebody writes:
+public Response filter(Request request) {
+
+    Thread.sleep(5000);
+
+    return next();
+}
+That is disastrous.
+Why?
+Because the event-loop thread is blocked.
+If one thread handles many connections:
+Event Loop
+ ├── Request A
+ ├── Request B
+ ├── Request C
+ ├── Request D
+ └── Request E
+and Request A blocks it:
+Event Loop
+ └── Request A
+       ↓
+   BLOCKED 5 sec
+
+B → waiting
+C → waiting
+D → waiting
+E → waiting
+Latency explodes.
+________________________________________
+28.21 Blocking database call in gateway
+Another common mistake:
+Gateway
+   ↓
+filter
+   ↓
+JDBC database query
+   ↓
+wait
+If the gateway is designed around non-blocking I/O, this can destroy its scalability.
+This is why gateway filters must respect the underlying concurrency model.
+________________________________________
+28.22 Async filter
+Conceptually:
+CompletionStage<Response> filter(
+        Request request,
+        Chain chain) {
+
+    return authenticateAsync(request)
+        .thenCompose(user ->
+            chain.next(request));
+}
+Instead of:
+thread
+ ↓
+wait
+ ↓
+database
+you can have:
+thread
+ ↓
+start async operation
+ ↓
+release execution resource
+ ↓
+operation completes
+ ↓
+continue
+This is one of the most important concepts in high-concurrency gateways.
+________________________________________
+28.23 Error propagation
+Suppose:
+A
+ ↓
+B
+ ↓
+C
+ ↓
+Backend
+Backend fails:
+500
+Who sees it?
+Typically:
+C
+ ↑
+B
+ ↑
+A
+ ↑
+Client
+Each post-filter can inspect or transform the error.
+For example:
+Backend
+   ↓
+500
+   ↓
+Error handling filter
+   ↓
+standard gateway error
+   ↓
+Client
+________________________________________
+28.24 Exception handling
+A filter may fail:
+authenticate(request);
+throws an exception.
+The pipeline needs a defined mechanism for:
+catch
+map exception → HTTP response
+log
+trace
+cleanup
+Otherwise one filter's exception could unexpectedly terminate the entire gateway execution.
+A robust pipeline therefore has a central error-handling mechanism.
+________________________________________
+28.25 Filter ordering as a dependency graph
+At a basic level we think:
+A → B → C
+But conceptually, filters may have dependencies.
+For example:
+Authorization
+requires
+Authentication
+Therefore:
+Authentication → Authorization
+Similarly:
+Audit Logging
+requires
+user identity
+so:
+Authentication → Audit Logging
+This can become a dependency graph:
+Authentication
+      │
+      ├── Authorization
+      │
+      └── Audit Logging
+
+Tracing
+      │
+      └── everything
+The gateway must eventually convert these dependencies into a deterministic execution order.
+________________________________________
+28.26 Global filters vs route filters
+Not every filter applies to every route.
+Example:
+Global:
+    tracing
+    request ID
+    access logging
+Route-specific:
+/api/payments
+    payment authentication
+    payment rate limit
+So conceptually:
+Global Filters
+      ↓
+Route-specific Filters
+      ↓
+Backend
+This avoids duplicating configuration.
+________________________________________
+28.27 Example
+Routes:
+/orders
+/payments
+/products
+Global:
+Tracing
+Logging
+Request ID
+Orders:
+Order Authorization
+Payments:
+Payment Authorization
+Payment Rate Limit
+Products:
+Product Cache
+Pipeline for /payments:
+Tracing
+ ↓
+Logging
+ ↓
+Request ID
+ ↓
+Authentication
+ ↓
+Payment Authorization
+ ↓
+Payment Rate Limit
+ ↓
+Backend
+________________________________________
+28.28 Short-circuit example
+Request:
+POST /payments
+Authentication:
+INVALID
+Pipeline:
+Tracing
+ ↓
+Authentication
+ ↓
+401
+These do not execute:
+Authorization
+Rate Limiting
+Backend
+depending on the gateway's configured pipeline.
+That is the performance advantage of early rejection.
+________________________________________
+28.29 Another short-circuit: rate limiting
+Suppose:
+Rate limit = 100 requests/sec
+Request 101 arrives.
+Tracing
+ ↓
+Authentication
+ ↓
+Rate limiter
+ ↓
+LIMIT EXCEEDED
+ ↓
+429 Too Many Requests
+Backend is never contacted.
+We'll study the actual rate-limiting algorithms later in Module 4.
+________________________________________
+28.30 Filter pipeline and observability
+Suppose request takes:
+250 ms
+We want to know where time was spent.
+We can measure:
+Authentication: 10 ms
+Authorization: 2 ms
+Rate limit: 1 ms
+Routing: 0.1 ms
+Backend: 220 ms
+Response transformation: 5 ms
+Now we know:
+Backend = bottleneck
+rather than blaming the gateway.
+This is why filter-level metrics matter.
+________________________________________
+28.31 Performance danger: too many filters
+Imagine:
+Request
+ ↓
+Filter 1
+ ↓
+Filter 2
+ ↓
+Filter 3
+ ...
+ ↓
+Filter 50
+ ↓
+Backend
+Every filter may perform:
+object access
+method calls
+logging
+metrics
+header processing
+context operations
+Individually tiny.
+At:
+500,000 requests/sec
+small overhead becomes significant.
+Therefore:
+The gateway's filter chain itself is part of the request latency budget.
+________________________________________
+28.32 Filter cost model
+Think:
+Total latency
+=
+network
++
+gateway parsing
++
+filter processing
++
+routing
++
+queueing
++
+backend connection
++
+backend processing
++
+response filters
+If gateway filters consume:
+20 ms
+for a backend that takes:
+5 ms
+the gateway is now the bottleneck.
+________________________________________
+28.33 Filter allocations
+Suppose every filter creates:
+new HashMap<>();
+new Request();
+new Context();
+new String();
+For every request.
+At huge traffic:
+requests/sec
+×
+objects/request
+can create enormous allocation pressure.
+Example:
+100,000 req/sec
+×
+100 temporary objects
+=
+10,000,000 objects/sec
+That's why high-performance gateways pay attention to:
+allocation rate
+GC
+object lifetime
+buffer reuse
+________________________________________
+28.34 The production mental model
+You should now visualize the gateway like this:
+                       REQUEST
+                          │
+                          ▼
+                  ┌──────────────┐
+                  │ Request Parse│
+                  └──────┬───────┘
+                         ▼
+                  ┌──────────────┐
+                  │ Global Filter│
+                  └──────┬───────┘
+                         ▼
+                  ┌──────────────┐
+                  │ Route Match  │
+                  └──────┬───────┘
+                         ▼
+                  ┌──────────────┐
+                  │ Route Filter │
+                  └──────┬───────┘
+                         ▼
+                  ┌──────────────┐
+                  │ Load Balance │
+                  └──────┬───────┘
+                         ▼
+                      BACKEND
+                         │
+                         ▼
+                  Response filters
+                         │
+                         ▼
+                       CLIENT
+And around all of this:
+Tracing
+Metrics
+Timeouts
+Error handling
+Context propagation
+________________________________________
+28.35 Simplified Java implementation
+Let's build the essential mechanism.
+interface Filter {
+
+    Response execute(
+        Request request,
+        FilterChain chain
+    );
+}
+Chain:
+interface FilterChain {
+
+    Response next(Request request);
+}
+Implementation:
+class DefaultFilterChain implements FilterChain {
+
+    private final List<Filter> filters;
+    private int index = 0;
+
+    DefaultFilterChain(List<Filter> filters) {
+        this.filters = filters;
+    }
+
+    @Override
+    public Response next(Request request) {
+
+        if (index == filters.size()) {
+            return callBackend(request);
+        }
+
+        Filter filter = filters.get(index++);
+
+        return filter.execute(request, this);
+    }
+}
+Now:
+class AuthenticationFilter implements Filter {
+
+    @Override
+    public Response execute(
+            Request request,
+            FilterChain chain) {
+
+        if (!isAuthenticated(request)) {
+            return Response.unauthorized();
+        }
+
+        return chain.next(request);
+    }
+}
+Rate limiting:
+class RateLimitFilter implements Filter {
+
+    @Override
+    public Response execute(
+            Request request,
+            FilterChain chain) {
+
+        if (!allowed(request)) {
+            return Response.tooManyRequests();
+        }
+
+        return chain.next(request);
+    }
+}
+Pipeline:
+List<Filter> filters = List.of(
+    tracingFilter,
+    authenticationFilter,
+    authorizationFilter,
+    rateLimitFilter
+);
+Flow:
+Tracing
+  ↓ next()
+Authentication
+  ↓ next()
+Authorization
+  ↓ next()
+RateLimit
+  ↓ next()
+Backend
+________________________________________
+28.36 But there is a concurrency problem in our example
+Look carefully:
+private int index = 0;
+If the same DefaultFilterChain instance is shared between multiple requests:
+Request A → index
+Request B → index
+Request C → index
+then we have a race condition.
+Therefore the chain execution state must generally be request-specific, or implemented in a way that doesn't share mutable traversal state across concurrent requests.
+This is a subtle but important lesson:
+Pipeline configuration can be shared; pipeline execution state usually cannot be blindly shared.
+________________________________________
+28.37 Immutable pipeline configuration
+A good architecture is:
+Shared:
+Filter definitions
+Filter ordering
+Route configuration
+while:
+Per request:
+Current position
+Request context
+Trace state
+Authentication result
+Conceptually:
+              SHARED
+        ┌─────────────────┐
+        │ Filter Pipeline │
+        └────────┬────────┘
+                 │
+        ┌────────┼────────┐
+        ▼        ▼        ▼
+     Request A Request B Request C
+     Context   Context   Context
+This allows many requests to use the same pipeline definition concurrently.
+________________________________________
+28.38 The deeper design principle
+We're seeing the same pattern repeatedly:
+Configuration
+Rarely changes:
+routes
+filters
+policies
+Keep it:
+immutable
+shared
+precomputed
+Request state
+Changes every request:
+user
+trace ID
+route
+timings
+authentication
+Keep it:
+request-scoped
+isolated
+This separation makes highly concurrent systems easier to reason about.
+________________________________________
+28.39 Failure propagation
+Imagine:
+Tracing
+ ↓
+Authentication
+ ↓
+Authorization
+ ↓
+Rate Limit
+ ↓
+Backend
+Backend times out.
+The error travels back:
+Backend timeout
+      ↑
+Rate Limit filter
+      ↑
+Authorization
+      ↑
+Authentication
+      ↑
+Tracing
+      ↑
+Client
+Each layer may observe the failure.
+Later, when we study:
+Timeout
+Retry
+Circuit Breaker
+you'll see these filters become part of the same pipeline.
+________________________________________
+28.40 One critical warning
+Don't put business logic into the gateway.
+Bad:
+Gateway
+ ↓
+calculate order price
+ ↓
+check inventory
+ ↓
+apply business rules
+ ↓
+database
+The gateway should generally deal with cross-cutting concerns such as:
+authentication
+authorization
+routing
+rate limiting
+transformation
+observability
+resilience
+Business logic belongs in services.
+Otherwise the gateway becomes a:
+distributed monolith bottleneck.
+________________________________________
+28.41 Final mental model
+You should now see:
+                         API GATEWAY
+
+Client
+  │
+  ▼
+Request
+  │
+  ▼
+┌──────────────────────┐
+│ Request Context      │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Global Filters       │
+│ tracing              │
+│ logging              │
+│ request-id           │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Routing Engine       │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Route Filters        │
+│ authentication       │
+│ authorization        │
+│ rate limiting        │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Service Discovery    │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Load Balancer        │
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│ Connection Pool      │
+└──────────┬───────────┘
+           ▼
+        Backend
+           │
+           ▼
+     Response Filters
+           │
+           ▼
+         Client
+________________________________________
+What you should now understand
+The important thing isn't the Java interface.
+It's this:
+A gateway is a programmable processing pipeline.
+Each filter can:
+inspect
+modify
+allow
+reject
+short-circuit
+call the next stage
+observe the response
+transform the response
+And the pipeline has two fundamental execution directions:
+Request:
+A → B → C → Backend
+
+Response:
+Backend → C → B → A
+That single model explains a huge amount of gateway behavior.
+
+Lesson 29 — API Gateway Authentication & Authorization Internals
+We now move from the filter pipeline to one of the most important filters running inside that pipeline:
+Client
+  ↓
+API Gateway
+  ↓
+Authentication
+  ↓
+Authorization
+  ↓
+Backend
+We will focus on how the machinery actually works, not definitions.
+________________________________________
+29.1 First: what problem are we solving?
+Suppose someone sends:
+GET /api/orders/123
+Authorization: Bearer eyJhbGciOi...
+The gateway needs to answer two different questions:
+Question 1:
+"Who is this?"
+
+Question 2:
+"Is this identity allowed to perform this operation?"
+Those are fundamentally different operations.
+Authentication
+      ↓
+Establish identity
+      ↓
+Authorization
+      ↓
+Decide permission
+Example:
+User = Gopal
+Role = CUSTOMER
+Authentication establishes:
+"I know who you are."
+Authorization decides:
+"Can CUSTOMER access /admin/orders?"
+________________________________________
+29.2 Why shouldn't every service implement this independently?
+Imagine 100 microservices:
+                 ┌── order-service
+                 │
+Client → Gateway ├── payment-service
+                 │
+                 ├── inventory-service
+                 │
+                 ├── user-service
+                 │
+                 └── shipping-service
+Without centralized gateway authentication:
+order-service
+  └── JWT validation
+
+payment-service
+  └── JWT validation
+
+inventory-service
+  └── JWT validation
+
+shipping-service
+  └── JWT validation
+Now every service needs to understand:
+JWT
+RSA/ECDSA
+key rotation
+issuer
+expiration
+claims
+OAuth
+JWKS
+That's duplicated infrastructure.
+The gateway can perform an initial authentication layer:
+Client
+  ↓
+Gateway
+  ↓
+authenticate
+  ↓
+authorized request
+  ↓
+service
+But there is an important caveat:
+Gateway authentication does not automatically mean the backend should blindly trust the request.
+We'll come back to this.
+________________________________________
+29.3 Where does the token come from?
+A common architecture is:
+             Authorization Server
+                    │
+                    │ token
+                    ▼
+Client ──────────→ Gateway
+For example:
+Client
+   │
+   │ 1. Login / authorization
+   ▼
+Identity Provider
+   │
+   │ 2. Access token
+   ▼
+Client
+   │
+   │ 3. Bearer token
+   ▼
+API Gateway
+The identity provider might be a dedicated authorization server.
+The gateway isn't necessarily responsible for issuing the token.
+________________________________________
+29.4 What is actually inside a JWT?
+A JWT commonly looks like:
+xxxxx.yyyyy.zzzzz
+Three sections:
+HEADER.PAYLOAD.SIGNATURE
+For example:
+eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9
+.
+eyJzdWIiOiIxMjMiLCJleHAiOjE3...
+.
+signature...
+The important point:
+The payload is not encrypted merely because it is a JWT.
+It's usually Base64URL encoded.
+Therefore don't put secrets into JWT claims.
+________________________________________
+29.5 JWT structure internally
+Header:
+{
+  "alg": "RS256",
+  "typ": "JWT",
+  "kid": "key-123"
+}
+Payload:
+{
+  "sub": "123",
+  "iss": "https://issuer",
+  "aud": "orders-api",
+  "exp": 1780000000,
+  "scope": "orders:read"
+}
+Then:
+signature =
+Sign(
+    base64url(header)
+    + "."
+    + base64url(payload),
+    privateKey
+)
+Conceptually:
+HEADER
+   +
+PAYLOAD
+   ↓
+sign
+   ↓
+SIGNATURE
+________________________________________
+29.6 Why the signature matters
+Suppose the legitimate token contains:
+{
+  "sub": "123",
+  "role": "CUSTOMER"
+}
+An attacker decodes it and changes:
+"role": "ADMIN"
+The attacker can easily modify the Base64URL payload.
+But they cannot generate a valid signature without the signing key.
+So the gateway calculates:
+expected signature
+and compares it with:
+received signature
+If they don't match:
+401 Unauthorized
+________________________________________
+29.7 RSA example
+Suppose the authorization server signs with:
+Private Key
+The gateway has:
+Public Key
+Flow:
+Authorization Server
+       │
+       │ private key
+       ▼
+     SIGN
+       │
+       ▼
+     JWT
+       │
+       ▼
+     Client
+       │
+       ▼
+    Gateway
+       │
+       │ public key
+       ▼
+   VERIFY
+The gateway doesn't need the private key.
+That's extremely important.
+The private signing key stays with the issuer.
+________________________________________
+29.8 What exactly does the gateway verify?
+A serious JWT validation process is not:
+decode(token);
+return true;
+It needs to validate multiple properties.
+Conceptually:
+1. Token exists
+2. Token syntax valid
+3. Algorithm allowed
+4. Signature valid
+5. Issuer correct
+6. Audience correct
+7. Not expired
+8. Not used before nbf
+9. Required claims present
+10. Required scopes/permissions available
+Only after these checks do we consider the identity established.
+________________________________________
+29.9 Algorithm confusion
+This is a security-critical detail.
+Suppose the JWT header says:
+{
+  "alg": "none"
+}
+A badly designed implementation might trust the token's requested algorithm.
+That's dangerous.
+The server should have an allowed algorithm policy.
+For example:
+Expected:
+RS256
+not:
+"Whatever algorithm the token says."
+So validation is:
+token algorithm
+       ↓
+allowed?
+       ↓
+YES → verify
+NO  → reject
+________________________________________
+29.10 iss — issuer
+Suppose your company has:
+Identity Provider A
+Identity Provider B
+A token might say:
+{
+  "iss": "https://identity.company.com"
+}
+The gateway should verify:
+Is this token issued by the trusted issuer?
+Otherwise a token from an unrelated issuer could potentially be accepted.
+________________________________________
+29.11 aud — audience
+Imagine the same authorization server issues tokens for:
+orders-api
+payments-api
+admin-api
+A token might contain:
+"aud": "orders-api"
+Now the request is:
+GET /payments
+Should the gateway accept the orders token?
+No.
+The audience tells us the intended recipient.
+Conceptually:
+Token audience
+      ↓
+orders-api
+
+Requested API
+      ↓
+payments-api
+
+Mismatch
+      ↓
+REJECT
+________________________________________
+29.12 exp — expiration
+JWTs commonly contain:
+"exp": 1780000000
+This represents an expiration timestamp.
+Gateway checks:
+currentTime < exp
+If:
+currentTime >= exp
+reject.
+Why expiration matters:
+JWT validation normally doesn't require asking the authorization server on every request.
+That makes JWT authentication fast.
+But it creates a problem:
+Once issued, how do we revoke a token immediately?
+We'll address that shortly.
+________________________________________
+29.13 nbf
+Another useful claim:
+"nbf": 1780000100
+Means:
+Not valid before this time.
+So:
+currentTime < nbf
+means reject.
+This prevents a token from being used before its intended activation time.
+________________________________________
+29.14 Clock skew
+Now distributed systems introduce another problem.
+Suppose:
+Authorization server clock
+10:00:00
+Gateway:
+09:59:58
+Token says:
+exp = 10:00:00
+Different clocks can create edge cases.
+Therefore systems often allow a small configured clock-skew tolerance.
+But don't make it huge.
+A 10-minute tolerance effectively extends token validity.
+________________________________________
+29.15 Key management
+Here's where gateway authentication becomes interesting.
+The gateway needs public keys.
+But where does it get them?
+It could have:
+public-key.pem
+hardcoded.
+That doesn't scale.
+The authorization server may expose a JWKS endpoint:
+Authorization Server
+        │
+        ▼
+      JWKS
+        │
+        ▼
+     Gateway
+JWKS = JSON Web Key Set.
+It contains public keys.
+________________________________________
+29.16 Why multiple keys?
+Because of key rotation.
+Suppose today:
+Key A
+is active.
+Tomorrow security policy says:
+replace Key A
+with
+Key B
+If the issuer immediately deletes Key A:
+old tokens
+   ↓
+cannot be verified
+That's bad.
+Instead:
+JWKS
+
+Key A ← still available
+Key B ← new active key
+During the transition:
+old token → Key A
+new token → Key B
+Then eventually:
+Key A removed
+after old tokens expire.
+________________________________________
+29.17 kid
+How does the gateway know which public key to use?
+JWT header:
+{
+  "alg": "RS256",
+  "kid": "key-B"
+}
+The gateway looks up:
+kid = key-B
+inside its JWKS cache.
+Flow:
+JWT
+ │
+ ├── kid = key-B
+ │
+ ▼
+JWKS cache
+ │
+ ▼
+public key B
+ │
+ ▼
+signature verification
+This is much more efficient than trying every key.
+________________________________________
+29.18 JWKS caching
+You don't want:
+Every request
+   ↓
+HTTP request to identity provider
+   ↓
+get JWKS
+   ↓
+verify token
+At 100,000 requests/sec:
+100,000 JWKS requests/sec
+would be absurd.
+Instead:
+Gateway
+   │
+   ▼
+JWKS cache
+The gateway periodically refreshes the keys.
+________________________________________
+29.19 What if kid isn't found?
+Suppose:
+JWT kid = key-C
+but gateway cache has:
+key-A
+key-B
+Possible situation:
+issuer rotated key
+gateway cache is stale
+A common strategy:
+kid missing
+    ↓
+refresh JWKS
+    ↓
+look again
+    ↓
+found?
+  /    \
+yes     no
+ ↓       ↓
+verify  reject
+This is an example of how authentication depends on caching and distributed coordination.
+You'll see these relationships throughout system design.
+________________________________________
+29.20 Authentication isn't authorization
+Suppose JWT says:
+{
+  "sub": "123",
+  "scope": "orders:read"
+}
+Request:
+DELETE /orders/999
+Signature valid.
+Token not expired.
+Issuer valid.
+Audience valid.
+Therefore:
+Authentication = SUCCESS
+But:
+scope = orders:read
+operation = orders:delete
+Mismatch.
+Therefore:
+Authorization = FAILURE
+Response commonly:
+403 Forbidden
+This distinction matters enormously.
+________________________________________
+29.21 401 vs 403
+Think:
+401
+=
+"I don't accept/recognize your authentication."
+Examples:
+missing token
+invalid signature
+expired token
+wrong issuer
+wrong audience
+Whereas:
+403
+=
+"I know who you are, but you aren't allowed to do this."
+Example:
+valid token
++
+insufficient permission
+________________________________________
+29.22 Gateway authorization
+Suppose:
+JWT:
+scope = orders:read
+Request:
+GET /orders
+Gateway checks:
+required permission
+=
+orders:read
+and:
+token permission
+=
+orders:read
+Therefore:
+ALLOW
+But:
+DELETE /orders/123
+requires:
+orders:delete
+Therefore:
+DENY
+________________________________________
+29.23 But here's the subtle production problem
+Should the gateway be the only authorization layer?
+Usually, no.
+Imagine:
+Client
+ ↓
+Gateway
+ ↓
+Order Service
+ ↓
+Database
+Gateway says:
+User can access orders
+But the business rule may be:
+User 123 can access only THEIR orders.
+The gateway may not know:
+order.ownerId
+The order service does.
+Therefore:
+Gateway:
+coarse-grained authorization
+
+Service:
+business-level authorization
+This is a powerful production design principle.
+________________________________________
+29.24 Two layers of authorization
+                 Request
+                    │
+                    ▼
+             API Gateway
+                    │
+             "Can this identity
+              access this API?"
+                    │
+                    ▼
+             Order Service
+                    │
+             "Can this user
+              access THIS order?"
+                    │
+                    ▼
+                Database
+Example:
+Gateway:
+scope = orders:read
+        ↓
+ALLOW
+
+Order service:
+order.ownerId == user.id?
+        ↓
+NO
+        ↓
+403
+This prevents the gateway from becoming a business-logic engine.
+________________________________________
+29.25 Where should identity be propagated?
+After authentication, the gateway knows:
+userId
+tenantId
+scopes
+roles
+The backend may need this information.
+There are multiple strategies.
+Strategy 1 — Forward original JWT
+Client
+ ↓ JWT
+Gateway
+ ↓ JWT
+Service
+Service validates it again.
+Strategy 2 — Gateway establishes trusted identity context
+Client
+ ↓ JWT
+Gateway
+ ↓
+X-User-Id
+X-Tenant-Id
+ ↓
+Service
+But this requires strong trust between gateway and backend.
+An attacker who can directly reach the service could potentially forge those headers.
+Therefore the service must not blindly trust externally supplied identity headers.
+________________________________________
+29.26 Network trust boundary
+A safer architecture is:
+Internet
+   │
+   ▼
+Gateway
+   │
+   │ private network
+   ▼
+Services
+and services reject direct public access.
+Then gateway-generated identity information is within a controlled trust boundary.
+Even then, production systems may use:
+mTLS
+signed identity headers
+service authentication
+token propagation
+depending on the security requirements.
+________________________________________
+29.27 JWT validation cost
+JWT verification isn't free.
+For RSA:
+parse token
+ ↓
+Base64 decode
+ ↓
+parse JSON
+ ↓
+retrieve key
+ ↓
+cryptographic signature verification
+ ↓
+claim validation
+At huge traffic, cryptographic verification can consume CPU.
+Therefore gateways care about:
+key caching
+efficient parsers
+algorithm selection
+token size
+CPU utilization
+But they generally shouldn't cache "authentication result forever."
+That creates revocation/security problems.
+________________________________________
+29.28 Why JWT is attractive
+Imagine a gateway receives:
+100,000 requests/sec
+If every request had to ask:
+"Is token X valid?"
+to an authorization server:
+Gateway
+  ↓
+Authorization Server
+  ↓
+Gateway
+  ↓
+Backend
+you've introduced:
+extra network hop
+latency
+authorization-server load
+new failure dependency
+JWT allows:
+Gateway
+   ↓
+local verification
+   ↓
+Backend
+That's why signed self-contained access tokens are powerful.
+________________________________________
+29.29 But JWT creates a trade-off
+Local verification means:
+fast
+scalable
+no network call
+but:
+revocation is harder
+Suppose:
+Token expires in 1 hour.
+At minute 5:
+User account compromised.
+How do we instantly invalidate the JWT?
+The gateway doesn't necessarily know.
+Solutions include:
+short-lived access tokens
+refresh tokens
+token introspection
+revocation lists
+session/version checks
+Each adds complexity.
+This is a classic distributed-system trade-off:
+performance
+      ↕
+centralized control
+________________________________________
+29.30 Token introspection
+Instead of validating locally:
+Gateway
+ ↓
+Authorization Server
+ ↓
+"Is this token active?"
+The authorization server returns something like:
+active = true
+subject = 123
+scope = orders:read
+Advantages:
+centralized revocation
+current authorization state
+Disadvantages:
+network latency
+authorization server dependency
+higher load
+failure propagation
+So:
+JWT local validation
+and:
+Token introspection
+represent different architectural trade-offs.
+________________________________________
+29.31 The complete authentication pipeline
+Now combine everything we've learned:
+Client
+  │
+  │ Authorization: Bearer JWT
+  ▼
+API Gateway
+  │
+  ▼
+Extract token
+  │
+  ▼
+Parse JWT
+  │
+  ▼
+Read header
+  │
+  ├── alg
+  └── kid
+  │
+  ▼
+Find public key
+  │
+  ▼
+Verify signature
+  │
+  ▼
+Validate claims
+  │
+  ├── iss
+  ├── aud
+  ├── exp
+  ├── nbf
+  └── ...
+  │
+  ▼
+Establish identity
+  │
+  ▼
+Authorization
+  │
+  ├── scope
+  ├── role
+  └── policy
+  │
+  ▼
+Route request
+  │
+  ▼
+Backend
+________________________________________
+29.32 The really important architecture
+You should now visualize authentication as three different layers:
+                 TOKEN
+                   │
+                   ▼
+          ┌─────────────────┐
+          │ Cryptographic   │
+          │ Verification    │
+          └────────┬────────┘
+                   │
+                   ▼
+          ┌─────────────────┐
+          │ Identity        │
+          │ Establishment   │
+          └────────┬────────┘
+                   │
+                   ▼
+          ┌─────────────────┐
+          │ Authorization   │
+          │ Policy          │
+          └────────┬────────┘
+                   │
+                   ▼
+                SERVICE
+Don't mentally collapse these into "JWT validation."
+They're different problems.
+________________________________________
+29.33 Production failure scenarios
+Identity provider is down
+If using local JWT verification:
+Identity provider DOWN
+       ↓
+Existing valid JWTs
+       ↓
+Gateway can potentially continue
+That's a major availability advantage.
+If using introspection:
+Identity provider DOWN
+       ↓
+Gateway cannot validate
+       ↓
+Authentication failures
+________________________________________
+JWKS endpoint is down
+If gateway already has cached keys:
+JWKS unavailable
+       ↓
+cached key
+       ↓
+verification continues
+This is why key caching is important.
+________________________________________
+New signing key appears
+JWT kid = K3
+
+Gateway cache:
+K1
+K2
+Gateway:
+refresh JWKS
+   ↓
+K3 found
+   ↓
+verify
+________________________________________
+Token expired
+signature valid
+BUT
+exp < currentTime
+Result:
+401
+________________________________________
+Valid token, insufficient scope
+authentication = success
+authorization = failure
+Result:
+403
+________________________________________
+29.34 One subtle security issue: audience
+Suppose a token is validly signed.
+That does not mean:
+every API should accept it.
+A token issued for:
+admin-api
+shouldn't automatically become valid for:
+payment-api
+Therefore:
+signature valid
+≠
+token valid for this service
+You need:
+signature
++
+issuer
++
+audience
++
+time constraints
++
+policy
+________________________________________
+29.35 What the gateway should NOT do
+Avoid turning authentication into:
+Gateway
+ ↓
+JWT validation
+ ↓
+100 database queries
+ ↓
+20 microservice calls
+ ↓
+complex business policy
+ ↓
+Backend
+Then your gateway becomes the central bottleneck.
+A good gateway should generally perform fast, broadly applicable security checks.
+Business-specific decisions stay closer to the business service.
+________________________________________
+29.36 Senior-level mental model
+At your experience level, don't think:
+"API Gateway validates JWT."
+Think:
+                    AUTHENTICATION SYSTEM
+
+Authorization Server
+       │
+       ├── signing keys
+       ├── token issuance
+       └── identity
+       │
+       ▼
+      JWT
+       │
+       ▼
+     Client
+       │
+       ▼
+    Gateway
+       │
+       ├── parse
+       ├── algorithm policy
+       ├── key lookup
+       ├── signature verification
+       ├── issuer validation
+       ├── audience validation
+       ├── time validation
+       └── identity extraction
+       │
+       ▼
+   Authorization
+       │
+       ├── scopes
+       ├── roles
+       └── coarse policies
+       │
+       ▼
+    Backend
+       │
+       └── business authorization
+That is the architecture you should have in your head.
+________________________________________
+29.37 What we've covered
+Today we went through:
+•	JWT structure 
+•	Header / payload / signature 
+•	Base64URL vs encryption 
+•	RSA signing and verification 
+•	Algorithm validation 
+•	iss 
+•	aud 
+•	exp 
+•	nbf 
+•	clock skew 
+•	kid 
+•	JWKS 
+•	key rotation 
+•	JWKS caching 
+•	authentication vs authorization 
+•	401 vs 403 
+•	gateway authorization 
+•	service-level authorization 
+•	identity propagation 
+•	JWT vs introspection 
+•	token revocation trade-offs 
+•	authentication failure scenarios 
+•	cryptographic verification cost 
+The key takeaway is:
+JWT is only the credential format. Authentication is the entire verification pipeline around it.
+And:
+Gateway authorization should usually be coarse-grained; business authorization belongs in the service that owns the business data.
+
+Lesson 30 — API Gateway Internals
+Rate Limiting: Why It Exists and How the Algorithms Actually Work
+We are not going to repeat rate limiting later. When we reach Module 4, we'll build on this lesson and go into distributed implementation, Redis atomicity, fairness, and failure modes.
+________________________________________
+30.1 Start with the real problem
+Imagine your API has:
+100 backend servers
+and each server can comfortably handle:
+1,000 requests/sec
+So your theoretical capacity is roughly:
+100 × 1,000 = 100,000 req/sec
+Now one client sends:
+500,000 req/sec
+What happens?
+The gateway forwards everything.
+Client
+  │
+  │ 500k req/s
+  ▼
+Gateway
+  │
+  │ 500k req/s
+  ▼
+Backend
+  │
+  ├── CPU exhausted
+  ├── connection pools exhausted
+  ├── queues grow
+  ├── latency increases
+  └── eventually failures
+The interesting part is that the backend may not fail immediately.
+Instead, queues start growing.
+________________________________________
+30.2 Queueing is the hidden enemy
+Suppose backend capacity is:
+10,000 req/sec
+Incoming traffic:
+15,000 req/sec
+Every second:
+15,000 incoming
+10,000 processed
+----------------
+5,000 waiting
+After 10 seconds:
+50,000 requests waiting
+Now latency explodes.
+Eventually:
+memory exhausted
+connections exhausted
+timeouts
+retries
+more traffic
+more load
+This can become a cascading failure.
+Rate limiting prevents the system from accepting unlimited work.
+________________________________________
+30.3 Rate limiting is really admission control
+This is the deeper mental model.
+Don't think:
+"Rate limiting counts requests."
+Think:
+Rate limiting decides whether a request is allowed to enter the system.
+             Incoming traffic
+                   │
+                   ▼
+            ┌──────────────┐
+            │ Rate Limiter │
+            └──────┬───────┘
+                   │
+             ┌─────┴─────┐
+             │           │
+           ALLOW        REJECT
+             │           │
+             ▼           ▼
+          Backend       429
+This is admission control.
+________________________________________
+30.4 What are we actually limiting?
+There are several dimensions.
+Per IP
+1.2.3.4 → 100 req/sec
+Per user
+user-123 → 100 req/sec
+Per API key
+api-key-X → 10,000 req/min
+Per tenant
+tenant-A → 50,000 req/sec
+Global
+entire API → 1 million req/sec
+And these can coexist.
+For example:
+Global       → 1M/sec
+Tenant       → 100K/sec
+User         → 1K/sec
+Endpoint     → 100/sec
+________________________________________
+30.5 The simplest algorithm: Fixed Window
+Suppose:
+limit = 100 requests
+window = 1 minute
+Store:
+counter = 0
+For every request:
+counter++
+If:
+counter <= 100
+allow.
+Otherwise:
+reject
+At the end of the minute:
+counter = 0
+________________________________________
+30.6 Internally
+Conceptually:
+current window:
+20:00:00 → 20:00:59
+Storage:
+20:00 → 73 requests
+Then:
+20:01
+creates:
+20:01 → 0
+________________________________________
+30.7 Why fixed window is attractive
+Extremely simple.
+O(1)
+per request.
+Storage:
+one counter
+Easy to distribute.
+Easy to implement with Redis.
+But it has a major flaw.
+________________________________________
+30.8 The boundary problem
+Limit:
+100 requests/minute
+Window 1:
+20:00:00 → 20:00:59
+Client sends:
+100 requests at 20:00:59
+Allowed.
+Then window resets.
+Client sends:
+100 requests at 20:01:00
+Also allowed.
+Actual traffic:
+200 requests
+within roughly:
+2 seconds
+even though the stated limit was:
+100/minute
+Visualize:
+20:00:59                 20:01:00
+    │                        │
+    ▼                        ▼
+100 requests             100 requests
+
+───────────────┬────────────────
+     window 1  │    window 2
+This is called a boundary burst.
+________________________________________
+30.9 Why this matters
+Fixed windows are fine when:
+rough enforcement
+is acceptable.
+But if you need smoother traffic:
+Fixed Window
+     ↓
+not enough
+We need better algorithms.
+________________________________________
+30.10 Sliding Window Log
+Instead of storing one counter, store timestamps.
+For example:
+limit = 5
+window = 10 seconds
+Store:
+[10.2, 11.1, 12.4, 15.8, 18.3]
+For a new request at:
+19.0
+remove timestamps older than:
+19.0 - 10
+=
+9.0
+Nothing removed.
+Current count:
+5
+Therefore:
+REJECT
+________________________________________
+30.11 Why it's more accurate
+There is no artificial minute boundary.
+The algorithm asks:
+How many requests occurred during the previous N seconds?
+That's much closer to the actual requirement.
+________________________________________
+30.12 But now we have a memory problem
+Suppose:
+1 million users
+and each user can generate:
+10,000 requests
+You may need to maintain millions of timestamps.
+Memory becomes expensive.
+So:
+Sliding Window Log
+has excellent precision but potentially high memory consumption.
+________________________________________
+30.13 Sliding Window Counter
+We can approximate the sliding window without storing every timestamp.
+Suppose:
+current window = 20:01
+previous window = 20:00
+Store:
+previousCount = 80
+currentCount = 30
+Suppose we're halfway through the current window.
+Approximate previous-window contribution:
+80 × 0.5 = 40
+Estimated requests:
+40 + 30 = 70
+Therefore:
+70 < limit
+Allow.
+________________________________________
+30.14 Why interpolation?
+Imagine:
+Previous window
+┌────────────────────┐
+│        80          │
+└────────────────────┘
+
+Current window
+┌────────────────────┐
+│       30           │
+└────────────────────┘
+        ↑
+       50%
+Only roughly half of the previous window is still relevant.
+So:
+estimated count
+=
+previous count × remaining fraction
++
+current count
+This reduces the memory problem.
+________________________________________
+30.15 Now the interesting algorithm: Token Bucket
+Token Bucket is extremely important.
+You'll encounter it in:
+API gateways
+networking
+cloud services
+distributed systems
+Imagine a bucket.
+        token generator
+              ↓
+       ┌─────────────┐
+       │ ● ● ● ● ●   │
+       │ ● ● ● ●     │
+       │             │
+       └─────────────┘
+Tokens are added at a fixed rate.
+For example:
+capacity = 10 tokens
+refill = 5 tokens/sec
+Every request costs:
+1 token
+If a token exists:
+allow
+Otherwise:
+reject
+________________________________________
+30.16 Why call it a bucket?
+Because tokens accumulate.
+Suppose nobody sends requests.
+At time 0:
+5 tokens
+After some time:
+10 tokens
+Bucket is full.
+More tokens don't accumulate beyond capacity.
+capacity = 10
+So:
+tokens = min(capacity, tokens + refill)
+________________________________________
+30.17 Token Bucket gives controlled bursts
+This is its major advantage.
+Suppose:
+capacity = 10
+refill = 5/sec
+Client is idle for 2 seconds.
+Bucket fills:
+10 tokens
+Client suddenly sends:
+10 requests
+All can be accepted immediately.
+Then:
+bucket = 0
+The client must wait for refill.
+So Token Bucket allows:
+short burst
+while maintaining:
+long-term rate
+________________________________________
+30.18 The actual algorithm
+Maintain:
+tokens
+lastRefillTime
+capacity
+refillRate
+When request arrives:
+now = currentTime()
+
+elapsed = now - lastRefillTime
+
+newTokens = elapsed × refillRate
+
+tokens = min(
+    capacity,
+    tokens + newTokens
+)
+
+lastRefillTime = now
+Then:
+if tokens >= 1:
+    tokens -= 1
+    ALLOW
+else:
+    REJECT
+That's the core algorithm.
+________________________________________
+30.19 Important optimization
+We don't need a background thread continuously adding tokens.
+Bad design:
+Thread
+ ↓
+every millisecond
+ ↓
+add tokens
+That would waste CPU.
+Instead, use lazy refill.
+Tokens are calculated only when a request arrives.
+Request
+  ↓
+calculate elapsed time
+  ↓
+calculate tokens
+  ↓
+decide
+This is an important implementation detail.
+________________________________________
+30.20 Java implementation
+A simplified local implementation:
+class TokenBucket {
+
+    private final double capacity;
+    private final double refillRate;
+
+    private double tokens;
+    private long lastRefillNanos;
+
+    TokenBucket(double capacity, double refillRate) {
+        this.capacity = capacity;
+        this.refillRate = refillRate;
+        this.tokens = capacity;
+        this.lastRefillNanos = System.nanoTime();
+    }
+
+    synchronized boolean allow() {
+
+        long now = System.nanoTime();
+
+        double elapsedSeconds =
+                (now - lastRefillNanos) / 1_000_000_000.0;
+
+        tokens = Math.min(
+                capacity,
+                tokens + elapsedSeconds * refillRate
+        );
+
+        lastRefillNanos = now;
+
+        if (tokens >= 1) {
+            tokens--;
+            return true;
+        }
+
+        return false;
+    }
+}
+This is only a single-JVM implementation.
+And that distinction is critical.
+________________________________________
+30.21 Why synchronized?
+Suppose two threads arrive simultaneously.
+Without synchronization:
+Thread A → sees 1 token
+Thread B → sees 1 token
+Both might consume it.
+You could accidentally allow:
+2 requests
+using:
+1 token
+So the operation:
+refill
++
+check
++
+consume
+must behave atomically.
+This is a read-modify-write race.
+________________________________________
+30.22 Now move to distributed systems
+One gateway instance:
+Client
+  ↓
+Gateway A
+Local token bucket works.
+But production:
+                Load Balancer
+                /     |     \
+               /      |      \
+        Gateway A Gateway B Gateway C
+Suppose limit is:
+100 requests/sec/user
+If each gateway independently maintains:
+100 tokens
+the client could potentially get:
+100 from A
++
+100 from B
++
+100 from C
+=
+300
+The global limit is broken.
+________________________________________
+30.23 This is the distributed rate-limiting problem
+We need shared state:
+Gateway A ──┐
+Gateway B ──┼──→ Shared Rate Limiter
+Gateway C ──┘
+A common choice:
+Redis
+So:
+                 Redis
+               /   |   \
+              /    |    \
+         Gateway A B     C
+All instances coordinate against the same logical counter/bucket.
+We'll implement this deeply later.
+________________________________________
+30.24 But Redis introduces a race
+Naive implementation:
+GET tokens
+Then:
+if tokens > 0
+    DECR tokens
+Two gateways:
+Gateway A              Gateway B
+
+GET → 1                GET → 1
+
+DECR                   DECR
+Both saw:
+1
+Both might allow.
+Therefore:
+Distributed rate limiting requires an atomic decision.
+Not merely shared storage.
+________________________________________
+30.25 Atomicity
+We want:
+read current state
+       +
+calculate refill
+       +
+check limit
+       +
+consume token
+to behave like:
+ONE indivisible operation
+Conceptually:
+┌───────────────────────────┐
+│ refill                    │
+│ check                     │
+│ consume                   │
+│ update timestamp          │
+└───────────────────────────┘
+          ATOMIC
+Redis Lua scripts are one common way to achieve this.
+We'll build that later.
+________________________________________
+30.26 Rate limiting and fairness
+Suppose:
+Tenant A → 10,000 requests/sec
+Tenant B → 10 requests/sec
+If there is only a global limit:
+10000 requests/sec
+Tenant A may consume everything.
+Tenant B gets:
+0
+This is a fairness problem.
+Therefore production systems often use multiple levels:
+Global
+  ↓
+Tenant
+  ↓
+User
+  ↓
+API
+  ↓
+Endpoint
+This is sometimes called hierarchical rate limiting.
+________________________________________
+30.27 Example
+Suppose:
+Global = 1,000,000/sec
+Tenant = 100,000/sec
+User = 1,000/sec
+Endpoint = 100/sec
+Request must pass all applicable policies:
+Global
+  ↓
+Tenant
+  ↓
+User
+  ↓
+Endpoint
+  ↓
+ALLOW
+If any one fails:
+REJECT
+________________________________________
+30.28 What response should the gateway send?
+Usually:
+HTTP/1.1 429 Too Many Requests
+Often with rate-limit metadata such as:
+Retry-After
+The client can then avoid immediately retrying.
+This becomes especially important when we later study:
+Retry + Rate Limiting
+because careless retries can make rate limiting useless.
+________________________________________
+30.29 The dangerous combination: Retry + Rate Limit
+Suppose gateway returns:
+429
+Client says:
+I'll retry immediately.
+Then:
+429
+retry
+429
+retry
+429
+retry
+Now millions of clients can create a retry storm.
+That's why rate limiting and retry policy must be designed together.
+We'll examine this deeply in the resilience module.
+________________________________________
+30.30 Token Bucket vs Leaky Bucket
+Don't confuse these.
+Token Bucket
+Allows controlled bursts.
+tokens accumulate
+     ↓
+burst possible
+Leaky Bucket
+Conceptually:
+requests
+   ↓
+┌───────────┐
+│   queue    │
+└─────┬─────┘
+      ↓
+constant output rate
+It smooths traffic.
+For example:
+Incoming:
+10
+100
+5
+200
+could be emitted at approximately:
+20
+20
+20
+20
+...
+depending on configuration.
+________________________________________
+30.31 Why Token Bucket is popular
+Token Bucket gives you:
+maximum burst
++
+average rate
+For example:
+capacity = 100
+refill = 10/sec
+means approximately:
+burst up to 100
+long-term average around 10/sec
+This maps nicely to API requirements.
+________________________________________
+30.32 The deeper mathematical model
+For Token Bucket:
+B = bucket capacity
+r = refill rate
+T = elapsed time
+Available tokens:
+tokens =
+min(
+    B,
+    oldTokens + rT
+)
+For one request:
+if tokens >= cost:
+    tokens = tokens - cost
+    allow
+else:
+    reject
+Notice something important:
+Requests don't actually need to be counted.
+We're maintaining permission to perform work.
+That's the deeper mental model.
+________________________________________
+30.33 Weighted requests
+Not every request costs the same.
+Suppose:
+GET /products
+cost = 1
+but:
+POST /generate-report
+cost = 10
+Then:
+if tokens >= cost:
+    tokens -= cost
+This lets the limiter account for expensive operations.
+Example:
+Bucket = 20 tokens
+
+GET        → cost 1
+GET        → cost 1
+REPORT     → cost 10
+Remaining:
+8 tokens
+This is useful for APIs with very different resource costs.
+________________________________________
+30.34 Rate limiting is not capacity planning
+Very important.
+Suppose backend can process:
+10,000 req/sec
+You set:
+rate limit = 10,000/sec
+That doesn't guarantee the system is safe.
+Why?
+Because requests can have different:
+CPU cost
+DB cost
+memory cost
+network cost
+execution time
+100 expensive requests could be worse than:
+10,000 cheap requests
+Therefore good systems sometimes use:
+weighted rate limiting
++
+concurrency limiting
++
+timeouts
++
+backpressure
+Rate limiting is only one resilience mechanism.
+________________________________________
+30.35 Rate limiting vs concurrency limiting
+These are different.
+Rate limiting
+Controls:
+requests / second
+Concurrency limiting
+Controls:
+requests currently executing
+Example:
+Rate = 1,000/sec
+Concurrency = 50
+You might accept 1,000 requests/sec but allow only 50 expensive operations simultaneously.
+This distinction will matter later when we study Bulkhead.
+________________________________________
+30.36 Where rate limiting belongs
+Our gateway pipeline now looks more meaningful:
+Request
+  ↓
+Tracing
+  ↓
+Authentication
+  ↓
+Authorization
+  ↓
+Rate Limiting
+  ↓
+Routing
+  ↓
+Load Balancing
+  ↓
+Backend
+But exact ordering depends on what you're limiting.
+For per-user limiting:
+Authentication
+      ↓
+Rate Limiting
+For per-IP protection:
+IP extraction
+      ↓
+Rate Limiting
+      ↓
+Authentication
+Again, ordering is driven by the information required by the policy.
+________________________________________
+30.37 Failure scenario: Redis unavailable
+Distributed rate limiter depends on Redis.
+Now:
+Gateway
+   ↓
+Redis
+   X
+DOWN
+What should gateway do?
+Fail open
+Redis unavailable
+      ↓
+allow request
+Availability wins.
+Risk:
+backend overload
+abuse
+DDoS exposure
+Fail closed
+Redis unavailable
+      ↓
+reject request
+Security/protection wins.
+Risk:
+entire API becomes unavailable
+There is no universal answer.
+Different endpoints may choose differently.
+________________________________________
+30.38 Example
+For:
+POST /transfer-money
+you may prefer:
+fail closed
+For:
+GET /public/products
+you may prefer:
+fail open
+or a local fallback limiter.
+This is a production-level trade-off.
+________________________________________
+30.39 Local fallback
+A sophisticated gateway might do:
+Global distributed limiter
+          ↓
+        Redis
+          X
+        failure
+          ↓
+Local emergency limiter
+So instead of completely disabling protection:
+Redis failure
+     ↓
+local protection
+This doesn't provide perfect global enforcement, but preserves some safety.
+________________________________________
+30.40 What you should remember
+The evolution is:
+Fixed Window
+     ↓
+simple but boundary problem
+     ↓
+Sliding Window
+     ↓
+more accurate but memory cost
+     ↓
+Sliding Counter
+     ↓
+approximation
+     ↓
+Token Bucket
+     ↓
+burst + long-term rate
+     ↓
+Distributed Token Bucket
+     ↓
+shared state + atomicity
+And at scale:
+Distributed Token Bucket
+        ↓
+Redis/shared state
+        ↓
+atomic update
+        ↓
+multiple gateway instances
+        ↓
+failure strategy
+________________________________________
+30.41 The complete architecture
+You should now visualize a production gateway like:
+                         CLIENTS
+                            │
+                            ▼
+                    ┌──────────────┐
+                    │ Load Balancer│
+                    └──────┬───────┘
+                           │
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+         Gateway A      Gateway B      Gateway C
+             │             │             │
+             └─────────────┼─────────────┘
+                           │
+                           ▼
+                    ┌─────────────┐
+                    │    Redis    │
+                    │             │
+                    │ Rate State  │
+                    └─────────────┘
+                           │
+                           ▼
+                       Backend
+Each gateway can make a rate-limit decision against shared state.
+The difficult part isn't the if.
+It's ensuring:
+correctness
++
+atomicity
++
+low latency
++
+high throughput
++
+failure tolerance
+________________________________________
+30.42 Senior-level understanding
+At your experience level, when someone says:
+"We'll add Redis rate limiting."
+Don't stop there.
+Ask:
+What algorithm?
+What is the rate?
+What is the burst capacity?
+What is the key?
+Per user?
+Per tenant?
+Per IP?
+
+Is state global?
+How is the operation atomic?
+
+What happens if Redis fails?
+
+Do we fail open or closed?
+
+How much latency does Redis add?
+
+What happens during Redis partition?
+
+Can hot users create hot Redis keys?
+
+How do we handle millions of keys?
+
+What is the memory cost?
+
+How do we handle gateway scaling?
+
+Do we need local protection as well?
+Those are the questions that separate using a component from understanding the system.
+________________________________________
+Lesson 30 checkpoint
+You should now have the internal picture:
+Rate limiting
+      ↓
+Admission control
+      ↓
+Algorithm
+      ↓
+State
+      ↓
+Atomic decision
+      ↓
+Distributed coordination
+      ↓
+Failure strategy
+And the most important algorithms:
+Fixed Window
+Sliding Window Log
+Sliding Window Counter
+Token Bucket
+Leaky Bucket
+Lesson 31 — API Gateway Internals
+Request/Response Transformation & Protocol Handling
+We are continuing concept-wise, without repeating earlier API Gateway lessons.
+The key question today is:
+What actually happens inside a gateway when it receives an HTTP request, modifies it, sends it to a backend, receives the response, modifies that response, and sends it back to the client?
+This looks simple:
+Client
+  ↓
+Gateway
+  ↓
+Backend
+But internally, transformation can turn a cheap proxy into a CPU + memory + latency bottleneck.
+________________________________________
+31.1 Start with a concrete example
+Client sends:
+POST /api/users
+Content-Type: application/json
+
+{
+  "firstName": "Gopal",
+  "lastName": "Krishna"
+}
+Backend expects:
+POST /users
+Content-Type: application/json
+
+{
+  "first_name": "Gopal",
+  "last_name": "Krishna"
+}
+The gateway transforms:
+/api/users
+     ↓
+/users
+and:
+firstName
+     ↓
+first_name
+So:
+Client
+   │
+   │ /api/users
+   │ firstName
+   ▼
+Gateway
+   │
+   │ /users
+   │ first_name
+   ▼
+Backend
+This is request transformation.
+________________________________________
+31.2 Why do this at the gateway?
+There are several reasons.
+Client compatibility
+Old client:
+/api/v1/users
+New service:
+/users
+Gateway can hide backend changes.
+________________________________________
+Protocol conversion
+Client:
+HTTP/JSON
+Backend:
+gRPC
+Gateway can act as the protocol boundary.
+________________________________________
+Header normalization
+Client:
+X-Correlation-ID: abc
+Gateway may convert or enrich:
+X-Request-ID: abc
+________________________________________
+API versioning
+Client:
+/api/v1/orders
+Backend:
+/orders
+Gateway selects the appropriate backend version.
+________________________________________
+31.3 The first important distinction
+There are two fundamentally different transformations:
+Metadata transformation
+and:
+Body transformation
+Metadata:
+headers
+URL
+query parameters
+method
+Body:
+JSON
+XML
+protobuf
+multipart
+Metadata transformation is usually cheap.
+Body transformation can be expensive.
+________________________________________
+31.4 Why body transformation is expensive
+Suppose request body is:
+10 MB
+Gateway wants to change:
+{
+  "firstName": "Gopal"
+}
+into:
+{
+  "first_name": "Gopal"
+}
+A naive implementation does:
+Network
+   ↓
+Read entire body
+   ↓
+Store in memory
+   ↓
+Parse JSON
+   ↓
+Create object tree
+   ↓
+Modify object
+   ↓
+Serialize JSON
+   ↓
+Send backend
+Now memory can look like:
+10 MB network buffer
++
+10 MB JSON/object representation
++
+10 MB output buffer
+Potentially much more than 10 MB.
+At 10,000 concurrent requests:
+10 MB × 10,000
+=
+100 GB
+That's why buffering large bodies at a gateway is dangerous.
+________________________________________
+31.5 Streaming vs buffering
+This distinction is extremely important.
+Buffering
+Client
+  ↓
+Gateway
+  ↓
+READ EVERYTHING
+  ↓
+Transform
+  ↓
+Backend
+Streaming
+Client
+  ↓
+Gateway
+  ↓
+small chunk
+  ↓
+Backend
+
+small chunk
+  ↓
+Backend
+Streaming keeps memory bounded.
+________________________________________
+31.6 Think about a 1 GB upload
+Suppose:
+POST /upload
+Content-Length: 1GB
+Bad gateway:
+receive 1GB
+↓
+store 1GB
+↓
+transform
+↓
+send
+One request can consume enormous memory/disk resources.
+Streaming:
+chunk 1 → backend
+chunk 2 → backend
+chunk 3 → backend
+...
+chunk N → backend
+The gateway doesn't need the entire payload in memory.
+________________________________________
+31.7 But streaming makes transformation harder
+Suppose you want to transform:
+{
+  "firstName": "Gopal",
+  "lastName": "Krishna"
+}
+You can't necessarily rewrite arbitrary JSON by blindly forwarding bytes.
+You may need to parse structure.
+That creates a trade-off:
+Streaming
+   ↓
+low memory
+low latency
+but
+harder transformation
+versus:
+Buffering
+   ↓
+easy transformation
+but
+higher memory
+higher latency
+________________________________________
+31.8 JSON transformation internally
+Imagine:
+{
+  "user": {
+    "firstName": "Gopal"
+  }
+}
+A JSON parser typically converts this into an internal representation.
+Conceptually:
+Object
+ └── user
+      └── firstName
+           └── "Gopal"
+This is an in-memory tree.
+In Java, libraries such as Jackson can represent this using objects such as:
+ObjectNode
+ArrayNode
+TextNode
+IntNode
+So the gateway isn't simply manipulating strings.
+It may be constructing an object graph.
+________________________________________
+31.9 Why string replacement is dangerous
+Someone might implement:
+body.replace("firstName", "first_name");
+Looks easy.
+But JSON is structured data.
+Suppose:
+{
+  "message": "The field firstName is invalid"
+}
+Now string replacement changes the message too.
+Or:
+{
+  "description": "firstName"
+}
+You accidentally modify data that wasn't supposed to change.
+Therefore structured transformations should operate on the parsed structure, not arbitrary text replacement.
+________________________________________
+31.10 Serialization cost
+After modifying the object:
+JSON bytes
+    ↓
+parse
+    ↓
+object tree
+    ↓
+modify
+    ↓
+serialize
+    ↓
+JSON bytes
+You've performed:
+deserialization
++
+serialization
+for every request.
+At very high throughput this can become significant CPU usage.
+________________________________________
+31.11 Request path latency
+Suppose:
+Client → Gateway → Backend
+Backend processing:
+10 ms
+Gateway transformation:
+3 ms
+Now:
+total ≈ 13 ms
+But if response transformation adds:
+4 ms
+then:
+total ≈ 17 ms
+The gateway added:
+7 ms
+to a 10 ms backend.
+That's a 70% increase in request latency.
+________________________________________
+31.12 The gateway is on every request
+This is why gateway overhead is particularly dangerous.
+If one service performs an expensive operation:
+Service
+ ↓
+expensive operation
+only requests to that service pay the cost.
+But gateway transformation:
+Client
+ ↓
+Gateway
+ ↓
+every service
+can affect the entire platform.
+So gateway logic should generally remain:
+small
+predictable
+fast
+stateless where possible
+________________________________________
+31.13 Header transformation
+Headers are much cheaper.
+Suppose client sends:
+Host: api.example.com
+Authorization: Bearer ...
+X-Request-ID: 123
+Gateway might add:
+X-Gateway-ID: gateway-7
+X-Forwarded-For: ...
+X-Request-ID: 123
+Then forward them.
+Conceptually:
+Client Headers
+      ↓
+Gateway Header Map
+      ↓
+modify/add/remove
+      ↓
+Backend Headers
+________________________________________
+31.14 X-Forwarded-For
+This is a common proxy concept.
+Client:
+1.2.3.4
+Gateway:
+10.0.1.20
+Backend sees:
+10.0.1.20
+without forwarding metadata.
+So gateway may add:
+X-Forwarded-For: 1.2.3.4
+Now backend can understand the original client address.
+But this introduces a security consideration:
+Can the client forge this header?
+If the gateway trusts arbitrary incoming X-Forwarded-For, an attacker could send:
+X-Forwarded-For: 127.0.0.1
+Therefore gateways need a clear rule for which proxy-added headers are trusted and how proxy chains are constructed.
+________________________________________
+31.15 Proxy chain
+Imagine:
+Client
+  ↓
+CDN
+  ↓
+Load Balancer
+  ↓
+API Gateway
+  ↓
+Service
+There may be multiple forwarding headers.
+Conceptually:
+X-Forwarded-For:
+client,
+CDN,
+LB,
+gateway
+Every layer needs consistent handling.
+Otherwise:
+IP-based rate limiting
+auditing
+security rules
+logging
+can become incorrect.
+________________________________________
+31.16 Host header transformation
+Client:
+Host: api.company.com
+Backend might be:
+orders.internal.company
+Gateway could forward:
+Host: orders.internal.company
+or preserve the original host and use another routing mechanism.
+Why does this matter?
+Because applications sometimes use:
+Host
+for:
+virtual hosting
+tenant resolution
+URL generation
+security checks
+Blindly changing it can break applications.
+________________________________________
+31.17 Query parameter transformation
+Client:
+GET /users?userId=123
+Backend expects:
+GET /users/123
+Gateway can transform:
+/user?userId=123
+        ↓
+/users/123
+But now the gateway needs to understand routing semantics.
+This is why transformations and routing aren't completely independent.
+________________________________________
+31.18 Response transformation
+The same process can happen in reverse.
+Backend:
+{
+  "first_name": "Gopal"
+}
+Client expects:
+{
+  "firstName": "Gopal"
+}
+Flow:
+Backend
+   ↓
+Gateway
+   ↓
+parse response
+   ↓
+transform
+   ↓
+serialize
+   ↓
+Client
+Everything we discussed about request-body transformation applies again.
+________________________________________
+31.19 Compression
+Suppose backend returns:
+5 MB JSON
+Gateway can compress it:
+5 MB
+ ↓
+gzip
+ ↓
+500 KB
+Then:
+Gateway
+ ↓ 500 KB
+Client
+Network usage decreases.
+But CPU increases.
+So:
+compression
+=
+CPU ↔ bandwidth trade-off
+________________________________________
+31.20 Compression pipeline
+Conceptually:
+Backend
+   │
+   │ uncompressed
+   ▼
+Gateway
+   │
+   ▼
+Compression
+   │
+   ▼
+gzip/br
+   │
+   ▼
+Client
+The gateway needs to inspect:
+Accept-Encoding
+For example:
+Accept-Encoding: gzip, br
+Then select an appropriate encoding.
+________________________________________
+31.21 Compression is not always beneficial
+For already compressed data:
+JPEG
+PNG
+MP4
+ZIP
+GZIP
+compressing again usually provides little benefit and costs CPU.
+So production gateways often make compression decisions based on:
+Content-Type
+response size
+client capabilities
+compression policy
+________________________________________
+31.22 Content negotiation
+Client can say:
+Accept: application/json
+or:
+Accept: application/xml
+Backend might support both.
+Gateway could route or transform accordingly.
+Similarly:
+Content-Type
+describes what the request body actually contains.
+For example:
+application/json
+application/xml
+application/grpc
+multipart/form-data
+These aren't just labels.
+They determine how the gateway should interpret the bytes.
+________________________________________
+31.23 HTTP body is fundamentally bytes
+This is a crucial networking mental model.
+At the lowest useful level:
+Network
+   ↓
+bytes
+The gateway sees bytes.
+Then protocol parsing interprets those bytes:
+bytes
+ ↓
+HTTP framing
+ ↓
+headers
+ ↓
+body
+ ↓
+Content-Type
+ ↓
+application parser
+So:
+HTTP
+doesn't inherently mean:
+JSON
+HTTP transports bytes.
+JSON is one possible application-level representation.
+________________________________________
+31.24 HTTP/1.1 vs HTTP/2
+A gateway may receive HTTP/2 from the client:
+Client
+   │
+ HTTP/2
+   ▼
+Gateway
+and communicate with backend using HTTP/1.1:
+Gateway
+   │
+ HTTP/1.1
+   ▼
+Backend
+The gateway is therefore a protocol termination point.
+It may translate transport-level behavior.
+________________________________________
+31.25 HTTP/2 streams
+HTTP/2 allows multiple streams over one connection.
+Conceptually:
+One TCP connection
+│
+├── Stream 1 → request A
+├── Stream 3 → request B
+├── Stream 5 → request C
+└── Stream 7 → request D
+This reduces the need for multiple connections.
+The gateway has to manage:
+connection
+   ↓
+multiple streams
+   ↓
+multiple requests
+while routing each request independently.
+________________________________________
+31.26 Why this matters for gateway design
+Suppose one client opens:
+1 HTTP/2 connection
+but sends:
+1,000 concurrent streams
+A naive rate limiter that limits:
+connections
+would see:
+1 connection
+and might think everything is fine.
+But actual request load is:
+1,000 streams
+Therefore rate limiting should generally operate at the request/operation level, not merely TCP connection count.
+________________________________________
+31.27 HTTP/2 connection vs request
+Remember our earlier lesson:
+Connection ≠ HTTP request
+With HTTP/2, this becomes even more obvious:
+1 connection
+   ├── request
+   ├── request
+   ├── request
+   ├── request
+   └── ...
+The gateway manages both:
+connection-level resources
+and:
+request-level resources
+________________________________________
+31.28 gRPC transformation
+Now consider:
+Client
+  ↓
+REST/JSON
+  ↓
+Gateway
+  ↓
+gRPC
+  ↓
+Service
+The gateway must transform:
+JSON
+into:
+Protocol Buffers
+This is not simply changing headers.
+It is a serialization conversion:
+JSON
+ ↓
+object
+ ↓
+protobuf message
+ ↓
+binary bytes
+And the reverse on response.
+Again:
+CPU
++
+memory
++
+latency
+are involved.
+________________________________________
+31.29 Why protobuf is efficient
+JSON:
+{
+  "userId": 123,
+  "name": "Gopal"
+}
+contains field names:
+"userId"
+"name"
+in the transmitted representation.
+Protobuf uses a compact binary representation based on field numbers/types.
+Conceptually:
+JSON
+→ human-readable
+→ larger
+
+protobuf
+→ binary
+→ compact
+This is one reason gRPC is attractive for internal service communication.
+________________________________________
+31.30 But don't automatically convert everything at the gateway
+You might think:
+REST client
+ ↓
+Gateway
+ ↓
+convert REST → gRPC
+ ↓
+microservices
+Great!
+But now gateway becomes responsible for:
+schema mapping
+serialization
+error mapping
+streaming semantics
+timeouts
+metadata
+status codes
+At large scale, that gateway becomes a sophisticated protocol translation platform.
+Sometimes that's appropriate.
+Sometimes it's unnecessary complexity.
+________________________________________
+31.31 Error transformation
+Backend might return:
+HTTP 500
+
+{
+  "errorCode": "ORDER_DB_FAILURE",
+  "internalMessage": "ORA-xxxxx"
+}
+Gateway shouldn't blindly expose:
+ORA-xxxxx
+to the client.
+It may transform:
+{
+  "error": "ORDER_SERVICE_UNAVAILABLE",
+  "requestId": "abc123"
+}
+This gives:
+security
++
+consistent API contract
++
+observability
+But again, avoid putting business logic into the gateway.
+________________________________________
+31.32 Gateway transformation and streaming
+Now imagine Server-Sent Events:
+Client
+   ↑
+Gateway
+   ↑
+Backend
+Backend continuously sends:
+event 1
+event 2
+event 3
+event 4
+...
+If gateway buffers the entire response:
+Backend
+ ↓
+Gateway buffers
+ ↓
+wait...
+ ↓
+wait...
+ ↓
+send all
+the client won't receive events in real time.
+For streaming protocols:
+Gateway must preserve streaming semantics.
+This is a major reason not to blindly buffer responses.
+________________________________________
+31.33 Backpressure
+Suppose backend produces:
+100 MB/sec
+but client can consume:
+10 MB/sec
+What happens?
+If gateway continuously buffers:
+Backend
+  ↓ 100MB/s
+Gateway
+  ↓ 10MB/s
+Client
+buffer grows:
+10 MB
+20 MB
+30 MB
+...
+Eventually:
+memory exhaustion
+A good streaming architecture needs backpressure.
+Meaning:
+Slow downstream consumers must be able to slow upstream production.
+Conceptually:
+Client slow
+   ↓
+Gateway slows
+   ↓
+Backend slows
+rather than:
+Client slow
+   ↓
+Gateway buffers forever
+   ↓
+OOM
+We'll encounter this concept again in Kafka and reactive systems.
+________________________________________
+31.34 The gateway as a pressure boundary
+This gives us a much deeper mental model:
+             Traffic
+                ↓
+        ┌───────────────┐
+        │ API Gateway   │
+        │               │
+        │ admission     │
+        │ transformation│
+        │ buffering     │
+        │ streaming     │
+        └───────┬───────┘
+                ↓
+             Backend
+The gateway isn't just a URL router.
+It is sitting directly between:
+untrusted/uncontrolled clients
+and:
+valuable backend resources
+Therefore memory, CPU, connection counts, body sizes, and streaming behavior matter enormously.
+________________________________________
+31.35 Production design rules
+For gateway transformations:
+Cheap and generally reasonable
+header additions
+header removal
+path rewrite
+query rewrite
+authentication metadata
+routing metadata
+Potentially expensive
+JSON transformation
+XML conversion
+REST ↔ gRPC
+compression
+decompression
+large body parsing
+response aggregation
+Dangerous if poorly designed
+full-body buffering
+unbounded request sizes
+unbounded response buffering
+large multipart processing
+blocking operations
+database calls
+business logic
+________________________________________
+31.36 The performance equation
+A useful mental model:
+Gateway latency
+=
+network overhead
++
+parsing
++
+transformation
++
+serialization
++
+compression
++
+queueing
+Memory:
+Gateway memory
+≈
+connection buffers
++
+request buffers
++
+response buffers
++
+parsed objects
++
+transformation state
+At high concurrency, even a small per-request allocation matters.
+For example:
+10 KB/request
+×
+100,000 concurrent requests
+=
+1 GB
+And that's only one category of memory.
+________________________________________
+31.37 Senior-level design question
+Suppose someone proposes:
+"Let's transform every request body from JSON to another JSON format in the API Gateway."
+Don't immediately agree.
+Ask:
+Why can't clients send the correct contract?
+
+Why is transformation centralized?
+
+How large are request bodies?
+
+How many requests/sec?
+
+Is transformation streaming?
+
+How much CPU does parsing consume?
+
+What is the p99 latency?
+
+Can the gateway preserve streaming?
+
+What happens with malformed JSON?
+
+What happens with huge bodies?
+
+Does transformation create an object tree?
+
+Can it cause GC pressure?
+
+What happens during traffic spikes?
+Now you're thinking like a system designer.
+________________________________________
+31.38 Final architecture
+The API Gateway we've built across these lessons can now be visualized as:
+                         CLIENT
+                           │
+                           ▼
+                 ┌──────────────────┐
+                 │   API GATEWAY    │
+                 │                  │
+                 │ TLS termination  │
+                 │ Authentication   │
+                 │ Authorization    │
+                 │ Rate limiting    │
+                 │ Routing          │
+                 │ Header rewrite   │
+                 │ Path rewrite     │
+                 │ Body transform   │
+                 │ Compression      │
+                 │ Protocol bridge  │
+                 │ Streaming        │
+                 └────────┬─────────┘
+                          │
+                          ▼
+                    Load Balancer
+                          │
+                ┌─────────┼─────────┐
+                ▼         ▼         ▼
+             Service A Service B Service C
+The important realization is that every extra responsibility inside that box has a cost.
+________________________________________
+31.39 What you should retain
+The most important concepts from this lesson are:
+1. HTTP transports bytes.
+2. Headers/path transformations are relatively cheap.
+3. Body transformations require parsing/serialization.
+4. Buffering increases memory usage.
+5. Streaming reduces memory but complicates transformation.
+6. Compression trades CPU for bandwidth.
+7. HTTP/2 multiplexes many requests over one connection.
+8. Gateway must manage request-level and connection-level resources.
+9. Streaming requires backpressure.
+10. Gateway transformations add latency to every request.
+11. Unbounded body buffering can bring down the gateway.
+12. Protocol conversion is powerful but expensive.
+The key mental model
+Don't think:
+Gateway = router
+Think:
+Gateway =
+    network boundary
+    +
+    security boundary
+    +
+    admission-control point
+    +
+    protocol boundary
+    +
+    traffic transformation layer
+That completes the core API Gateway internals we planned.
+
 
 
