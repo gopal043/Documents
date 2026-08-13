@@ -1,0 +1,4536 @@
+Module 2 — Caching
+Lesson 32.1 — Why Caching Exists + Memory Hierarchy
+We are starting Module 2 properly.
+You asked for textbook-style, concept-by-concept learning, without repeating earlier material. So today we will focus only on:
+1.	Why caching exists 
+2.	Why memory is faster than databases 
+3.	The memory hierarchy 
+4.	Locality 
+5.	What a cache hit/miss actually means 
+6.	Why caching improves latency and throughput 
+7.	The fundamental trade-offs 
+We will not go into Redis, eviction, TTL, cache-aside, invalidation, etc. yet.
+________________________________________
+1. The problem caching is trying to solve
+Imagine this Java application:
+public User getUser(long id) {
+    return userRepository.findById(id);
+}
+The code looks trivial.
+But internally:
+Client
+   ↓
+Java Application
+   ↓
+Connection Pool
+   ↓
+Network
+   ↓
+Database
+   ↓
+Query execution
+   ↓
+Disk / memory
+   ↓
+Database
+   ↓
+Network
+   ↓
+Java Application
+   ↓
+Client
+The important observation:
+The CPU executing your Java code is extremely fast compared with many operations required to retrieve data.
+Your CPU may execute billions of cycles per second.
+But getting data from another machine requires:
+network traversal
++
+kernel processing
++
+database processing
++
+locking
++
+buffer/cache lookup
++
+possibly storage access
+So the fundamental caching idea is:
+If the same data is requested repeatedly, don't repeatedly perform the expensive operation. Keep a copy closer to the consumer.
+________________________________________
+2. A simple example
+Suppose:
+GET /users/100
+is requested:
+10,000 times/sec
+Database query:
+SELECT * FROM users WHERE id = 100;
+If every request reaches the database:
+10,000 requests/sec
+        ↓
+10,000 DB queries/sec
+But suppose the result rarely changes.
+We could do:
+First request
+     ↓
+Database
+     ↓
+Store result in cache
+
+Next 9,999 requests
+     ↓
+Cache
+Now:
+Database
+   ↑
+1 request
+
+Cache
+   ↑
+9,999 requests
+This is the fundamental reason caching exists.
+________________________________________
+3. But caching isn't just about databases
+This is important.
+Caching can happen at many levels:
+CPU
+ ↓
+CPU Cache
+ ↓
+RAM
+ ↓
+OS Page Cache
+ ↓
+Application Cache
+ ↓
+Distributed Cache
+ ↓
+Database Buffer Pool
+ ↓
+SSD
+ ↓
+HDD
+ ↓
+Remote Storage
+Almost every modern computer system uses caching.
+Caching is not a special technique added by Redis.
+Caching is a fundamental computer architecture principle.
+________________________________________
+4. The deepest reason: locality
+Caching works because programs usually exhibit locality of reference.
+There are two important forms.
+Temporal locality
+If something was used recently, it is likely to be used again soon.
+Example:
+User 100
+User 100
+User 100
+User 100
+The same data keeps being accessed.
+________________________________________
+Spatial locality
+If something was accessed, nearby data is likely to be accessed.
+Example:
+Array:
+
+[100, 101, 102, 103, 104, 105]
+If your program accesses:
+array[100]
+it may soon access:
+array[101]
+array[102]
+array[103]
+This is why CPUs don't fetch just one tiny value from RAM.
+They work with cache lines.
+________________________________________
+5. Before understanding application caching, understand the CPU
+Consider:
+int x = a[i];
+You might think:
+CPU → RAM → get x
+But modern CPUs have a hierarchy.
+Conceptually:
+CPU Core
+   ↓
+Registers
+   ↓
+L1 Cache
+   ↓
+L2 Cache
+   ↓
+L3 Cache
+   ↓
+RAM
+   ↓
+Storage
+The closer the storage is to the CPU:
+smaller
+faster
+more expensive per byte
+The farther away:
+larger
+slower
+cheaper per byte
+________________________________________
+6. Memory hierarchy
+A simplified picture:
+                 FASTEST
+                    ▲
+                    │
+              Registers
+                    │
+                 L1 Cache
+                    │
+                 L2 Cache
+                    │
+                 L3 Cache
+                    │
+                   RAM
+                    │
+                 NVMe SSD
+                    │
+                   HDD
+                    │
+              Remote Storage
+                    │
+                    ▼
+                 SLOWEST
+And generally:
+capacity ↑
+as we move downward
+
+latency ↑
+as we move downward
+The exact numbers depend heavily on hardware and workload, but the hierarchy is the important concept.
+________________________________________
+7. Why don't we make all memory as fast as CPU cache?
+Because physics and economics.
+Suppose you wanted:
+1 TB
+of extremely fast SRAM-like memory.
+It would be:
+large
+expensive
+power hungry
+physically difficult
+Instead computers use layers.
+Tiny + extremely fast
+        ↓
+Small + very fast
+        ↓
+Larger + slower
+        ↓
+Huge + much slower
+This is the same fundamental idea behind distributed caching.
+________________________________________
+8. The CPU cache example
+Suppose CPU needs:
+x = 42
+CPU first checks:
+L1
+If found:
+CACHE HIT
+If not:
+CACHE MISS
+Then it checks lower levels:
+L2
+L3
+RAM
+Conceptually:
+CPU
+ │
+ ▼
+L1 ── hit? ── yes → return
+ │
+ no
+ ▼
+L2 ── hit? ── yes → return
+ │
+ no
+ ▼
+L3
+ │
+ no
+ ▼
+RAM
+This exact pattern—look nearby first, fall back to a more expensive source—is the fundamental pattern we'll use for application caches.
+________________________________________
+9. Application caching is the same idea
+Suppose:
+Java application
+needs:
+User 100
+We create:
+Application Cache
+Flow:
+Application
+     │
+     ▼
+ Cache
+  │     │
+hit    miss
+ │      │
+ ▼      ▼
+return Database
+        │
+        ▼
+      Cache
+This is conceptually similar to CPU caching.
+The difference is the scale and implementation.
+________________________________________
+10. Cache hit
+Suppose cache contains:
+key = user:100
+value = User(...)
+Application asks:
+user:100
+Cache finds it.
+That's:
+CACHE HIT
+Flow:
+Request
+   ↓
+Cache
+   ↓
+FOUND
+   ↓
+Return
+No database access is necessary.
+________________________________________
+11. Cache miss
+Cache doesn't contain:
+user:100
+That's:
+CACHE MISS
+Flow:
+Request
+   ↓
+Cache
+   ↓
+NOT FOUND
+   ↓
+Database
+   ↓
+Result
+   ↓
+Cache
+   ↓
+Return
+This distinction is fundamental.
+________________________________________
+12. Why cache hit ratio matters
+Suppose we receive:
+1,000,000 requests
+and:
+900,000 cache hits
+100,000 cache misses
+Then:
+Hit Ratio
+=
+900,000 / 1,000,000
+
+= 90%
+So:
+Cache hit ratio = 90%
+Database sees approximately:
+100,000
+instead of:
+1,000,000
+requests.
+That's a huge reduction.
+________________________________________
+13. Hit ratio isn't everything
+Suppose:
+Cache hit latency = 2 ms
+Database latency = 5 ms
+A 90% hit ratio looks good.
+But if the cache itself becomes:
+100 ms
+because of network congestion:
+Cache = 100 ms
+Database = 5 ms
+the cache is now making the system worse.
+Therefore:
+A cache is useful only when the cached path is meaningfully cheaper than the source path.
+This sounds obvious, but it's an important system-design principle.
+________________________________________
+14. Why caching improves throughput
+Suppose database can process:
+20,000 queries/sec
+Your application receives:
+100,000 requests/sec
+Without cache:
+100,000
+   ↓
+Database
+   ↓
+OVERLOAD
+With 90% cache hit rate:
+100,000 requests
+      ↓
+90,000 cache hits
+10,000 database requests
+Database load becomes:
+10,000/sec
+Now the database can survive.
+So caching isn't merely:
+"Make requests faster."
+It also provides:
+Load reduction on expensive downstream systems.
+________________________________________
+15. Caching can protect databases
+This is one of the most important production concepts.
+Imagine an e-commerce site.
+Product:
+iPhone XYZ
+is requested:
+500,000 times/sec
+But product information changes:
+once every few minutes
+Without caching:
+500k reads/sec → database
+With caching:
+500k requests
+       ↓
+     cache
+       ↓
+perhaps a handful of DB reads
+The cache absorbs repetitive reads.
+________________________________________
+16. But now we have a problem
+Suppose database contains:
+price = ₹50,000
+Cache contains:
+price = ₹50,000
+Database changes:
+price = ₹45,000
+Cache still says:
+₹50,000
+Now:
+Database ≠ Cache
+This is the fundamental cache consistency problem.
+Caching creates a second copy of data.
+The moment you create another copy, you have to answer:
+When does the copy become stale?
+We'll spend an entire lesson on cache invalidation.
+________________________________________
+17. Why not cache everything?
+Because cache has limited capacity.
+Suppose:
+Database = 10 TB
+RAM cache = 100 GB
+You cannot cache everything.
+Therefore the cache must choose:
+What should stay?
+What should leave?
+This leads to:
+Eviction policies
+such as:
+LRU
+LFU
+FIFO
+TTL-based expiration
+We'll study these later.
+________________________________________
+18. Cache hierarchy in a Java application
+Consider:
+Client
+  ↓
+CDN
+  ↓
+Load Balancer
+  ↓
+API Gateway
+  ↓
+Application
+  ↓
+Local JVM Cache
+  ↓
+Redis
+  ↓
+Database
+Now we have multiple cache layers.
+For example:
+Layer 1 → Browser
+Layer 2 → CDN
+Layer 3 → Gateway
+Layer 4 → JVM
+Layer 5 → Redis
+Layer 6 → Database buffer pool
+Layer 7 → OS page cache
+Layer 8 → SSD
+This is a cache hierarchy.
+________________________________________
+19. Why multiple cache layers?
+Because each layer has different properties.
+Example:
+JVM local cache
+very fast
+no network
+limited memory
+not shared across instances
+Redis
+slower than local memory
+network involved
+larger
+shared
+Database
+much more expensive
+persistent
+authoritative
+So:
+          FAST
+           ▲
+           │
+      JVM Cache
+           │
+        Redis
+           │
+       Database
+           │
+          DISK
+           ▼
+         SLOW
+________________________________________
+20. Local cache vs distributed cache
+This distinction will become very important when we reach Redis.
+Suppose:
+Gateway/Application instances
+
+A       B       C
+│       │       │
+Cache   Cache   Cache
+Each instance has its own local cache.
+User requests:
+Request 1 → A
+Request 2 → B
+Request 3 → C
+Each cache could contain different data.
+A → user:100 = version 1
+B → user:100 = version 2
+C → user:100 = version 1
+Now consistency becomes harder.
+________________________________________
+21. Distributed cache
+Instead:
+A ──┐
+B ──┼──→ Redis
+C ──┘
+All application instances access shared cache state.
+Advantages:
+shared data
+larger capacity
+consistent cache view
+Costs:
+network latency
+serialization
+network failures
+Redis availability
+distributed coordination
+We'll study Redis after understanding caching fundamentals.
+________________________________________
+22. The real trade-off
+Caching is always a trade:
+              CACHE
+                │
+      ┌─────────┼──────────┐
+      │         │          │
+    speed     load      memory
+              reduction
+But you pay with:
+staleness
++
+memory
++
+complexity
++
+invalidation
++
+consistency problems
++
+failure modes
+So:
+Caching exchanges computation / I/O cost for memory and consistency complexity.
+That is the deeper definition you should remember.
+________________________________________
+23. Why memory is so important
+Suppose your application repeatedly computes:
+expensiveFunction(input)
+Instead of recalculating:
+input
+ ↓
+expensive computation
+ ↓
+result
+we can store:
+input → result
+Then:
+input
+ ↓
+cache lookup
+ ↓
+result
+This is called memoization.
+It's caching at the algorithm level.
+________________________________________
+24. Caching isn't necessarily storing database data
+We can cache:
+Database results
+user:100 → User object
+Computation results
+tax:1000 → 180
+HTTP responses
+GET /products → response
+Authentication information
+token → user/session
+Configuration
+featureFlags → {...}
+DNS results
+example.com → IP
+Compiled code
+Even CPUs and runtimes use caches for different forms of derived information.
+The common principle is:
+expensive source
+      ↓
+store reusable result
+      ↓
+future access becomes cheaper
+________________________________________
+25. The memory hierarchy explains the entire idea
+Let's connect everything.
+At the hardware level:
+CPU
+ ↓
+L1
+ ↓
+L2
+ ↓
+L3
+ ↓
+RAM
+At the application level:
+Application
+ ↓
+JVM cache
+ ↓
+Redis
+ ↓
+Database
+At the internet level:
+Client
+ ↓
+Browser cache
+ ↓
+CDN
+ ↓
+Origin
+Same fundamental idea:
+Put frequently needed information closer to where it is consumed.
+________________________________________
+26. But "closer" has multiple meanings
+Closer can mean:
+Physically closer
+same CPU core
+Memory closer
+RAM instead of disk
+Network closer
+local Redis instead of remote DB
+Computationally closer
+cached calculation instead of recomputation
+Geographically closer
+CDN edge instead of origin server
+Caching is therefore not one technology.
+It is a system design strategy.
+________________________________________
+27. Cache hit latency vs miss latency
+Consider:
+Cache hit:
+
+Request
+ ↓
+Cache
+ ↓
+2 ms
+Cache miss:
+Request
+ ↓
+Cache
+ ↓
+Database
+ ↓
+20 ms
+Then average latency approximately becomes:
+Hit ratio × hit latency
++
+Miss ratio × miss latency
+For:
+hit ratio = 90%
+hit = 2 ms
+miss = 20 ms
+approximately:
+0.9 × 2
++
+0.1 × 20
+
+= 1.8 + 2
+
+= 3.8 ms
+versus:
+20 ms
+without cache.
+This is why high hit ratios can dramatically reduce average latency.
+But remember:
+p99 latency may behave differently.
+We'll study that later.
+________________________________________
+28. Cache performance has another hidden metric
+Suppose:
+average latency = 3 ms
+Looks excellent.
+But:
+p99 = 200 ms
+because cache misses sometimes trigger slow database operations.
+So production engineers care about:
+average
+p50
+p95
+p99
+p99.9
+not just average latency.
+A cache can make average performance excellent while still leaving tail latency problematic.
+________________________________________
+29. Cache stampede preview
+Imagine cache expires for:
+popular-product
+At exactly the same moment:
+10,000 requests
+arrive.
+All see:
+MISS
+All go to database:
+10,000 DB queries
+You just turned a cache into a traffic amplifier.
+This is called a cache stampede or thundering herd problem.
+Don't worry about solving it yet.
+We'll study it after the basic cache mechanisms.
+________________________________________
+30. The four questions every cache design must answer
+Whenever you see a cache in a system diagram, immediately ask:
+1. What is being cached?
+data?
+computation?
+response?
+metadata?
+2. Where is it stored?
+JVM?
+Redis?
+CDN?
+CPU?
+3. How long can it remain valid?
+forever?
+TTL?
+until invalidated?
+4. What happens when it isn't there?
+database?
+recompute?
+error?
+These four questions expose much of the architecture.
+________________________________________
+31. The fundamental cache lifecycle
+At the simplest level:
+             ┌─────────────┐
+             │   Request   │
+             └──────┬──────┘
+                    │
+                    ▼
+             ┌─────────────┐
+             │    Cache    │
+             └──────┬──────┘
+                HIT │ MISS
+                 │    │
+                 │    ▼
+                 │  Source
+                 │    │
+                 │    ▼
+                 │  Store
+                 │    │
+                 └────┬┘
+                      ▼
+                   Response
+Everything else we'll learn is essentially about making this lifecycle:
+fast
+correct
+memory-efficient
+highly available
+scalable
+________________________________________
+32. The most important mental model
+Don't think:
+"Cache = HashMap."
+That's only the simplest implementation.
+A production cache is a system with:
+key management
++
+memory management
++
+eviction
++
+expiration
++
+serialization
++
+concurrency
++
+networking
++
+replication
++
+failure handling
++
+consistency strategy
+For example:
+Map<String, User> cache;
+is enough to demonstrate the basic concept.
+But production caching is far more complicated.
+________________________________________
+33. Where we're going next
+You asked for:
+Caching — 5
+We'll divide caching into these five conceptual lessons:
+MODULE 2 — CACHING
+│
+├── 32.1 Why caching exists + memory hierarchy       ← TODAY
+│
+├── 32.2 Cache architecture + access patterns
+│       ├── Cache-aside
+│       ├── Read-through
+│       ├── Write-through
+│       ├── Write-back
+│       └── Refresh-ahead
+│
+├── 32.3 Cache expiration + eviction
+│       ├── TTL
+│       ├── LRU
+│       ├── LFU
+│       ├── FIFO
+│       └── admission/eviction decisions
+│
+├── 32.4 Cache consistency + invalidation
+│       ├── stale data
+│       ├── invalidation
+│       ├── race conditions
+│       ├── stampede
+│       └── distributed consistency
+│
+└── 32.5 Cache failure + production design
+        ├── hot keys
+        ├── penetration
+        ├── avalanche
+        ├── stampede
+        ├── fallback
+        └── observability
+Then we move to:
+MODULE 2
+   ↓
+Redis
+________________________________________
+What you should be able to explain now
+If someone asks:
+Why does caching make a system faster?
+Don't answer:
+"Because cache is faster."
+Your deeper answer should be:
+A cache exploits locality by keeping frequently reused information closer to the consumer. This avoids repeatedly paying the latency and resource cost of the authoritative or expensive source. The benefit comes at the cost of additional memory, maintaining another copy of data, and dealing with staleness and consistency.
+That's the level we're targeting.
+
+Lesson 32.2 — Cache Architecture & Access Patterns
+Today we answer one question:
+When an application wants data, who talks to the cache, who talks to the database, and when does data move between them?
+The cache itself is not the difficult part.
+The difficult part is deciding who owns the read/write flow.
+We will cover:
+1. Cache-Aside
+2. Read-Through
+3. Write-Through
+4. Write-Back
+5. Refresh-Ahead
+Then we'll compare them internally.
+________________________________________
+1. First build the basic architecture
+Without a cache:
+Client
+  ↓
+Java Application
+  ↓
+Database
+With a cache:
+Client
+  ↓
+Java Application
+  ↓
+Cache
+  ↓
+Database
+But this diagram hides the important question:
+Who is responsible for deciding what happens when the cache misses?
+That's what the access patterns answer.
+________________________________________
+2. Pattern #1 — Cache-Aside
+This is the most important pattern to understand first.
+The application itself controls both:
+Cache
+Database
+Architecture:
+             ┌─────────┐
+             │  Cache  │
+             └────┬────┘
+                  │
+Java Application ─┤
+                  │
+             ┌────▼────┐
+             │Database │
+             └─────────┘
+The cache doesn't automatically know about the database.
+The application coordinates everything.
+________________________________________
+3. Cache-Aside READ
+Suppose:
+GET user:100
+Application executes:
+cache.get("user:100")
+Case 1 — HIT
+Application
+    │
+    ▼
+  Cache
+    │
+    │ FOUND
+    ▼
+ User
+Database isn't touched.
+________________________________________
+Case 2 — MISS
+Application
+    │
+    ▼
+  Cache
+    │
+    │ NOT FOUND
+    ▼
+ Database
+    │
+    ▼
+  User
+    │
+    ▼
+  Cache
+    │
+    ▼
+Application
+The application typically does:
+User user = cache.get(key);
+
+if (user == null) {
+    user = database.findById(id);
+    cache.put(key, user);
+}
+
+return user;
+This is the basic Cache-Aside algorithm.
+________________________________________
+4. Why is it called "aside"?
+Because the cache sits beside the database.
+The application decides:
+Should I read cache?
+Should I read DB?
+Should I populate cache?
+The database doesn't know the cache exists.
+The cache doesn't necessarily know the database exists.
+The application is the coordinator.
+________________________________________
+5. Cache-Aside WRITE
+Now suppose:
+UPDATE user:100
+Database contains:
+name = Gopal
+We change it to:
+name = Krishna
+A common strategy is:
+Application
+    │
+    ▼
+Database
+    │
+    ▼
+Invalidate cache
+So:
+database.update(user);
+
+cache.delete("user:100");
+Why delete instead of immediately putting the new value?
+Because the database is the authoritative source.
+The next read:
+cache.get()
+gets a miss.
+Then:
+DB
+ ↓
+new value
+ ↓
+cache
+________________________________________
+6. Why Cache-Aside is so popular
+Because it is simple and flexible.
+Application has complete control.
+For example:
+Read:
+Cache → DB
+
+Write:
+DB → invalidate cache
+It works very naturally with:
+Spring Boot
++
+Redis
++
+relational database
+A typical architecture:
+                  ┌───────────┐
+                  │   Redis   │
+                  └─────▲─────┘
+                        │
+                        │
+Client → Spring Boot ───┤
+                        │
+                        ▼
+                  ┌───────────┐
+                  │ PostgreSQL│
+                  └───────────┘
+________________________________________
+7. But Cache-Aside has an important weakness
+The application must correctly implement the cache logic.
+Every developer needs to understand:
+cache.get()
+cache.put()
+cache.delete()
+If one code path forgets to invalidate:
+Database = NEW
+Cache = OLD
+Now users receive stale data.
+The cache pattern itself doesn't magically solve consistency.
+________________________________________
+8. Cache-Aside concurrent miss
+This is where things get interesting.
+Suppose cache doesn't contain:
+user:100
+At exactly the same time:
+1,000 requests
+arrive.
+All do:
+cache.get("user:100")
+All get:
+MISS
+Then:
+1,000 requests
+       ↓
+1,000 database queries
+This is the cache stampede / thundering herd problem.
+             Cache
+          ┌────┴────┐
+          │  MISS   │
+          └────┬────┘
+               │
+      ┌────────┼────────┐
+      ↓        ↓        ↓
+     DB       DB       DB
+      ↑        ↑        ↑
+     1000 concurrent requests
+We'll study solutions later.
+________________________________________
+9. Pattern #2 — Read-Through
+Now we change responsibility.
+With Cache-Aside:
+Application → Cache
+Application → Database
+With Read-Through:
+Application → Cache → Database
+The application only talks to the cache.
+             ┌───────────┐
+Application →│   Cache   │
+             └─────┬─────┘
+                   │
+                   ▼
+              Database
+The cache knows how to load missing data.
+________________________________________
+10. Read-Through cache miss
+Application asks:
+cache.get("user:100")
+Cache doesn't have it.
+Instead of returning:
+MISS
+the cache itself does:
+Cache
+  ↓
+Loader
+  ↓
+Database
+  ↓
+Cache
+  ↓
+Application
+Conceptually:
+Application
+    │
+    │ get(user:100)
+    ▼
+  Cache
+    │
+    │ miss
+    ▼
+  Loader
+    │
+    ▼
+ Database
+    │
+    ▼
+  Cache
+    │
+    ▼
+Application
+________________________________________
+11. Why would we want this?
+Because application code becomes simpler.
+Instead of:
+User user = cache.get(key);
+
+if (user == null) {
+    user = database.findById(id);
+    cache.put(key, user);
+}
+the application can conceptually do:
+User user = cache.get(key);
+The cache abstraction handles loading.
+________________________________________
+12. Important distinction
+Cache-Aside:
+Application owns loading
+Read-Through:
+Cache owns loading
+This is the most important distinction.
+________________________________________
+13. Read-Through doesn't eliminate the database
+It changes who coordinates access.
+Still:
+Application
+     ↓
+Cache
+     ↓
+Database
+The database remains authoritative.
+The cache becomes an intelligent intermediary.
+________________________________________
+14. Pattern #3 — Write-Through
+Now we're dealing with writes.
+Suppose application executes:
+update(user:100)
+With Write-Through:
+Application
+     ↓
+Cache
+     ↓
+Database
+The application writes to the cache.
+The cache synchronously writes to the database.
+________________________________________
+15. Write-Through flow
+Application
+    │
+    ▼
+  Cache
+    │
+    │ write
+    ▼
+ Database
+    │
+    ▼
+ success
+Only after the database write succeeds should the operation generally be considered successful.
+Conceptually:
+cache.put(user);
+and internally:
+cache
+ ↓
+database.update()
+________________________________________
+16. Why use Write-Through?
+The goal is to keep cache and database synchronized more naturally.
+Suppose:
+Cache = Gopal
+DB    = Gopal
+Write:
+Krishna
+Flow:
+Application
+    ↓
+Cache
+    ↓
+Database
+After successful write:
+Cache = Krishna
+DB    = Krishna
+Both are updated as part of the write path.
+________________________________________
+17. But Write-Through has a cost
+Every write now involves the database.
+So:
+Application
+   ↓
+Cache
+   ↓
+Database
+doesn't make the database disappear.
+The cache provides benefits primarily around subsequent reads.
+Also, writes become dependent on database availability.
+If DB is down:
+Cache write
+    ↓
+Database
+    X
+What should happen?
+The write may fail.
+________________________________________
+18. Write-Through vs Cache-Aside
+Cache-Aside
+WRITE
+
+Application
+    ↓
+Database
+    ↓
+Invalidate cache
+Write-Through
+WRITE
+
+Application
+    ↓
+Cache
+    ↓
+Database
+The ownership differs.
+________________________________________
+19. Pattern #4 — Write-Back
+Now we make a much bigger change.
+With Write-Through:
+Application
+    ↓
+Cache
+    ↓
+Database
+and the database write happens immediately.
+With Write-Back:
+Application
+    ↓
+Cache
+Database update happens later.
+________________________________________
+20. Write-Back flow
+Suppose:
+price = 100
+Application changes:
+price = 120
+Write:
+Application
+    ↓
+Cache
+    ↓
+SUCCESS
+Database may still contain:
+100
+while cache contains:
+120
+Later:
+Cache
+   ↓
+Database
+Database becomes:
+120
+________________________________________
+21. Why would anyone accept this?
+Performance.
+Imagine:
+100,000 writes/sec
+Writing synchronously to the database for every operation may be expensive.
+Instead:
+100,000 writes
+      ↓
+fast cache
+      ↓
+batch / async persistence
+      ↓
+database
+The cache absorbs the write workload.
+________________________________________
+22. Write-Back is fundamentally asynchronous
+Think:
+Application
+     │
+     ▼
+   Cache
+     │
+     │ immediately returns
+     ▼
+Application
+
+       ...later...
+
+   Cache
+     │
+     ▼
+  DB writer
+     │
+     ▼
+ Database
+This is powerful.
+But dangerous.
+________________________________________
+23. The biggest Write-Back risk
+What happens if the cache dies before persistence?
+Application
+      ↓
+Cache
+      ↓
+DATA NOT YET IN DB
+      X
+   CACHE CRASH
+The latest data may be lost.
+Therefore Write-Back requires serious durability mechanisms.
+Examples include:
+write queue
+persistent log
+replication
+disk-backed cache
+acknowledgement strategy
+recovery process
+This is why Write-Back isn't simply:
+"store it in Redis and write later"
+at serious scale.
+________________________________________
+24. Write-Back and ordering
+Suppose:
+Write A:
+balance = 100
+
+Write B:
+balance = 200
+The database must eventually receive:
+A → B
+not:
+B → A
+Otherwise:
+Final DB = 100
+even though the latest state should be:
+200
+So Write-Back systems must consider:
+ordering
++
+durability
++
+retries
++
+duplicate writes
+These concepts will connect later to Kafka, idempotency, and exactly-once discussions.
+________________________________________
+25. Pattern #5 — Refresh-Ahead
+Now another interesting strategy.
+Normally:
+Cache
+  ↓
+TTL expires
+  ↓
+MISS
+  ↓
+Database
+This creates latency at expiration.
+Refresh-Ahead tries to refresh the data before it expires.
+________________________________________
+26. Example
+Suppose:
+TTL = 60 seconds
+Cache contains:
+user:100
+expires in 60 sec
+At:
+50 seconds
+system notices:
+10 seconds remaining
+It proactively refreshes:
+Cache
+ ↓
+Database
+ ↓
+new value
+ ↓
+Cache
+So clients continue seeing a warm cache.
+________________________________________
+27. Why is Refresh-Ahead useful?
+For extremely hot data.
+Suppose:
+product:iphone
+receives:
+100,000 requests/sec
+If it expires:
+100,000 requests
+     ↓
+MISS
+     ↓
+Database
+That's dangerous.
+Refresh-Ahead tries to ensure:
+100,000 requests
+     ↓
+Cache HIT
+while one background refresh updates the data.
+________________________________________
+28. But Refresh-Ahead has a hidden cost
+You may refresh data nobody requests anymore.
+Example:
+10 million cached objects
+If you proactively refresh all of them:
+10 million DB reads
+even though perhaps:
+only 1% are actually hot
+So Refresh-Ahead should generally be selective.
+The system needs some indication of:
+hotness
+access frequency
+expiration time
+________________________________________
+29. Let's compare all five
+Pattern	Read miss	Write path	Main advantage	Main risk
+Cache-Aside	App loads DB	DB + invalidate cache	Simple, flexible	App must manage consistency
+Read-Through	Cache loads DB	Depends on implementation	Simpler application	Cache becomes more complex
+Write-Through	Cache serves/coordinates	Cache → DB synchronously	Cache stays current	Write latency
+Write-Back	Cache	Cache → DB asynchronously	Very fast writes	Data loss/ordering complexity
+Refresh-Ahead	Cache refreshes before expiry	Usually independent	Avoids hot-key misses	Unnecessary refreshes
+________________________________________
+30. The patterns can be combined
+This is important.
+These aren't mutually exclusive.
+For example:
+Read-Through
++
+Write-Through
++
+Refresh-Ahead
+could coexist.
+Or:
+Cache-Aside
++
+Refresh-Ahead
+could be implemented.
+Real systems don't always fit into one textbook box.
+________________________________________
+31. Cache-Aside + Write-Through are often confused
+Let's make the distinction crystal clear.
+Cache-Aside
+Application explicitly performs:
+cache.get()
+database.get()
+cache.put()
+The cache is mostly a passive store.
+________________________________________
+Read-Through
+Application performs:
+cache.get()
+and cache knows:
+"If missing, call loader."
+________________________________________
+Write-Through
+Application writes:
+Cache
+and cache synchronously propagates:
+Database
+________________________________________
+Write-Back
+Application writes:
+Cache
+and persistence happens asynchronously.
+________________________________________
+32. The consistency spectrum
+We can visualize the patterns like this:
+                  More synchronous
+                        │
+                        ▼
+Cache-Aside
+     │
+Write-Through
+     │
+Write-Back
+     │
+     ▼
+More asynchronous
+But this isn't a strict universal ordering in every implementation; the key distinction is when the database is updated relative to the application's successful write.
+________________________________________
+33. What happens during a failure?
+This is where architecture becomes interesting.
+Cache-Aside failure
+Cache DOWN
+   ↓
+Application
+   ↓
+Database
+Potentially the application can continue using the database.
+Performance decreases.
+________________________________________
+Read-Through failure
+Application
+   ↓
+Cache DOWN
+   X
+Whether the application can fall back depends on the cache abstraction.
+________________________________________
+Write-Through failure
+Application
+   ↓
+Cache
+   ↓
+Database DOWN
+Write generally fails because persistence hasn't succeeded.
+________________________________________
+Write-Back failure
+Application
+   ↓
+Cache
+   ↓
+SUCCESS
+but database hasn't received the update.
+If cache then fails:
+DATA LOSS
+unless durability mechanisms exist.
+________________________________________
+34. A very important architectural principle
+Ask:
+Is the cache authoritative or merely an optimization?
+Cache as optimization
+Database = source of truth
+Cache = disposable copy
+If cache disappears:
+rebuild it
+This is the easiest architecture to reason about.
+________________________________________
+Cache as authoritative/write buffer
+Cache = latest state
+Database = eventually updated
+Now cache failure becomes much more serious.
+This is common in Write-Back designs.
+________________________________________
+35. Why Cache-Aside is often a safe starting point
+Suppose Redis crashes.
+With:
+Database = source of truth
+Redis = cache
+you can potentially:
+Redis unavailable
+      ↓
+cache miss
+      ↓
+Database
+Performance suffers, but correctness can survive.
+That's a very valuable property.
+Compare that with:
+Write-Back
+where the cache may contain writes that haven't reached the database.
+Redis failure could mean:
+lost data
+unless carefully designed for durability.
+________________________________________
+36. Concurrency problem — two cache misses
+Let's go deeper.
+Suppose:
+Cache: MISS
+Two threads:
+Thread A → DB
+Thread B → DB
+Both receive:
+User 100
+Both try:
+cache.put(user:100)
+Usually this is harmless if the values are identical.
+But imagine the underlying data changes between reads.
+Timeline:
+T1: A reads DB → version 1
+T2: DB updated → version 2
+T3: B reads DB → version 2
+T4: A writes cache → version 1
+T5: B writes cache → version 2
+Fine.
+But reverse ordering:
+T1: A reads version 1
+T2: B reads version 2
+T3: B writes cache version 2
+T4: A writes cache version 1
+Now:
+Cache = OLD VERSION
+This is a race condition.
+Caching isn't just:
+get/put
+Concurrency matters.
+________________________________________
+37. Another race: update vs cache population
+Consider:
+T1: Request A → cache MISS
+T2: Request A → reads DB version 1
+T3: Update request → DB version 2
+T4: Request A → puts version 1 into cache
+Now:
+DB = version 2
+Cache = version 1
+This is one of the fundamental cache consistency races.
+We'll study these systematically in the cache invalidation lesson.
+________________________________________
+38. A useful timeline model
+When analyzing any caching design, draw:
+time →
+────────────────────────────────────────────>
+
+Request A
+Request B
+Database Write
+Cache Read
+Cache Write
+Cache Delete
+Then ask:
+What value can each request observe?
+This is much more powerful than memorizing patterns.
+________________________________________
+39. Cache access patterns and ownership
+The entire lesson can be reduced to this:
+Cache-Aside
+Application owns cache + DB coordination
+
+Read-Through
+Cache owns read loading
+
+Write-Through
+Cache owns synchronous persistence
+
+Write-Back
+Cache owns asynchronous persistence
+
+Refresh-Ahead
+Cache proactively refreshes before expiry
+That's the conceptual foundation.
+________________________________________
+40. Where these patterns fit in a real Java system
+A common Cache-Aside implementation could look like:
+public User getUser(long id) {
+
+    String key = "user:" + id;
+
+    User cached = redis.get(key);
+
+    if (cached != null) {
+        return cached;
+    }
+
+    User user = userRepository.findById(id);
+
+    redis.set(key, user);
+
+    return user;
+}
+Write:
+public void updateUser(User user) {
+
+    userRepository.update(user);
+
+    redis.delete("user:" + user.id());
+}
+This is intentionally simple.
+Production code must additionally think about:
+serialization
+TTL
+null values
+concurrent misses
+timeouts
+Redis failure
+DB failure
+stale values
+versioning
+metrics
+Those are the subjects coming next.
+________________________________________
+41. The architecture decision tree
+When designing a cache, start here:
+                Need caching?
+                     │
+                     ▼
+             Is DB authoritative?
+                 /        \
+               YES         NO
+                │           │
+                ▼           ▼
+         Cache as copy    More complex
+                │
+                ▼
+        How should reads work?
+           /           \
+          /             \
+ Cache-Aside        Read-Through
+          │
+          ▼
+       Writes?
+       /     \
+      /       \
+invalidate   synchronous
+             /       \
+            /         \
+     Write-Through   Write-Back
+Then separately consider:
+Do hot keys need proactive refresh?
+             │
+             ▼
+        Refresh-Ahead
+________________________________________
+42. What I want you to understand—not memorize
+Don't memorize:
+Cache-Aside = X
+Read-Through = Y
+Instead ask:
+Who is responsible for what?
+For every pattern:
+Who reads the DB?
+Who populates cache?
+Who updates cache?
+When is DB updated?
+What happens if cache fails?
+What happens if DB fails?
+Can data be stale?
+Can data be lost?
+If you can answer those questions, you understand the pattern.
+________________________________________
+43. One final comparison
+Imagine:
+Application
+     │
+     ▼
+   CACHE
+     │
+     ▼
+ DATABASE
+Cache-Aside
+Application
+ ├──→ Cache
+ └──→ Database
+Read-Through
+Application
+ └──→ Cache ──→ Database
+Write-Through
+Application
+ └──→ Cache ──→ Database
+                 ↑
+              synchronous
+Write-Back
+Application
+ └──→ Cache
+        │
+        │ later
+        ▼
+     Database
+Refresh-Ahead
+Application
+ └──→ Cache
+
+             Cache
+               │
+          before expiry
+               │
+               ▼
+           Database
+That is the internal architecture difference.
+
+Lesson 32.3 — Cache Expiration & Eviction Internals
+Now we move to the next concept. We won't repeat Cache-Aside/Read-Through/etc.
+The question today is:
+A cache has finite memory. What happens when data becomes old, expires, or there is no room for new data?
+There are actually two different mechanisms:
+Expiration → "Is this entry still valid?"
+
+Eviction   → "What entry should we remove because we need space?"
+Do not confuse them.
+________________________________________
+1. Why expiration exists
+Suppose Redis contains:
+user:100 → Gopal
+At 10:00 AM.
+At 10:05 AM, the database changes:
+user:100 → Krishna
+But cache still contains:
+user:100 → Gopal
+How can the cache eventually stop serving the old value?
+One mechanism is:
+TTL = Time To Live
+For example:
+user:100 → Gopal
+TTL = 60 seconds
+After 60 seconds, the entry is considered expired.
+________________________________________
+2. TTL is a validity rule, not a memory rule
+This distinction is extremely important.
+Suppose:
+Cache capacity = 10 GB
+and:
+Entry A
+TTL = 1 hour
+If the cache has plenty of free memory:
+A doesn't need to be removed immediately.
+Conversely:
+Cache is completely full
+but an entry has:
+TTL = 1 hour
+The cache may need to remove it before TTL expires to make room.
+That's eviction.
+So:
+TTL:
+"Can this value still be used?"
+
+Eviction:
+"Which value should we remove?"
+________________________________________
+3. What does "expired" actually mean?
+Suppose:
+created = 10:00:00
+TTL = 60 sec
+Then:
+expiration time = 10:01:00
+At:
+10:00:30 → valid
+10:00:59 → valid
+10:01:00 → expired
+10:01:30 → expired
+Internally, the cache can store something like:
+Entry {
+    key
+    value
+    expirationTime
+}
+Conceptually:
+class CacheEntry<V> {
+    V value;
+    long expiresAt;
+}
+Then:
+if (System.currentTimeMillis() >= entry.expiresAt) {
+    // expired
+}
+But production caches need more sophisticated mechanisms.
+________________________________________
+4. First expiration strategy — Lazy expiration
+The simplest approach:
+Don't actively search for expired entries. Remove them when someone tries to access them.
+Example:
+Cache:
+
+A → expires at 10:01
+B → expires at 10:05
+C → expires at 10:10
+Nobody accesses A after 10:01.
+A can remain physically stored.
+At 10:30:
+A is still occupying memory
+Then someone requests:
+GET A
+Cache checks:
+currentTime > expiresAt
+and removes it.
+This is lazy expiration.
+________________________________________
+5. Lazy expiration has an interesting property
+An expired entry can exist physically but be logically unavailable.
+Think:
+Physical memory:
+A exists
+
+Logical cache:
+A doesn't exist
+That's perfectly possible.
+So:
+Expiration does not necessarily mean immediate physical deletion.
+This is a very important internal concept.
+________________________________________
+6. Why lazy expiration alone is dangerous
+Imagine:
+10 million entries
+and:
+9 million have expired
+but nobody accesses those 9 million entries.
+They remain in memory.
+So:
+Logical cache size:
+1 million valid entries
+
+Physical memory:
+10 million entries
+That can create memory pressure.
+Therefore production caches commonly combine:
+lazy expiration
++
+active/background expiration
+________________________________________
+7. Active expiration
+A background process periodically looks for expired entries.
+Conceptually:
+Cache
+ │
+ ├── GET operations
+ │
+ └── expiration worker
+          │
+          ▼
+      find expired
+          │
+          ▼
+        delete
+Example:
+Every N milliseconds:
+    inspect some entries
+    remove expired entries
+This avoids depending entirely on client access.
+________________________________________
+8. Why not scan everything?
+Suppose:
+1 billion cache entries
+and every second:
+scan all 1 billion
+That would be expensive.
+You'd effectively create:
+Cache workload
++
+expiration workload
+and potentially consume significant CPU.
+Therefore expiration algorithms usually use:
+Sampling, scheduling, or data structures that make expiration manageable.
+________________________________________
+9. Expiration data structures
+A naive implementation might maintain:
+HashMap<Key, Entry>
+where:
+Entry.expiresAt
+is stored.
+But how do we efficiently find:
+Which entries expire next?
+You could use a priority queue:
+PriorityQueue<Entry>
+ordered by:
+expiresAt
+Then:
+             earliest expiry
+                   ↓
+              ┌────────┐
+              │ Entry A│ 10:01
+              ├────────┤
+              │ Entry B│ 10:03
+              ├────────┤
+              │ Entry C│ 10:07
+              └────────┘
+The earliest entry can be examined first.
+This is one possible design.
+But real systems may use different techniques depending on their goals.
+________________________________________
+10. Now expiration vs eviction
+Let's make this absolutely clear.
+Imagine:
+Cache capacity = 100 entries
+Current entries = 100
+New request:
+put(K101)
+There is no free space.
+But:
+K1 TTL = 30 minutes
+K2 TTL = 20 minutes
+K3 TTL = 10 minutes
+...
+Nothing has expired.
+What do we do?
+We need eviction.
+The cache must decide:
+Which existing entry should be sacrificed?
+________________________________________
+11. The simplest policy — FIFO
+FIFO:
+First In, First Out.
+Suppose entries arrived:
+A
+B
+C
+D
+E
+Queue:
+A → B → C → D → E
+New entry:
+F
+Remove:
+A
+Then:
+B → C → D → E → F
+Very simple.
+________________________________________
+12. Why FIFO is not necessarily good
+Suppose:
+A = extremely popular
+B = rarely used
+C = rarely used
+D = rarely used
+A was inserted first.
+FIFO says:
+remove A
+But A may be the most valuable entry.
+So insertion age doesn't necessarily tell us whether an entry is useful.
+We want to know:
+How recently or frequently is this entry being accessed?
+That leads to LRU.
+________________________________________
+13. LRU — Least Recently Used
+LRU says:
+Remove the entry that has not been used for the longest time.
+Suppose:
+A B C D
+Access sequence:
+A
+B
+A
+C
+Most recent order:
+C → A → B → D
+So:
+C = most recently used
+A = next
+B = next
+D = least recently used
+If we need space:
+evict D
+________________________________________
+14. Why LRU makes sense
+Remember our earlier concept:
+Temporal locality
+If something was recently accessed:
+likely to be accessed again
+LRU exploits that assumption.
+So:
+recently used → keep
+
+not recently used → candidate for removal
+________________________________________
+15. But how do we implement LRU efficiently?
+This is where your Java knowledge becomes useful.
+We want two operations:
+get(key)
+put(key, value)
+Ideally:
+O(1)
+We need to know:
+1.	Where is the entry? 
+2.	What is the usage order? 
+A single linked list is not enough.
+A HashMap is not enough.
+We combine:
+HashMap
++
+Doubly Linked List
+This is one of the classic data-structure combinations.
+________________________________________
+16. HashMap's job
+Suppose:
+HashMap<Key, Node>
+contains:
+A → NodeA
+B → NodeB
+C → NodeC
+Then:
+get(A)
+can locate NodeA in approximately:
+O(1) average
+But the HashMap doesn't tell us:
+Which node is least recently used?
+That's the linked list's job.
+________________________________________
+17. Doubly linked list
+We maintain:
+HEAD
+ ↓
+C
+ ↓
+A
+ ↓
+B
+ ↓
+D
+ ↓
+TAIL
+Interpretation:
+HEAD → most recently used
+
+TAIL → least recently used
+When an entry is accessed:
+A
+move it to the front:
+Before:
+
+C → A → B → D
+
+After:
+
+A → C → B → D
+Now the least recently used is still at the tail:
+D
+________________________________________
+18. Why doubly linked?
+Because when moving a node:
+A
+we need to remove it from its current position.
+Suppose:
+C ↔ A ↔ B
+To remove A:
+C.next = B
+B.prev = C
+Then put A at front.
+With a doubly linked list, that's:
+O(1)
+provided we already have the node.
+________________________________________
+19. The complete LRU structure
+Conceptually:
+HashMap
+────────────────
+A → NodeA
+B → NodeB
+C → NodeC
+D → NodeD
+
+
+Doubly Linked List
+
+HEAD
+ ↓
+A ↔ C ↔ B ↔ D
+             ↑
+            TAIL
+The HashMap answers:
+"Where is A?"
+The linked list answers:
+"Who was used most recently?"
+"Who was used least recently?"
+Together:
+get  → O(1)
+put  → O(1) average
+evict → O(1)
+________________________________________
+20. Let's implement it ourselves
+This is much better than memorizing LinkedHashMap.
+Node:
+class Node<K, V> {
+    K key;
+    V value;
+
+    Node<K, V> prev;
+    Node<K, V> next;
+
+    Node(K key, V value) {
+        this.key = key;
+        this.value = value;
+    }
+}
+Cache:
+class LRUCache<K, V> {
+
+    private final int capacity;
+
+    private final Map<K, Node<K, V>> map = new HashMap<>();
+
+    private final Node<K, V> head = new Node<>(null, null);
+    private final Node<K, V> tail = new Node<>(null, null);
+
+    LRUCache(int capacity) {
+        this.capacity = capacity;
+
+        head.next = tail;
+        tail.prev = head;
+    }
+}
+We use dummy nodes:
+HEAD ↔ ... ↔ TAIL
+This removes many special cases.
+________________________________________
+21. Add node at front
+private void addFirst(Node<K, V> node) {
+
+    node.next = head.next;
+    node.prev = head;
+
+    head.next.prev = node;
+    head.next = node;
+}
+Suppose:
+HEAD ↔ A ↔ B ↔ TAIL
+Add C:
+HEAD ↔ C ↔ A ↔ B ↔ TAIL
+________________________________________
+22. Remove node
+private void remove(Node<K, V> node) {
+
+    node.prev.next = node.next;
+    node.next.prev = node.prev;
+}
+If:
+A ↔ B ↔ C
+remove B:
+A ↔ C
+No traversal required.
+That's why we want a doubly linked list.
+________________________________________
+23. Move to front
+private void moveToFront(Node<K, V> node) {
+    remove(node);
+    addFirst(node);
+}
+Simple.
+________________________________________
+24. LRU get
+public V get(K key) {
+
+    Node<K, V> node = map.get(key);
+
+    if (node == null) {
+        return null;
+    }
+
+    moveToFront(node);
+
+    return node.value;
+}
+Notice the important sequence:
+HashMap lookup
+      ↓
+Node found
+      ↓
+move node to front
+      ↓
+return value
+________________________________________
+25. LRU put
+public void put(K key, V value) {
+
+    Node<K, V> node = map.get(key);
+
+    if (node != null) {
+        node.value = value;
+        moveToFront(node);
+        return;
+    }
+
+    node = new Node<>(key, value);
+
+    map.put(key, node);
+    addFirst(node);
+
+    if (map.size() > capacity) {
+        Node<K, V> lru = tail.prev;
+
+        remove(lru);
+        map.remove(lru.key);
+    }
+}
+Now the entire LRU algorithm is visible.
+________________________________________
+26. Example
+Capacity:
+3
+Operations:
+put(A)
+put(B)
+put(C)
+State:
+HEAD
+ ↓
+C ↔ B ↔ A
+             ↑
+            TAIL
+A is least recently used.
+Now:
+get(A)
+State becomes:
+HEAD
+ ↓
+A ↔ C ↔ B
+             ↑
+            TAIL
+Now B is least recently used.
+Then:
+put(D)
+Evict:
+B
+Result:
+A ↔ C ↔ D
+________________________________________
+27. Why HashMap alone cannot implement LRU efficiently
+You might think:
+Map<K,V>
+and store timestamps:
+A → timestamp
+B → timestamp
+C → timestamp
+Then when eviction happens:
+scan everything
+find oldest
+But that's:
+O(n)
+for eviction.
+With:
+HashMap + Doubly Linked List
+we already know:
+tail.prev
+is the LRU.
+So eviction is:
+O(1)
+________________________________________
+28. Why LinkedHashMap is relevant
+Java already provides this concept:
+LinkedHashMap
+with access-order support.
+Example:
+Map<String, String> cache =
+    new LinkedHashMap<>(16, 0.75f, true);
+The true means access-order rather than insertion-order.
+But for your level, don't stop at:
+"Use LinkedHashMap for LRU."
+You should understand that internally the fundamental design is:
+HashMap
++
+Doubly Linked List
+________________________________________
+29. Now LRU has a weakness
+Imagine:
+A → accessed 1,000,000 times
+B → accessed 1 time
+C → accessed 1 time
+Then a burst of unrelated requests accesses:
+D
+E
+F
+G
+H
+LRU only cares about recency.
+It doesn't know:
+A is massively popular.
+It only knows:
+Was A recently accessed?
+This leads to LFU.
+________________________________________
+30. LFU — Least Frequently Used
+LFU tracks:
+access count
+Example:
+A → 1000 accesses
+B → 10 accesses
+C → 2 accesses
+D → 1 access
+If we need space:
+D
+is a strong eviction candidate.
+The idea:
+Remove the data used least frequently.
+________________________________________
+31. LRU vs LFU
+LRU
+Tracks:
+"When was it last used?"
+LFU
+Tracks:
+"How often has it been used?"
+Example:
+A accessed 1,000 times yesterday
+B accessed 10 times in the last minute
+LRU may prefer B.
+LFU may prefer A.
+Neither is universally better.
+________________________________________
+32. LFU has its own problem
+Suppose:
+A
+was extremely popular for six months.
+Its frequency:
+1,000,000
+Then nobody accesses it anymore.
+New item:
+B
+is accessed:
+100 times
+A still has:
+1,000,000
+B has:
+100
+Pure LFU may keep A forever.
+This is called a frequency aging problem.
+Production LFU algorithms often need mechanisms to prevent ancient popularity from dominating forever.
+________________________________________
+33. Frequency needs a time dimension
+A better question can be:
+"How frequently has this item been used recently?"
+That's more sophisticated than simply counting from creation.
+This is why real cache eviction algorithms can become quite advanced.
+________________________________________
+34. FIFO vs LRU vs LFU
+Policy	Tracks	Good for
+FIFO	insertion order	simple workloads
+LRU	recent access	temporal locality
+LFU	access frequency	stable hot items
+TTL	expiration time	validity requirements
+Important:
+TTL isn't really an eviction policy.
+TTL determines validity.
+Eviction determines what to remove under resource pressure.
+They can work together.
+________________________________________
+35. Example combining TTL + LRU
+Suppose:
+Capacity = 3
+Entries:
+A TTL 60 sec
+B TTL 20 sec
+C TTL 120 sec
+Current order:
+C → A → B
+At 30 seconds:
+B expired
+Even if B is recently used, it is no longer valid.
+So:
+B must not be served.
+Then if space is needed:
+expired entries
+may be cleaned first.
+Otherwise an eviction policy may choose a valid entry.
+________________________________________
+36. Cache eviction under memory pressure
+Imagine:
+Cache memory = 10 GB
+Current usage:
+9.99 GB
+New object requires:
+50 MB
+Cache needs:
+40 MB+ additional space
+It may need to:
+select victims
+ ↓
+remove victims
+ ↓
+allocate memory
+ ↓
+store new object
+The eviction policy determines the victims.
+________________________________________
+37. But there is another problem: object size
+Suppose:
+A = 1 KB
+B = 500 MB
+If both have equal eviction priority, removing A doesn't help much.
+Removing B frees:
+500 MB
+Therefore sophisticated caches may consider:
+frequency
+recency
+size
+cost
+TTL
+not just one dimension.
+________________________________________
+38. Why cache eviction is an optimization problem
+The cache has:
+finite memory
+and wants to maximize:
+future useful hits
+while minimizing:
+memory usage
+Conceptually:
+                 Cache Capacity
+                       │
+          ┌────────────┼────────────┐
+          │            │            │
+       recency      frequency      size
+          │            │            │
+          └────────────┼────────────┘
+                       ↓
+                eviction decision
+This is why cache eviction isn't merely:
+if full -> remove first item
+in serious systems.
+________________________________________
+39. What happens if the cache is too small?
+Suppose:
+Working set = 1 million keys
+Cache capacity = 10,000
+Then entries constantly enter and leave.
+You may see:
+MISS
+load
+evict
+MISS
+load
+evict
+...
+This is called cache churn.
+Increasing the cache may dramatically improve hit rate.
+________________________________________
+40. Working set
+A very useful concept:
+Working set = the subset of data being actively accessed during a relevant period.
+Example:
+Database:
+1 billion users
+But today's traffic only accesses:
+5 million users
+The effective working set may be much smaller than the total database.
+Caching works best when:
+cache capacity
+is large enough to capture a significant portion of the working set.
+________________________________________
+41. Cache hit ratio vs cache size
+Generally:
+cache size ↑
+        ↓
+more working set fits
+        ↓
+hit ratio tends to ↑
+But not infinitely.
+If:
+cache = 1 TB
+working set = 100 GB
+making cache:
+2 TB
+doesn't necessarily improve much.
+You've already captured the working set.
+________________________________________
+42. One subtle problem: scan workloads
+Suppose a user performs:
+SELECT every product
+and application caches each product.
+Sequence:
+A
+B
+C
+D
+E
+F
+G
+...
+If the cache is small, these one-time accesses can push useful hot entries out.
+This is called a cache pollution problem.
+Example:
+Hot:
+A A A A A
+
+Scan:
+B C D E F G H I J...
+A naive LRU can evict A even though A is highly valuable.
+This is why modern cache systems may use more sophisticated admission policies in addition to eviction policies.
+________________________________________
+43. Admission vs eviction
+This is an advanced but important distinction.
+Eviction
+Already admitted:
+A B C
+Need room for D.
+Decide:
+remove B
+Admission
+A new item arrives:
+D
+Should D even enter the cache?
+Maybe D is a one-time request.
+Instead of:
+D enters
+→ pushes out useful item
+the cache may say:
+Don't admit D.
+This is a more advanced cache design concept.
+________________________________________
+44. The cache isn't trying to maximize memory utilization
+This is another important mental shift.
+The goal isn't:
+"Keep cache 100% full."
+The goal is:
+Maximize useful cache hits for the available memory.
+Sometimes a cache may intentionally reject items that aren't valuable.
+________________________________________
+45. Expiration and eviction together
+A realistic cache lifecycle:
+               PUT
+                │
+                ▼
+             CACHE
+                │
+       ┌────────┴────────┐
+       │                 │
+    TTL valid         TTL expired
+       │                 │
+       ▼                 ▼
+    available           remove
+       │
+       ▼
+memory pressure?
+       │
+      YES
+       │
+       ▼
+eviction policy
+       │
+       ▼
+remove victim
+That's the core mechanism.
+________________________________________
+46. Production mental model
+When someone says:
+"We're using Redis with TTL."
+Don't stop there.
+Ask:
+What is the TTL?
+Why that TTL?
+How is expiration performed?
+What happens under memory pressure?
+What is the eviction policy?
+What happens when the working set exceeds capacity?
+What happens during a traffic spike?
+Are hot keys protected?
+Can expired entries temporarily occupy memory?
+What happens when cache memory is exhausted?
+Those are senior-level questions.
+________________________________________
+47. What we covered
+You should now understand:
+Expiration
+    ↓
+Validity
+
+Eviction
+    ↓
+Memory management
+And:
+Lazy expiration
+Active expiration
+
+FIFO
+LRU
+LFU
+
+Working set
+Cache churn
+Cache pollution
+Admission
+Most importantly:
+LRU
+=
+HashMap
++
+Doubly Linked List
+with:
+get    → O(1) average
+put    → O(1) average
+evict  → O(1)
+________________________________________
+Next Lesson — 32.4
+Cache Consistency & Invalidation Internals
+This is where caching becomes significantly harder.
+We'll study:
+Database
+   ↓
+Cache
+and the dangerous races between them:
+•	stale reads 
+•	cache invalidation 
+•	update-then-delete 
+•	delete-then-update 
+•	concurrent requests 
+•	cache/database ordering 
+•	TTL vs invalidation 
+•	stale-while-revalidate 
+•	cache stampede 
+•	thundering herd 
+•	cache penetration 
+•	cache avalanche 
+•	hot keys 
+And we'll use timelines with concurrent Java threads to understand exactly how stale data is created.
+Cache Consistency & Invalidation Internals 
+Module 2 — Caching
+Lesson 32.4 — Cache Consistency & Invalidation Internals
+This is one of the most important caching lessons.
+So far, we treated the cache as:
+Database = source of truth
+Cache    = copy
+The difficult question is now:
+How do we prevent the copy from becoming dangerously different from the source of truth?
+We are going to reason from the actual race conditions, not memorize patterns.
+________________________________________
+1. The fundamental problem
+Assume:
+Database:
+user:101 → balance = 100
+
+Cache:
+user:101 → balance = 100
+Everything is consistent.
+Now a request changes the database:
+balance = 200
+But the cache still contains:
+balance = 100
+We now have:
+DB    = 200
+Cache = 100
+The cache is stale.
+That is the fundamental cache consistency problem.
+________________________________________
+2. Why can't we simply update both?
+You might initially think:
+database.update(user);
+cache.put(user);
+Looks fine.
+But these are two separate systems.
+There is no ordinary local transaction spanning:
+Database
++
+Redis
+So:
+DB update
+    ↓
+SUCCESS
+    ↓
+Cache update
+    X
+  FAILURE
+Now:
+DB    = 200
+Cache = 100
+The database transaction cannot automatically roll back because Redis failed.
+This is the first fundamental problem:
+Database and cache are separate consistency domains.
+________________________________________
+3. Three possible operations
+For a database-backed cache, every write essentially has three important operations:
+D = database write
+C = cache write
+X = cache delete/invalidate
+The question is:
+In what order should these happen?
+This seemingly simple question creates many production bugs.
+________________________________________
+4. Strategy A — Update DB, then update cache
+Flow:
+Application
+    │
+    ├──→ Database UPDATE
+    │
+    └──→ Cache UPDATE
+Example:
+database.update(user);
+cache.put(key, user);
+Suppose everything succeeds:
+DB    = 200
+Cache = 200
+Good.
+But now consider:
+DB update → SUCCESS
+Cache update → FAILURE
+Result:
+DB    = 200
+Cache = 100
+Stale cache.
+You need a recovery mechanism.
+________________________________________
+5. More dangerous: concurrent reads
+Now things become interesting.
+Initial state:
+DB    = 100
+Cache = 100
+We have two requests:
+Thread W = Writer
+Thread R = Reader
+Writer:
+DB update → 200
+Reader:
+cache.get()
+Timeline:
+Time
+ │
+ │ W: DB update starts
+ │
+ │ R: cache.get() → 100
+ │
+ │ W: DB update completes → 200
+ │
+ │ W: cache.put(200)
+ │
+ ▼
+Reader got old data.
+Is that necessarily a bug?
+Not always.
+The system may permit eventual consistency.
+The real question is:
+What consistency guarantee does the application require?
+________________________________________
+6. The dangerous race
+Now:
+Initial:
+
+DB    = 100
+Cache = MISS
+Two requests arrive.
+Reader R
+cache.get()
+→ MISS
+Then R goes to DB:
+DB → 100
+Meanwhile writer W changes:
+DB → 200
+Then reader R executes:
+cache.put(100)
+Final state:
+DB    = 200
+Cache = 100
+We just created stale cache even though the writer did everything correctly.
+Timeline:
+R: cache MISS
+        │
+        ▼
+R: read DB = 100
+        │
+        │
+        ├──────── W: DB = 200
+        │
+        ▼
+R: cache.put(100)
+This is a critical race.
+________________________________________
+7. This is why cache consistency is difficult
+The problem isn't simply:
+"Remember to invalidate cache."
+The problem is:
+multiple requests
++
+multiple systems
++
+different execution times
++
+network delays
++
+reordering
+The database and cache don't share one global clock or transaction.
+________________________________________
+8. Strategy B — Update DB, then DELETE cache
+This is one of the most common Cache-Aside approaches.
+Instead of:
+database.update(user);
+cache.put(key, user);
+we do:
+database.update(user);
+cache.delete(key);
+Flow:
+Application
+    │
+    ├──→ DB UPDATE
+    │
+    └──→ CACHE DELETE
+After success:
+DB    = 200
+Cache = MISS
+Next read:
+Cache MISS
+    ↓
+DB
+    ↓
+200
+    ↓
+Cache
+This is attractive because the cache is treated as disposable.
+________________________________________
+9. Why delete instead of update?
+Because updating the cache requires us to know exactly what the correct cache representation is.
+Deletion says:
+"I don't trust the cached copy anymore. Remove it."
+Then the next read reconstructs it from the authoritative source.
+This reduces some consistency complexity.
+But it doesn't eliminate races.
+________________________________________
+10. The famous race: DB update + cache delete
+Consider:
+Initial:
+
+DB    = 100
+Cache = 100
+Two requests:
+W = Writer
+R = Reader
+Writer:
+DB update
+Cache delete
+Reader:
+Cache miss
+DB read
+Cache put
+Now timeline:
+R: cache.get() → MISS
+        │
+        ▼
+R: DB read → 100
+        │
+        │
+        ├──── W: DB update → 200
+        │
+        ├──── W: cache.delete()
+        │
+        ▼
+R: cache.put(100)
+Final:
+DB    = 200
+Cache = 100
+Again stale.
+So:
+"Update DB, then delete cache" is safer, but it is not magically race-free.
+________________________________________
+11. Why is this race particularly nasty?
+Because the stale value came from a legitimate database read.
+At the exact time R executed:
+DB.read()
+it may have legitimately received:
+100
+Then another thread changed the DB.
+The old reader subsequently populated the cache.
+This is called a delayed cache population race.
+________________________________________
+12. One common mitigation: delayed/double invalidation
+A commonly discussed strategy is:
+DB UPDATE
+   ↓
+CACHE DELETE
+   ↓
+wait briefly
+   ↓
+CACHE DELETE again
+Why?
+Suppose a reader started before the write and is still in flight.
+First delete:
+cache.delete()
+Then the old reader may repopulate:
+cache.put(oldValue)
+Second delete removes that stale value.
+Conceptually:
+Writer:
+
+DB update
+   ↓
+delete cache
+   ↓
+wait
+   ↓
+delete cache again
+This reduces a particular race window.
+But notice the word:
+reduces
+It does not mathematically turn two independent systems into one atomic transaction.
+________________________________________
+13. Another approach — versioning
+Instead of trusting only the value, associate a version.
+Database:
+user:101
+balance = 200
+version = 8
+Cache:
+balance = 100
+version = 7
+Now the system can detect:
+7 < 8
+and know:
+cache is stale
+Conceptually:
+record UserCache(
+    User user,
+    long version
+) {}
+Versioning becomes extremely useful in distributed systems because it lets us reason about ordering.
+________________________________________
+14. Why version numbers matter
+Suppose two writes occur:
+Write A → version 10
+Write B → version 11
+Network delays could cause:
+B arrives first
+A arrives later
+Without versioning:
+Cache ← version 11
+Cache ← version 10
+Now we've regressed.
+With version checking:
+incoming version = 10
+current version  = 11
+Reject:
+10 < 11
+This prevents an older update from overwriting a newer one.
+________________________________________
+15. Cache invalidation through events
+At larger scale, the application may publish an invalidation event.
+Architecture:
+Application
+    │
+    ├──→ Database
+    │
+    └──→ Event
+           │
+           ▼
+       Message Broker
+           │
+           ▼
+       Cache Consumer
+           │
+           ▼
+       Cache DELETE
+For example:
+UserUpdated
+userId=101
+version=8
+Consumers receive the event and invalidate:
+user:101
+This becomes especially useful when many application instances share a cache.
+________________________________________
+16. Why events help
+Imagine:
+Service A
+Service B
+Service C
+Service D
+all have cached copies.
+A user changes:
+user:101
+How do we tell everyone?
+Without an event:
+A → invalidate
+B → invalidate
+C → invalidate
+D → invalidate
+With an event:
+             UserUpdated
+                  │
+             Message Bus
+          ┌───────┼───────┐
+          ↓       ↓       ↓
+          A       B       C
+          │       │       │
+       invalidate...
+The event becomes the propagation mechanism.
+This will connect directly to Kafka and message queues later.
+________________________________________
+17. But events introduce another problem
+What if:
+DB update = SUCCESS
+event publish = FAILURE
+Then:
+DB = new value
+Cache = old value
+No invalidation event
+Now the event system itself has a consistency problem.
+This is where the Transactional Outbox pattern eventually becomes important.
+We'll study it later when we reach distributed transactions and messaging.
+________________________________________
+18. TTL is your safety net
+Suppose invalidation somehow fails:
+DB = 200
+Cache = 100
+but cache entry has:
+TTL = 5 minutes
+Eventually:
+cache entry expires
+Then:
+next request
+   ↓
+MISS
+   ↓
+DB = 200
+   ↓
+cache = 200
+TTL doesn't guarantee immediate consistency.
+Instead:
+TTL bounds how long stale data may remain, assuming the cache is reachable and expiration works normally.
+This is an important distinction.
+________________________________________
+19. TTL doesn't solve every consistency problem
+Suppose:
+TTL = 24 hours
+Then stale data could potentially remain for a very long time.
+Or:
+TTL = 1 second
+You reduce staleness but create:
+more cache misses
+more DB traffic
+more latency
+So TTL is a trade-off:
+TTL ↓
+  ↓
+freshness ↑
+  ↓
+hit rate ↓
+  ↓
+DB load ↑
+And approximately:
+TTL ↑
+  ↓
+hit rate ↑
+  ↓
+DB load ↓
+  ↓
+potential staleness ↑
+Not every workload follows these relationships perfectly, but this is the basic trade-off.
+________________________________________
+20. Strong consistency vs eventual consistency
+Now we need a vocabulary for what we're actually trying to achieve.
+Stronger consistency
+After:
+WRITE balance = 200
+subsequent reads should not return:
+100
+Eventual consistency
+After the write:
+some reads may temporarily see 100
+but eventually:
+all reads converge to 200
+Caching frequently introduces eventual consistency because the cache is a separate copy.
+________________________________________
+21. The real engineering question
+Don't ask:
+"Is this cache consistent?"
+Ask:
+"What consistency guarantee does this particular data require?"
+Example:
+Product description
+Temporary stale data:
+acceptable
+User account balance
+Stale data:
+potentially dangerous
+Authentication/authorization
+Stale permissions:
+potentially a security problem
+Therefore caching policy must be driven by business semantics.
+________________________________________
+22. Cache stampede
+Now let's move to another major failure mode.
+Suppose:
+popular product
+has:
+TTL = 60 seconds
+At exactly:
+12:00:00
+it expires.
+Traffic:
+50,000 requests/sec
+All requests see:
+MISS
+Then:
+50,000 DB requests/sec
+This is a cache stampede.
+________________________________________
+23. Why it can take down the database
+Normally:
+50,000 requests
+       ↓
+Cache
+       ↓
+DB receives maybe 100 requests
+After expiration:
+50,000 requests
+       ↓
+Cache MISS
+       ↓
+50,000 DB requests
+Database suddenly experiences a huge traffic spike.
+It slows down.
+Then application requests slow down.
+More requests accumulate.
+Eventually:
+DB overload
+   ↓
+timeouts
+   ↓
+retries
+   ↓
+more traffic
+   ↓
+greater overload
+This connects caching directly to the resilience module we'll study later.
+________________________________________
+24. Solution: request coalescing / single flight
+Suppose 1,000 requests miss the same key.
+Instead of allowing:
+1,000 → DB
+we allow:
+1 request → DB
+while others wait:
+             Cache MISS
+                  │
+        ┌─────────┴─────────┐
+        ↓                   ↓
+   First request       Other requests
+        │                   │
+        ▼                   │
+       DB                   │ wait
+        │                   │
+        ▼                   │
+     Cache put              │
+        │                   │
+        └─────────┬─────────┘
+                  ▼
+            all receive
+This is called request coalescing, single-flight, or similar mechanisms depending on implementation.
+________________________________________
+25. Java mental model
+You could maintain:
+ConcurrentHashMap<String, CompletableFuture<User>>
+Conceptually:
+CompletableFuture<User> future =
+    inFlight.computeIfAbsent(
+        key,
+        k -> loadFromDatabase(k)
+    );
+Now multiple threads can share the same in-progress load.
+The exact production implementation requires careful cleanup/error handling, but the important idea is:
+One cache miss should not automatically become N database loads.
+________________________________________
+26. Cache penetration
+Another problem.
+Suppose attackers or clients repeatedly request:
+user:999999999
+which doesn't exist.
+Every request:
+Cache MISS
+   ↓
+DB
+   ↓
+NOT FOUND
+Then the next request repeats it.
+The cache doesn't help because there's nothing to cache.
+This is cache penetration.
+________________________________________
+27. Negative caching
+One solution:
+Store the fact that the object doesn't exist.
+user:999999999 → NOT_FOUND
+TTL = 30 sec
+Then:
+request
+ ↓
+cache
+ ↓
+NOT_FOUND
+and the DB isn't repeatedly queried.
+But negative caching has its own issue:
+If the object is created during the negative-cache TTL:
+Cache says: NOT_FOUND
+DB says: EXISTS
+So negative entries need carefully chosen TTLs/invalidation.
+________________________________________
+28. Cache avalanche
+Imagine many keys have nearly identical expiration times:
+A → expires 12:00
+B → expires 12:00
+C → expires 12:00
+D → expires 12:00
+...
+At 12:00:
+many keys expire together
+Then:
+Cache MISS
+   ↓
+huge DB traffic
+This is often called a cache avalanche.
+________________________________________
+29. TTL jitter
+One mitigation is randomizing TTL.
+Instead of:
+TTL = 60 sec
+for everything:
+A → 57 sec
+B → 63 sec
+C → 61 sec
+D → 68 sec
+Conceptually:
+long ttl = baseTtl + randomJitter();
+Now expirations are distributed over time.
+Instead of:
+                  ↓↓↓↓↓↓↓
+12:00       everything expires
+we get:
+      ↓
+   ↓     ↓
+ ↓    ↓      ↓
+-------------------- time
+This reduces synchronized expiration.
+________________________________________
+30. Hot key problem
+Suppose:
+product:iphone-17
+receives:
+200,000 requests/sec
+All requests hit one cache key.
+Even though the cache protects the database:
+200,000 requests
+       ↓
+ONE cache key
+that key itself can become a bottleneck.
+Especially with distributed cache architectures.
+We'll revisit this when we study:
+Redis
++
+consistent hashing
++
+distributed cache architecture
+________________________________________
+31. Stale-While-Revalidate
+Another useful strategy:
+Instead of making users wait for refresh:
+expired
+ ↓
+DB
+ ↓
+response
+we may temporarily serve stale data while refreshing it in the background.
+Example:
+Cache:
+value = 100
+soft expiry = reached
+hard expiry = not reached
+Request arrives:
+return 100 immediately
+        +
+background refresh
+Background:
+DB → 200
+Cache → 200
+Next request gets:
+200
+This trades some freshness for lower latency.
+________________________________________
+32. Hard TTL vs soft TTL
+This distinction is useful.
+Hard TTL
+After expiration:
+DO NOT SERVE
+Soft TTL
+After refresh threshold:
+can temporarily serve stale
++
+refresh asynchronously
+For example:
+0 ───────── 50 ─────── 60 sec
+            │           │
+         soft TTL     hard TTL
+            │
+      refresh starts
+This is a powerful technique for high-traffic data.
+________________________________________
+33. The cache consistency toolbox
+At this point you should see that there isn't one magic solution.
+We have:
+Cache invalidation
+TTL
+Versioning
+Events
+Double invalidation
+Request coalescing
+Negative caching
+TTL jitter
+Stale-while-revalidate
+Each addresses a different failure mode.
+________________________________________
+34. A practical design
+Suppose we have:
+Spring Boot
+    ↓
+Redis
+    ↓
+PostgreSQL
+For relatively normal read-heavy data, a robust starting point could be:
+READ:
+
+Redis GET
+   ↓
+HIT → return
+   ↓
+MISS
+   ↓
+DB
+   ↓
+populate Redis
+WRITE:
+DB UPDATE
+   ↓
+Redis DELETE
+plus:
+TTL
++
+request coalescing
++
+metrics
+And at larger scale:
+DB UPDATE
+   ↓
+outbox/event
+   ↓
+invalidation consumers
+________________________________________
+35. What metrics would you monitor?
+A senior engineer doesn't just deploy a cache.
+You measure it.
+Important metrics:
+cache hit ratio
+cache miss ratio
+eviction count
+expired entries
+memory usage
+key count
+load latency
+DB fallback rate
+hot keys
+stampede events
+serialization latency
+cache network latency
+Especially:
+Hit Ratio = cache hits / total cache requests
+Example:
+1,000,000 requests
+900,000 hits
+100,000 misses
+Then:
+hit ratio = 90%
+But don't blindly optimize for hit ratio.
+A 99% hit rate isn't necessarily good if the 1% misses are extremely expensive.
+________________________________________
+36. One of the most important production questions
+Suppose:
+Cache hit ratio = 99%
+Sounds excellent.
+But:
+1% = 10,000 requests/sec
+and each miss causes:
+expensive DB query
+Your database could still be overloaded.
+Therefore:
+Cache performance must be evaluated against the workload generated by misses, not merely the hit percentage.
+________________________________________
+37. The complete consistency picture
+You can now visualize the system as:
+                 READ
+                  │
+                  ▼
+               CACHE
+              /     \
+           HIT       MISS
+            │          │
+            │          ▼
+            │        DB
+            │          │
+            │          ▼
+            │        CACHE
+            │
+            ▼
+          CLIENT
+
+
+                 WRITE
+                  │
+                  ▼
+                  DB
+                  │
+                  ▼
+              INVALIDATE
+                  │
+                  ▼
+                CACHE
+But concurrently:
+             ┌──────────────┐
+             │ Concurrent   │
+             │ readers      │
+             └──────┬───────┘
+                    │
+                    ▼
+             stale population
+                    │
+                    ▼
+              consistency race
+That's the part most superficial tutorials don't teach.
+________________________________________
+38. The most important mental model from today's lesson
+There are three separate questions:
+Question 1 — Correctness
+Can cache return stale data?
+Question 2 — Availability
+What happens if cache fails?
+Question 3 — Load protection
+What happens when cache misses explode?
+Different mechanisms solve different problems:
+Problem	Typical techniques
+Stale data	Invalidation, TTL, versioning
+Cache failure	DB fallback, graceful degradation
+Stampede	Single-flight, locking, stale-while-revalidate
+Avalanche	TTL jitter, staggered refresh
+Penetration	Negative caching, validation
+Hot key	Replication, local cache, key splitting
+Event propagation	Messaging/events
+________________________________________
+39. What you should be able to reason about now
+Given:
+Spring Boot
+   ↓
+Redis
+   ↓
+MySQL
+and this requirement:
+"Product prices can be stale for at most 30 seconds."
+You should immediately think:
+TTL ≤ 30 sec
+But then ask:
+What happens when price changes?
+
+DB update
+   ↓
+invalidate cache
+Then:
+What if invalidation fails?
+TTL provides eventual recovery.
+Then:
+What if 100,000 users request the product after expiry?
+Single-flight / stale-while-revalidate.
+Then:
+What if all product keys expire simultaneously?
+TTL jitter.
+That's how a senior engineer approaches caching.
+________________________________________
+Next Lesson — 32.5
+Cache Stampede, Hot Keys & Cache Failure Internals
+We'll go deeper into the failure side of caching:
+Cache Stampede
+    ↓
+Single Flight
+    ↓
+Distributed Lock
+    ↓
+Hot Keys
+    ↓
+Local Cache + Distributed Cache
+    ↓
+Cache Failure
+    ↓
+Fail-open vs Fail-closed
+    ↓
+Redis timeout
+    ↓
+Connection pool exhaustion
+    ↓
+Fallback to DB
+    ↓
+Why fallback itself can kill the DB
+    ↓
+Load shedding
+This lesson will connect Caching → Redis → Distributed Lock → Resilience, so we won't repeat today's consistency material.
+Cache Stampede, Hot Keys & Cache Failure Internals 
+Module 2 — Caching
+Lesson 32.5 — Cache Stampede, Hot Keys & Cache Failure Internals
+We are now at the failure-engineering part of caching.
+So far we learned:
+Cache
+ ├── stores copies
+ ├── expires entries
+ ├── evicts entries
+ └── needs invalidation
+Now ask the harder production question:
+What happens when thousands or millions of requests hit the cache at exactly the wrong time?
+There are three major problems:
+1. Cache Stampede
+2. Hot Key
+3. Cache Failure
+They are related, but they are not the same problem.
+________________________________________
+1. Cache Stampede
+Imagine this system:
+                    ┌─────────┐
+Requests ──────────►│  Redis  │
+                    └────┬────┘
+                         │
+                       MISS
+                         │
+                         ▼
+                    ┌─────────┐
+                    │   DB    │
+                    └─────────┘
+Normally:
+100,000 requests/sec
+        │
+        ▼
+      Redis
+        │
+        ├── 99,000 HIT
+        │
+        └── 1,000 MISS
+                 │
+                 ▼
+                 DB
+Database is happy.
+Now imagine a very popular key:
+product:123
+TTL:
+60 seconds
+At exactly 12:00:00:
+product:123 expires
+Suddenly:
+100,000 requests
+        │
+        ▼
+      Redis
+        │
+      MISS
+        │
+        ▼
+   100,000 DB requests
+That is the fundamental cache-stampede problem.
+________________________________________
+2. Why this is more dangerous than it looks
+The database suddenly receives:
+100,000 requests/sec
+It may normally handle:
+10,000 requests/sec
+So:
+DB overload
+   ↓
+latency increases
+   ↓
+timeouts
+   ↓
+application threads wait
+   ↓
+connection pool fills
+   ↓
+requests queue
+   ↓
+more timeouts
+And then something particularly nasty can happen.
+________________________________________
+3. Retry amplification
+Suppose the application has:
+retry = 2
+A database request times out.
+The application retries:
+Request
+   ↓
+DB
+   ↓
+timeout
+   ↓
+retry
+   ↓
+DB
+   ↓
+timeout
+   ↓
+retry
+   ↓
+DB
+One original request can become:
+1 → 3 database requests
+So:
+100,000 requests
+       ×
+3 attempts
+       =
+300,000 DB operations
+The system is now making the problem worse.
+This is why we'll later study:
+Retry
+Timeout
+Circuit Breaker
+Bulkhead
+Rate Limiting
+as a connected system rather than isolated patterns.
+________________________________________
+4. The first solution: Single Flight
+The basic idea is:
+For a particular key, allow only one request to load the missing value.
+Suppose:
+100 requests
+    │
+    ▼
+Redis MISS
+Instead of:
+100 → DB
+we want:
+1 → DB
+99 → wait
+Flow:
+                 Redis MISS
+                     │
+              ┌──────┴──────┐
+              │             │
+          First request   Others
+              │             │
+              ▼             │
+             DB              │
+              │             │
+              ▼             │
+           Redis             │
+              │             │
+              └──────┬──────┘
+                     ▼
+                  result
+This is request coalescing / single-flight.
+________________________________________
+5. Java implementation idea
+Suppose:
+ConcurrentHashMap<String, CompletableFuture<Product>>
+stores currently-loading keys.
+Conceptually:
+public Product get(String key) {
+
+    Product cached = redis.get(key);
+
+    if (cached != null) {
+        return cached;
+    }
+
+    CompletableFuture<Product> future =
+        inFlight.computeIfAbsent(
+            key,
+            k -> loadFromDatabase(k)
+        );
+
+    try {
+        return future.join();
+    } finally {
+        inFlight.remove(key, future);
+    }
+}
+The important idea is not the exact code.
+It is:
+same key
+   ↓
+same in-flight operation
+________________________________________
+6. Why computeIfAbsent is interesting
+Suppose 1,000 Java threads execute:
+inFlight.computeIfAbsent("product:123", ...)
+concurrently.
+The data structure coordinates access so that the application can establish one shared computation for the key.
+Conceptually:
+Thread 1 ─┐
+Thread 2 ─┤
+Thread 3 ─┤
+Thread 4 ─┤
+...       ├──► product:123 future
+Thread N ─┘
+Now they can all wait on the same future.
+This is an excellent example of using a concurrency primitive to solve a distributed-performance problem.
+________________________________________
+7. But single-flight has a boundary
+Suppose your application has:
+Instance A
+Instance B
+Instance C
+Instance D
+Each JVM has its own:
+inFlight
+Then:
+Requests
+   │
+   ├── A → one DB request
+   ├── B → one DB request
+   ├── C → one DB request
+   └── D → one DB request
+So instead of:
+1 DB request
+you may still get:
+4 DB requests
+This is because the coordination is local to each JVM.
+________________________________________
+8. Distributed single-flight
+Now imagine:
+10 application instances
+You want one global loader.
+You could use a distributed coordination mechanism:
+Application
+     │
+     ▼
+Distributed Lock
+     │
+     ▼
+Redis
+     │
+     ▼
+Database
+Only one instance gets permission to load:
+Instance A → LOCK SUCCESS → DB
+Instance B → LOCK FAIL → wait
+Instance C → LOCK FAIL → wait
+This connects directly to our future topic:
+Distributed Lock
+We will study its internals separately.
+________________________________________
+9. But distributed locks introduce complexity
+Suppose A gets the lock:
+A
+ ↓
+LOCK
+ ↓
+DB
+Then A crashes.
+Who releases the lock?
+If the lock never expires:
+everyone waits forever
+So distributed locks generally need:
+lock TTL
+ownership
+safe release
+failure handling
+Now we have introduced another distributed-systems problem.
+This is why:
+Don't automatically reach for a distributed lock just because you have a cache miss.
+Sometimes local single-flight + TTL + stale serving is simpler and safer.
+________________________________________
+10. Stale-While-Revalidate
+Another approach is even more interesting.
+Instead of:
+expired → MISS → DB → wait
+we allow:
+stale → immediately return → refresh asynchronously
+Example:
+Product price = ₹100
+
+soft TTL = 55 sec
+hard TTL = 60 sec
+At 56 seconds:
+Request
+   ↓
+Cache
+   ↓
+stale-but-servable
+   ↓
+return ₹100
+Meanwhile:
+background refresh
+       ↓
+      DB
+       ↓
+     ₹105
+       ↓
+    Redis
+Next request:
+₹105
+This avoids a huge synchronous load.
+________________________________________
+11. Why stale data can be valuable
+Consider:
+Netflix movie metadata
+Being 5 seconds stale:
+probably acceptable
+But waiting 5 seconds because the cache is rebuilding:
+bad user experience
+So you can trade:
+freshness
+for:
+availability + latency
+This is a fundamental distributed-system trade-off.
+________________________________________
+12. Now let's move to Hot Keys
+A hot key is different from a stampede.
+Suppose:
+product:123
+receives:
+200,000 requests/sec
+and the key is perfectly cached.
+There is no cache miss.
+Still:
+200,000 requests
+        │
+        ▼
+ product:123
+One key receives a disproportionate amount of traffic.
+That's a hot key.
+________________________________________
+13. Hot key vs cache stampede
+This distinction is important.
+Stampede
+Cache MISS
+   ↓
+many requests
+   ↓
+DB
+Hot key
+Cache HIT
+   ↓
+huge traffic concentrated on one key
+They can happen simultaneously:
+HOT KEY
+   ↓
+expires
+   ↓
+STAMPede
+That's particularly dangerous.
+________________________________________
+14. Why a hot key can overload Redis
+Suppose Redis cluster:
+Node A
+Node B
+Node C
+Node D
+Keys are distributed:
+A → Node A
+B → Node B
+C → Node C
+D → Node D
+But:
+product:123
+maps to:
+Node B
+Now:
+200,000 req/sec
+       ↓
+    Node B
+while:
+Node A → 10k
+Node C → 12k
+Node D → 8k
+The cluster overall may have capacity.
+But:
+Node B = bottleneck
+This is a classic distributed-systems problem:
+Average load can look healthy while one partition is overloaded.
+________________________________________
+15. Key distribution doesn't solve hot keys
+Consistent hashing distributes keys.
+It does not automatically distribute requests for the same key.
+This is a very important distinction.
+Suppose:
+1 million keys
+distributed evenly.
+But:
+one key = 70% of traffic
+You can still have a severe hotspot.
+We'll study consistent hashing deeply later.
+________________________________________
+16. Solution: Replicate the hot value
+Suppose:
+product:123
+is extremely popular.
+Instead of one cache location:
+product:123 → Node B
+you can create replicas:
+product:123:replica1 → Node A
+product:123:replica2 → Node B
+product:123:replica3 → Node C
+product:123:replica4 → Node D
+Then requests can be distributed:
+             product:123
+                  │
+        ┌─────────┼─────────┐
+        ▼         ▼         ▼
+       A          B          C
+Now the load is spread.
+________________________________________
+17. But replication creates a consistency problem
+Suppose price changes:
+₹100 → ₹105
+Now:
+Replica A = 105
+Replica B = 100
+Replica C = 100
+Replica D = 105
+You've exchanged:
+hotspot problem
+for:
+replica consistency problem
+Again:
+Distributed systems are mostly about trade-offs.
+There is rarely a free optimization.
+________________________________________
+18. Another solution: Local cache
+Architecture:
+Application
+    │
+    ▼
+Local JVM Cache
+    │
+    ▼
+Redis
+    │
+    ▼
+Database
+For an extremely hot key:
+Request
+  ↓
+JVM memory
+  ↓
+HIT
+The request doesn't even reach Redis.
+For example:
+100,000 req/sec
+might become:
+95,000 → local cache
+5,000  → Redis
+This dramatically reduces network traffic.
+________________________________________
+19. But local cache creates another consistency layer
+Now we have:
+Database
+   ↓
+Redis
+   ↓
+JVM Cache
+Three copies.
+Potentially:
+DB       = 105
+Redis    = 105
+JVM A    = 100
+JVM B    = 105
+JVM C    = 100
+Now invalidation must propagate through more layers.
+So local caching improves:
+latency
+throughput
+Redis load
+but increases:
+consistency complexity
+________________________________________
+20. Now the most dangerous problem: Cache Failure
+Suppose everything is working:
+Application
+     ↓
+   Redis
+     ↓
+    DB
+Redis suddenly becomes unavailable.
+What does the application do?
+There are two broad choices.
+________________________________________
+21. Fail-open
+Fail-open means:
+If cache fails, continue to the underlying system.
+Request
+   ↓
+Redis
+   X
+   ↓
+DB
+This preserves availability of the application.
+But there is a huge danger.
+Suppose:
+100,000 req/sec
+normally Redis handles almost all of them.
+Redis dies.
+Now:
+100,000 req/sec
+       ↓
+       DB
+The database may immediately collapse.
+So:
+Fail-open can turn a cache failure into a database failure.
+________________________________________
+22. Fail-closed
+Fail-closed means:
+If the cache is unavailable, don't continue normally.
+For some operations:
+Redis failure
+    ↓
+return error
+This protects the database.
+But:
+availability ↓
+So:
+Fail-open
+→ better availability
+→ potentially catastrophic DB load
+
+Fail-closed
+→ protects backend
+→ more application errors
+The correct choice depends on the business operation.
+________________________________________
+23. Why fallback is dangerous
+Imagine:
+Redis capacity = 200,000 req/sec
+DB capacity    = 20,000 req/sec
+Normally:
+200k requests
+     ↓
+Redis
+     ↓
+99% hit
+     ↓
+DB ≈ 2k
+Redis fails:
+200k
+ ↓
+DB
+DB can only process:
+20k
+The remaining:
+180k
+start waiting.
+Then connection pools fill.
+________________________________________
+24. Connection pool exhaustion
+Suppose Spring Boot has:
+DB connection pool = 100
+Requests arrive:
+200,000/sec
+but DB is slow.
+Threads start waiting for connections:
+Thread 1 → connection
+Thread 2 → connection
+...
+Thread 100 → connection
+Thread 101 → WAIT
+Thread 102 → WAIT
+...
+Eventually:
+request timeout
+The application becomes unhealthy even though:
+Java CPU may not be 100%
+This is why resource exhaustion matters more than CPU alone.
+________________________________________
+25. The fallback death spiral
+This sequence is worth memorizing as a system behavior, not a definition:
+Redis failure
+     ↓
+Cache misses
+     ↓
+DB traffic explodes
+     ↓
+DB latency increases
+     ↓
+Connections stay occupied longer
+     ↓
+Connection pool exhausts
+     ↓
+Requests timeout
+     ↓
+Retry starts
+     ↓
+DB traffic increases further
+     ↓
+DB becomes even slower
+     ↓
+More timeouts
+This is a positive feedback loop.
+The system is feeding its own failure.
+________________________________________
+26. Protection: Circuit Breaker
+Suppose DB is clearly failing.
+Instead of continuing:
+request
+ ↓
+DB
+ ↓
+timeout
+a circuit breaker can eventually say:
+DB unhealthy
+     ↓
+OPEN
+     ↓
+reject/fail fast
+Now requests don't keep consuming:
+threads
+connections
+network
+This is why circuit breakers are useful downstream of caches.
+We'll study the internal state machine later.
+________________________________________
+27. Protection: Rate Limiting
+Suppose after Redis failure:
+200,000 req/sec
+hits your database.
+Instead:
+allow only 10,000/sec
+The rest are rejected or delayed.
+This sacrifices some requests to protect the entire system.
+This is the fundamental idea behind:
+Load shedding.
+________________________________________
+28. Protection: Bulkhead
+Suppose your application serves:
+product requests
+payment requests
+profile requests
+If product cache failure consumes every thread:
+product → 100% threads
+payment → 0
+profile → 0
+That's bad.
+Bulkhead isolation can give separate resource pools:
+Product → 50 threads
+Payment → 30 threads
+Profile → 20 threads
+Now product failure doesn't necessarily consume everything.
+________________________________________
+29. A robust failure architecture
+A more resilient system could look like:
+                 Request
+                    │
+                    ▼
+              Local Cache
+                    │
+                  MISS
+                    │
+                    ▼
+                 Redis
+                    │
+              ┌─────┴─────┐
+             HIT          FAIL
+              │             │
+              ▼             ▼
+           return       protection
+                            │
+                  ┌─────────┼─────────┐
+                  ▼         ▼         ▼
+              RateLimit  Circuit   Bulkhead
+                            │
+                            ▼
+                           DB
+This is much closer to production engineering.
+________________________________________
+30. What if Redis is slow rather than completely down?
+This is even more dangerous.
+Suppose Redis normally:
+P99 = 2 ms
+Suddenly:
+P99 = 2 seconds
+Requests wait for Redis.
+Application threads become occupied.
+Even though Redis eventually responds:
+the application can still become overloaded.
+So:
+Dependency latency can be as dangerous as dependency failure.
+________________________________________
+31. Cache timeout
+Never allow an external cache call to wait indefinitely.
+Conceptually:
+redis.get(key)
+should have a bounded timeout.
+For example:
+Redis timeout = 50 ms
+Then:
+Redis doesn't respond
+        ↓
+stop waiting
+        ↓
+fallback / fail
+The exact timeout must be based on your latency budget.
+Don't blindly use arbitrary numbers.
+________________________________________
+32. Why timeout + retry can be disastrous
+Suppose:
+Redis timeout = 100ms
+retry = 3
+Worst-case waiting can approach:
+100ms
++
+100ms
++
+100ms
+before accounting for backoff and other overhead.
+Now multiply by:
+10,000 concurrent requests
+You've tied up a large number of resources waiting for a failing dependency.
+Retry isn't automatically resilience.
+Retry can amplify failure.
+________________________________________
+33. Connection pool to Redis
+Redis clients also have connection pools.
+Suppose:
+Redis pool = 50 connections
+and Redis becomes slow.
+Those 50 connections are occupied.
+Additional application threads wait:
+Thread
+  ↓
+Redis connection pool
+  ↓
+WAIT
+So you can get:
+Redis slowdown
+    ↓
+Redis pool exhaustion
+    ↓
+application threads waiting
+    ↓
+latency explosion
+Again, resource exhaustion is the real issue.
+________________________________________
+34. Cache failure is not just "Redis is down"
+There are multiple failure modes:
+Redis completely unavailable
+Redis network partition
+Redis high latency
+Redis connection pool exhausted
+Redis memory pressure
+Redis evictions
+Redis CPU saturation
+single hot key
+single hot shard
+serialization overhead
+network congestion
+Each has different symptoms.
+A senior engineer learns to distinguish them.
+________________________________________
+35. Cache metrics you should look at
+Suppose users report:
+"The application became slow."
+Don't immediately blame the database.
+Look at:
+Cache hit ratio
+Cache latency P50
+Cache latency P95
+Cache latency P99
+Cache errors
+Connection pool usage
+Eviction rate
+Memory usage
+Hot-key distribution
+Redis CPU
+Redis network throughput
+DB QPS
+DB connection pool usage
+Then correlate the timeline.
+________________________________________
+36. Example production incident
+Imagine:
+10:00
+Redis P99 = 2 ms
+DB QPS = 5,000
+At 10:01:
+Redis P99 = 500 ms
+At 10:02:
+DB QPS = 50,000
+At 10:03:
+DB P99 = 2 sec
+At 10:04:
+DB connections = 100/100
+At 10:05:
+application timeouts
+A superficial diagnosis:
+"Database is slow."
+Better diagnosis:
+Redis degradation
+      ↓
+cache requests slow/fail
+      ↓
+fallback traffic ↑
+      ↓
+DB overloaded
+The database was a victim, not necessarily the root cause.
+________________________________________
+37. Hot key + failure is even worse
+Consider:
+product:123
+receives:
+200k req/sec
+It lives on:
+Redis Node B
+Node B fails.
+Now all requests for the hot key need another path.
+If the application falls back to DB:
+200k req/sec
+    ↓
+DB
+One hot key can therefore become a database attack against your own system.
+________________________________________
+38. Local cache as protection
+A local cache can act as a shock absorber.
+Architecture:
+Request
+   ↓
+L1: JVM cache
+   ↓ miss
+L2: Redis
+   ↓ miss
+L3: Database
+This is sometimes called multi-level caching.
+L1 = fastest
+L2 = shared
+L3 = source of truth
+Example:
+L1 hit → ~microseconds
+L2 hit → network round trip
+DB hit → much slower
+Exact latency depends on infrastructure, but the ordering is what matters.
+________________________________________
+39. But L1 creates stale copies
+Suppose:
+DB = 200
+Redis = 200
+JVM A = 100
+If invalidation isn't propagated:
+JVM A
+  ↓
+returns 100
+Therefore multi-level caches often need:
+invalidation events
+or carefully bounded TTLs.
+This is where:
+Caching
++
+Messaging
++
+Redis
+begin to converge.
+________________________________________
+40. The three-layer failure model
+Think about:
+L1
+ ↓
+L2
+ ↓
+L3
+At every level, ask:
+What if it misses?
+What if it is slow?
+What if it is unavailable?
+What if it contains stale data?
+What if traffic concentrates here?
+This mindset is much more valuable than memorizing cache patterns.
+________________________________________
+41. A real design decision
+Suppose you're designing a product catalog.
+Requirements:
+100k requests/sec
+Product data changes occasionally
+5-second stale data is acceptable
+Database can handle 10k/sec
+A reasonable design might be:
+             Requests
+                 │
+                 ▼
+            Local Cache
+                 │
+                 ▼
+              Redis
+                 │
+                 ▼
+                DB
+Use:
+TTL
++
+stale-while-revalidate
++
+single-flight
++
+TTL jitter
+If Redis fails:
+serve local cached data if possible
+If local cache misses:
+bounded fallback to DB
+with:
+timeouts
+circuit breaker
+rate limiting
+That's system design.
+________________________________________
+42. But don't apply every pattern blindly
+This is important for your learning path.
+For every cache problem, don't automatically add:
+Redis
+Kafka
+Distributed Lock
+Circuit Breaker
+Local Cache
+Rate Limiter
+Every additional mechanism introduces:
+complexity
+failure modes
+operational cost
+consistency problems
+Start with the simplest architecture that satisfies the requirement.
+________________________________________
+43. Decision tree
+When a cache miss happens:
+                 Cache MISS
+                     │
+                     ▼
+             Is key popular?
+                /       \
+              NO         YES
+              │           │
+              ▼           ▼
+          DB load     Stampede risk?
+                         │
+                     ┌───┴───┐
+                    NO      YES
+                    │         │
+                    ▼         ▼
+                  load     single-flight
+                              │
+                              ▼
+                       distributed?
+                         /       \
+                       NO         YES
+                       │           │
+                       ▼           ▼
+                   local SF    distributed
+                                coordination
+Then separately:
+Cache HIT
+   │
+   ▼
+Is key extremely hot?
+   │
+  YES
+   │
+   ▼
+L1 cache / replication / sharding strategy
+And:
+Cache unavailable
+       │
+       ▼
+Can stale data be served?
+     /       \
+   YES       NO
+    │         │
+    ▼         ▼
+serve stale  bounded fallback
+              │
+              ▼
+        circuit/rate limit
+This is the reasoning framework I want you to develop.
+________________________________________
+44. The deepest takeaway
+Caching isn't fundamentally about:
+"put data in Redis"
+It is about managing:
+              ┌──────────────┐
+              │   Database   │
+              │ source truth │
+              └──────┬───────┘
+                     │
+               consistency
+                     │
+              ┌──────▼───────┐
+              │    Cache     │
+              └──────┬───────┘
+                     │
+             performance
+                     │
+              ┌──────▼───────┐
+              │  Application │
+              └──────────────┘
+while controlling:
+staleness
+load
+latency
+memory
+failure
+concurrency
+hotspots
+That's why caching is a distributed-systems problem, not merely a performance trick.
+
