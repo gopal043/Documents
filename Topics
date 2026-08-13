@@ -452,3 +452,185 @@ Prepare detailed stories about:
 •	Mentoring developers and conducting code reviews
 Interviewers often probe these experiences because they reveal your depth of understanding and decision-making.
 
+
+
+Module 2 — Performance
+Concept	Lessons
+Caching	5
+Redis	8
+Cache Invalidation	4
+Consistent Hashing	5
+Module 2 Total	22
+Caching — 5
+Why caching exists + memory hierarchy
+Cache architecture + request flow
+Cache-aside, read-through, write-through, write-back
+Eviction algorithms: LRU, LFU, TTL
+Cache stampede, penetration, avalanche + production design
+Redis — 8
+Redis architecture + event loop
+In-memory data structures internally
+Strings, Lists, Sets, Hashes, Sorted Sets
+Persistence: RDB + AOF
+Replication
+Redis Sentinel
+Redis Cluster + sharding
+Redis performance, failures and production architecture
+Cache Invalidation — 4
+Why invalidation is fundamentally difficult
+TTL vs explicit invalidation
+Distributed invalidation
+Race conditions, stale data and consistency strategies
+Consistent Hashing — 5
+Why normal hashing fails when nodes change
+Hash ring internals
+Virtual nodes
+Node addition/removal + redistribution
+Production use: caches, databases, distributed systems
+Module 3 — Distributed Communication
+Concept	Lessons
+Message Queues	5
+Kafka	10
+RabbitMQ	6
+Module 3 Total	21
+Message Queues — 5
+Why asynchronous communication exists
+Queue internals
+Producer → broker → consumer
+Acknowledgement, delivery and redelivery
+Ordering, durability and failure
+Kafka — 10
+Kafka architecture
+Topic + partition internals
+Producer internals
+Consumer internals
+Consumer groups
+Offset management
+Replication + ISR
+Leader election + failure recovery
+Exactly-once / transactions
+Kafka performance + production architecture
+RabbitMQ — 6
+Broker architecture
+Exchange types
+Queue internals
+Routing + bindings
+ACK, NACK, retry, dead-lettering
+RabbitMQ clustering + failure behavior
+Module 4 — Resilience
+Concept	Lessons
+Retry	3
+Timeout	3
+Circuit Breaker	5
+Bulkhead	3
+Rate Limiting	5
+Module 4 Total	19
+Retry — 3
+Why retries exist + failure classification
+Backoff + jitter
+Retry storms and production design
+Timeout — 3
+Connection vs read vs request timeout
+Timeout propagation through distributed systems
+Cascading failures and deadline propagation
+Circuit Breaker — 5
+Why circuit breakers exist
+State machine internally
+Failure counting + sliding windows
+Half-open recovery
+Production implementation + pitfalls
+Bulkhead — 3
+Resource isolation
+Thread pools / connection pools / concurrency limits
+Cascading failure prevention
+Rate Limiting — 5
+Why rate limiting exists
+Fixed window / sliding window
+Token bucket
+Distributed rate limiting with Redis
+Production architecture + fairness + failure
+Module 5 — Distributed Transactions
+Concept	Lessons
+Saga	6
+CQRS	5
+Event Sourcing	6
+Idempotency	4
+Module 5 Total	21
+Saga — 6
+Why distributed transactions become difficult
+Local transactions + distributed workflow
+Choreography
+Orchestration
+Compensation
+Failure/recovery + production design
+CQRS — 5
+Why CQRS exists
+Command side internals
+Query side internals
+Read-model synchronization
+CQRS trade-offs + production architecture
+Event Sourcing — 6
+Traditional state vs event history
+Event store internals
+Rebuilding state
+Snapshots
+Event versioning
+Failure, consistency and production architecture
+Idempotency — 4
+Why duplicate requests happen
+Idempotency keys
+Database implementation
+Distributed idempotency + failure scenarios
+Module 6 — Distributed Databases
+Concept	Lessons
+Replication	6
+Leader-Follower	5
+Distributed Lock	6
+Module 6 Total	17
+Replication — 6
+Why replication exists
+Synchronous vs asynchronous replication
+Replication lag
+Failure and recovery
+Read/write consistency
+Production replication architectures
+Leader-Follower — 5
+Leader/follower architecture
+Write path
+Read path
+Leader failure + election
+Split brain and failover
+Distributed Lock — 6
+Why distributed locks exist
+Single-machine vs distributed locking
+Redis-based locks
+Lease + expiration
+Fencing tokens
+Failure scenarios + correctness
+Module 7 — Distributed Theory
+Concept	Lessons
+CAP Theorem	4
+PACELC	3
+Exactly Once	5
+At Least Once	3
+Module 7 Total	15
+CAP — 4
+Distributed system model
+Partition scenario
+Consistency vs availability
+Real-world systems and CAP misconceptions
+PACELC — 3
+Why CAP isn't enough
+Latency vs consistency during normal operation
+Real-world architecture decisions
+Exactly Once — 5
+Why exactly-once is difficult
+Duplicate execution
+Kafka transactions
+Idempotency + exactly-once effects
+End-to-end exactly-once reality
+At Least Once — 3
+Delivery semantics
+Redelivery + duplicates
+Designing consumers safely
+
