@@ -634,3 +634,20 @@ Delivery semantics
 Redelivery + duplicates
 Designing consumers safely
 
+
+
+1. Problem → Why did engineers need this?
+
+2. Naive solution → How would we build it first?
+
+3. Scale/failure → What breaks?
+
+4. Solution → What architecture/component solves it?
+
+5. Internals → What is actually happening underneath?
+
+6. Trade-offs → What did we gain and what did we sacrifice?
+
+7. Java connection → How does this relate to things you've already used?
+
+8. Design exercise → I'll give you a small scenario and make you reason about it.
