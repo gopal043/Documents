@@ -1,0 +1,2940 @@
+Retry — Part 1: Why does it exist?
+________________________________________
+1. Problem → Why did engineers need this?
+Let's start with a very ordinary Java service.
+Suppose your OrderService calls a PaymentService:
+Client
+   |
+   v
+Order Service
+   |
+   | POST /payments
+   v
+Payment Service
+The code initially looks trivial:
+PaymentResponse response =
+    paymentClient.charge(order.getAmount());
+Now imagine this sequence:
+Order Service                    Payment Service
+     |                                |
+     | ---- charge ₹100 ------------> |
+     |                                |
+     |                         processes payment
+     |                         successfully
+     |                                |
+     |        network failure         X
+     |                                |
+     | <--------- timeout ------------|
+What does OrderService know?
+It knows:
+"I didn't receive a response."
+It does not know:
+"The payment failed."
+Those are completely different statements.
+This distinction is the foundation of retry.
+Three possible realities
+When a request fails from the caller's perspective:
+                 Request failed
+                      |
+          +-----------+-----------+
+          |                       |
+       Actually                 Actually
+       failed                   succeeded
+          |                       |
+       retry                   retry?
+The first case is easy.
+The second case is dangerous.
+Suppose we blindly retry:
+Order Service                    Payment Service
+
+POST /charge ₹100  ------------>
+
+                               charge succeeds
+                               ₹100 deducted
+
+              X response lost
+
+POST /charge ₹100 ------------>
+
+                               charge succeeds again
+                               ₹100 deducted AGAIN
+Congratulations.
+You just charged the customer ₹200 for a ₹100 order.
+So the first deep principle is:
+Failure observed by the caller is not necessarily failure of the operation.
+This is why distributed systems are difficult.
+________________________________________
+2. Naive solution → How would we build it first?
+An inexperienced implementation might be:
+PaymentResponse charge(PaymentRequest request) {
+
+    try {
+        return paymentClient.charge(request);
+    } catch (Exception e) {
+        return paymentClient.charge(request);
+    }
+}
+"Just try twice."
+This actually works surprisingly well in small systems.
+For example:
+Client
+  |
+  v
+Service A
+  |
+  |---- request ----> Service B
+  |
+  |<--- timeout -----X
+  |
+  |---- retry ------> Service B
+If the first request genuinely failed because Service B temporarily wasn't available, the retry can succeed.
+So retries solve a real problem:
+Transient failures.
+Examples:
+•	temporary network packet loss 
+•	connection reset 
+•	temporary server overload 
+•	brief database failover 
+•	container restart 
+•	leader election 
+•	temporary DNS failure 
+•	temporary dependency unavailability 
+But our naive solution has a huge problem.
+It assumes:
+Exception = operation failed
+That assumption is often false.
+________________________________________
+3. Scale/failure → What breaks?
+Now let's make the system realistic.
+Imagine 10,000 requests/sec hitting Service B.
+Service B experiences a temporary problem.
+Normally:
+10,000 requests/sec
+        |
+        v
+   Service B
+Suppose 50% fail.
+Our retry mechanism does:
+10,000 original requests
+        +
+ 5,000 retries
+        =
+15,000 requests/sec
+Service B was already unhealthy.
+We just increased its load by 50%.
+It gets even slower.
+More requests time out.
+Those requests retry.
+Now:
+Service B becomes slow
+        ↓
+Requests timeout
+        ↓
+Clients retry
+        ↓
+More traffic
+        ↓
+Service B becomes even slower
+        ↓
+More timeouts
+        ↓
+More retries
+        ↓
+Service B collapses
+This is a retry storm.
+And this is one of the most important things to understand about distributed systems:
+A mechanism intended to improve reliability can amplify failure.
+________________________________________
+A more subtle failure
+Suppose we have:
+API Gateway
+     |
+     v
+Order Service
+     |
+     v
+Payment Service
+Each layer retries twice.
+Gateway:
+2 attempts
+Order Service:
+2 attempts
+Payment Service:
+2 attempts
+You might think:
+"Maximum 2 retries."
+But the actual number of downstream calls can become much larger because retries multiply across layers.
+Conceptually:
+Gateway
+ ├── Order attempt 1
+ │      ├── Payment attempt 1
+ │      └── Payment attempt 2
+ │
+ └── Order attempt 2
+        ├── Payment attempt 1
+        └── Payment attempt 2
+That's already:
+2 × 2 = 4 payment calls
+Add another retrying layer:
+2 × 2 × 2 = 8
+This is why production systems are very careful about where retries happen.
+________________________________________
+4. Solution → What architecture/component solves it?
+A production-grade retry mechanism isn't simply:
+try {
+    call();
+} catch {
+    call();
+}
+We need to answer several questions.
+Question 1 — Should we retry?
+Not every error is retryable.
+For example:
+HTTP 400 Bad Request
+Retrying doesn't magically make malformed JSON valid.
+Likewise:
+HTTP 401 Unauthorized
+Retrying immediately isn't useful if credentials are invalid.
+But:
+HTTP 503 Service Unavailable
+might be transient.
+So we introduce a retry policy.
+Conceptually:
+                    Request failed
+                         |
+                         v
+                  Retry Policy
+                  /           \
+             retryable       non-retryable
+                |                 |
+              retry              fail
+________________________________________
+Question 2 — How long should we wait?
+Never do this:
+while (true) {
+    call();
+}
+Instead:
+attempt 1
+   ↓
+wait
+   ↓
+attempt 2
+   ↓
+wait longer
+   ↓
+attempt 3
+This leads to backoff.
+A common strategy is exponential backoff:
+100 ms
+200 ms
+400 ms
+800 ms
+1600 ms
+Why?
+Because we're essentially saying:
+"The dependency appears unhealthy. Let's stop hitting it continuously and give it some time to recover."
+________________________________________
+Question 3 — What if everyone retries at exactly the same time?
+Imagine 1 million clients all experience failure at:
+12:00:00.000
+And all retry after:
+1000 ms
+At:
+12:00:01.000
+you get:
+1 million retries
+at almost exactly the same moment.
+That's called a thundering herd.
+So production systems add jitter.
+Instead of:
+retry after exactly 1000 ms
+you might have:
+client A → 843 ms
+client B → 1,126 ms
+client C → 972 ms
+client D → 1,304 ms
+...
+Now the retry traffic is spread over time.
+________________________________________
+5. Internals → What is actually happening underneath?
+Let's construct a real retry mechanism.
+Suppose:
+Response call(Request request)
+We want:
+maxAttempts = 4
+baseDelay = 100ms
+maxDelay = 2 seconds
+Conceptually:
+attempt 1
+   |
+   | failure
+   v
+calculate delay
+   |
+   v
+sleep
+   |
+attempt 2
+   |
+   | failure
+   v
+calculate delay
+   |
+   v
+sleep
+   |
+attempt 3
+The backoff calculation might be:
+delay = min(maxDelay, baseDelay × 2^(attempt-1))
+So:
+Attempt	Base delay
+1	100 ms
+2	200 ms
+3	400 ms
+4	800 ms
+But production systems usually add randomness:
+actualDelay = backoff + randomJitter
+or use a jitter strategy such as full jitter:
+actualDelay = random(0, calculatedBackoff)
+The important point isn't memorizing formulas.
+It's understanding the purpose:
+Backoff
+   ↓
+reduce pressure on unhealthy dependency
+
+Jitter
+   ↓
+prevent synchronized retries
+________________________________________
+But here's the deeper problem: timeout + retry
+Consider:
+timeout = 2 seconds
+max attempts = 3
+A naive engineer may think:
+3 attempts × 2 seconds = 6 seconds
+But real systems need to think in terms of an overall deadline.
+Suppose the user request has:
+total deadline = 3 seconds
+You cannot sensibly spend:
+2 sec → attempt 1
+2 sec → attempt 2
+2 sec → attempt 3
+because the user has already waited 6 seconds.
+Instead:
+Total request deadline = 3 sec
+
+Attempt 1
+   ↓
+Attempt 2
+   ↓
+Attempt 3
+   ↓
+must finish before deadline
+This is where retries become connected to timeouts and deadlines.
+And this is something we'll eventually study separately because it's fundamental.
+________________________________________
+The really important concept: "Did the operation happen?"
+Consider three outcomes.
+Case A
+Request
+   ↓
+Server
+   ↓
+crash before processing
+Retry is probably safe.
+Case B
+Request
+   ↓
+Server processes
+   ↓
+response reaches client
+No retry required.
+Case C
+Request
+   ↓
+Server processes successfully
+   ↓
+response gets lost
+   X
+Client sees:
+timeout
+but reality is:
+operation succeeded
+This is where idempotency enters.
+________________________________________
+Idempotency is the partner of Retry
+Suppose the client sends:
+POST /payments
+with:
+amount = ₹100
+We could attach:
+Idempotency-Key: abc-123
+Now:
+Attempt 1
+   |
+   | key = abc-123
+   v
+Payment Service
+   |
+   | process payment
+   v
+₹100 charged
+   |
+   X response lost
+Client retries:
+Attempt 2
+   |
+   | key = abc-123
+   v
+Payment Service
+Payment Service recognizes:
+abc-123 was already processed
+and returns the previous result instead of charging again.
+Conceptually:
+              Idempotency Store
+                    |
+                    v
+request → [abc-123 → payment result]
+                    |
+                    v
+             Payment Service
+This gives us a much stronger retry architecture:
+Retry
+  +
+Timeout
+  +
+Backoff
+  +
+Jitter
+  +
+Idempotency
+  +
+Deadline
+These aren't independent tricks.
+They form a system.
+________________________________________
+6. Trade-offs → What did we gain and what did we sacrifice?
+Gain: availability
+Temporary failure:
+request → failure
+           ↓
+         retry
+           ↓
+        success
+The user never notices the transient failure.
+________________________________________
+Gain: resilience
+A dependency can briefly disappear without immediately causing every upstream request to fail.
+________________________________________
+Sacrifice: additional load
+Every retry is another request.
+If:
+1M requests
+and 20% retry:
+1M + 200K
+requests reach the system.
+________________________________________
+Sacrifice: latency
+Without retry:
+100 ms
+With retry:
+100 ms
++
+backoff
++
+100 ms
+Potentially much slower.
+________________________________________
+Sacrifice: correctness complexity
+For reads:
+GET /user/123
+retrying is usually relatively safe.
+For writes:
+POST /payment
+POST /order
+POST /transfer
+retrying can create duplicate side effects.
+Therefore:
+Retries are much easier for idempotent operations than non-idempotent operations.
+________________________________________
+7. Java connection → How does this relate to things you've already used?
+You've probably encountered retries without thinking about them as a distributed-systems concept.
+For example, Java HTTP clients can encounter:
+ConnectTimeoutException
+SocketTimeoutException
+IOException
+A simplistic implementation might be:
+for (int attempt = 1; attempt <= 3; attempt++) {
+    try {
+        return client.call();
+    } catch (IOException e) {
+        if (attempt == 3) {
+            throw e;
+        }
+    }
+}
+But production code should conceptually evolve toward:
+RetryPolicy policy = ...;
+
+while (policy.canAttempt()) {
+
+    try {
+        return call();
+    } catch (Exception e) {
+
+        if (!policy.isRetryable(e)) {
+            throw e;
+        }
+
+        Duration delay = policy.nextDelay();
+
+        sleep(delay);
+    }
+}
+Notice what has happened.
+We've moved from:
+"try again"
+to:
+Should I retry?
+How many times?
+When?
+For which errors?
+Under which deadline?
+Is the operation safe to repeat?
+That is the transition from Java coding to production engineering.
+________________________________________
+Where this appears in real Java systems
+You'll encounter retry behavior around:
+•	HTTP clients 
+•	database clients 
+•	Redis 
+•	Kafka producers/consumers 
+•	cloud SDKs 
+•	service-to-service calls 
+•	message brokers 
+•	distributed locks 
+•	leader election 
+•	service discovery 
+Libraries/frameworks can provide mechanisms for this, but I don't want you to learn:
+"Use library X and configure property Y."
+Instead, I want you to understand why the library needs those properties in the first place.
+For example, if you later see:
+maxAttempts: 3
+backoff:
+  initialInterval: 100ms
+  multiplier: 2
+you should immediately visualize:
+dependency failure
+      ↓
+don't hammer dependency
+      ↓
+wait
+      ↓
+try again
+      ↓
+limit total attempts
+And then ask:
+"Is this operation actually safe to repeat?"
+That question is more valuable than memorizing the configuration.
+________________________________________
+8. Design exercise → Your turn
+Let's make this deliberately small.
+Scenario
+You're building a Java OrderService.
+It calls:
+InventoryService
+to reserve 1 item.
+The API is:
+POST /inventory/reserve
+
+{
+    "productId": "IPHONE-17",
+    "quantity": 1
+}
+The sequence is:
+OrderService
+      |
+      | POST /reserve
+      v
+InventoryService
+      |
+      | reserve item successfully
+      |
+      X
+   response lost
+      |
+OrderService gets timeout
+Your boss says:
+"Just retry the request 3 times. We need better reliability."
+I don't want you to immediately say "use exponential backoff."
+Reason about the system.
+Answer these five questions:
+A.
+If OrderService receives a timeout, can it conclude that the inventory reservation failed?
+Why or why not?
+B.
+If we blindly retry three times, what could go wrong?
+Think about the business operation, not just CPU/network load.
+C.
+Would GET /inventory/product/IPHONE-17 and POST /inventory/reserve have the same retry characteristics? Why?
+D.
+What information would you want InventoryService to receive so that retrying the reservation could be made safe?
+E.
+Suppose 100,000 OrderService instances all retry after exactly 1 second.
+What happens to InventoryService, and what mechanism would you introduce to reduce that problem?
+
+Retry — Part 2: Production Engineering
+We have already established:
+failure
+   ↓
+Was the operation actually unsuccessful?
+   ↓
+Maybe UNKNOWN
+   ↓
+Can we safely repeat it?
+   ↓
+retry
+Now we need to answer how, where, and how much.
+________________________________________
+9. Retry + Timeout + Deadline
+This is one of the most common production mistakes.
+Imagine:
+OrderService
+    |
+    |---- PaymentService
+The user request has a total deadline:
+3 seconds
+A naive retry configuration says:
+timeout per attempt = 2 sec
+max attempts = 3
+You might end up with:
+Attempt 1 ───────────── 2 sec
+              ↓
+           retry
+              ↓
+Attempt 2 ───────────── 2 sec
+              ↓
+           retry
+              ↓
+Attempt 3 ───────────── 2 sec
+Potentially:
+6 seconds
+But the user only gave us:
+3 seconds
+We've already violated the caller's expectation.
+The correct mental model
+Don't think:
+Each attempt gets 2 seconds.
+Think:
+The entire operation has a deadline.
+For example:
+Deadline = 3 seconds
+
+t=0
+ |
+ |-- attempt 1
+ |       timeout after 800ms
+ |
+ |-- backoff 100ms
+ |
+ |-- attempt 2
+ |       timeout after 700ms
+ |
+ |-- backoff 100ms
+ |
+ |-- attempt 3
+ |       remaining ~1.3 sec
+ |
+t=3 sec
+ DEADLINE
+Every retry must operate within the remaining budget.
+________________________________________
+Why this matters in a call chain
+Consider:
+Client
+   ↓
+API Gateway
+   ↓
+Order Service
+   ↓
+Payment Service
+   ↓
+Bank
+Suppose the original request has:
+deadline = 5 seconds
+If every service creates its own timeout:
+Gateway       5 sec
+Order         5 sec
+Payment       5 sec
+Bank          5 sec
+you can end up with ridiculous behavior.
+Instead, the deadline should conceptually flow through the request:
+Client
+ deadline = T
+    ↓
+Gateway
+ remaining = T - elapsed
+    ↓
+Order
+ remaining = T - elapsed
+    ↓
+Payment
+ remaining = T - elapsed
+This is deadline propagation.
+The downstream service doesn't get to say:
+"I'll wait another five seconds."
+It gets:
+"You have whatever time remains."
+________________________________________
+10. Why retries should usually be bounded
+Suppose:
+while (true) {
+    call();
+}
+Why is this dangerous?
+Because you've transformed a transient failure into potentially infinite traffic.
+Instead we need a boundary:
+maximum attempts
+maximum elapsed time
+maximum retry budget
+For example:
+max attempts = 3
+is useful, but it's not sufficient.
+Imagine:
+Attempt 1 → 100ms
+Attempt 2 → 200ms
+Attempt 3 → 400ms
+Fine.
+But another policy could have:
+Attempt 1 → 1 sec
+Attempt 2 → 5 sec
+Attempt 3 → 30 sec
+Same number of attempts.
+Completely different system behavior.
+Therefore production systems care about:
+attempt count
++
+time budget
++
+traffic budget
+________________________________________
+11. Retryable vs non-retryable failures
+Now let's make the classification more precise.
+Suppose an HTTP call returns:
+400 Bad Request
+Retry?
+Usually no.
+The request itself is invalid.
+401 Unauthorized
+Usually no.
+403 Forbidden
+Usually no.
+404 Not Found
+Usually no, although business semantics can change this.
+409 Conflict
+Depends heavily on the operation.
+429 Too Many Requests
+Potentially yes, but you should respect server-provided rate-limit information such as Retry-After when available.
+500 Internal Server Error
+Potentially retryable.
+502 Bad Gateway
+Potentially retryable.
+503 Service Unavailable
+Potentially retryable.
+504 Gateway Timeout
+Potentially retryable.
+But here's the important part:
+HTTP status code alone does not determine whether an operation is safe to retry.
+Consider:
+POST /payment
+→ 500
+The server might have charged the card and then returned 500.
+So:
+500 ≠ operation definitely failed
+This takes us back to the UNKNOWN state.
+________________________________________
+12. The four useful failure categories
+Instead of simply:
+success / failure
+I want you to think in four dimensions.
+Category 1 — Definitely don't retry
+Example:
+400
+because the request is invalid.
+retry = false
+________________________________________
+Category 2 — Probably transient
+Example:
+503
+connection reset
+temporary DNS failure
+Potentially:
+retry = true
+________________________________________
+Category 3 — Unknown outcome
+Example:
+POST /reserve
+server processed request
+response lost
+This is where:
+retry
+depends on:
+idempotency
+________________________________________
+Category 4 — Dependency explicitly asks you to slow down
+For example:
+429 Too Many Requests
+The server is effectively saying:
+"You are sending too much traffic."
+The worst possible response is:
+"Oh, request failed. Retry immediately."
+That turns a rate-limit signal into a retry storm.
+________________________________________
+13. Retry placement — one of the most important production decisions
+Consider:
+                API Gateway
+                    |
+                    v
+               OrderService
+                    |
+                    v
+              PaymentService
+                    |
+                    v
+                  DB
+Suppose every layer retries 3 times.
+Gateway:
+3 attempts
+OrderService:
+3 attempts
+PaymentService:
+3 attempts
+The resulting request amplification can become enormous.
+Conceptually:
+3 × 3 × 3 = 27
+downstream attempts.
+And if another layer participates:
+3 × 3 × 3 × 3 = 81
+This is why retry ownership matters.
+________________________________________
+14. Who should retry?
+There's no universal answer.
+It depends on the architecture.
+But a good production principle is:
+Retry at the layer that understands the operation and can make the correct decision about whether repeating it is safe.
+For example:
+HTTP client library
+may know:
+connection reset
+but it may not know:
+"reserve inventory" is a business operation
+Your business/service layer does.
+So blindly putting retries everywhere is dangerous.
+________________________________________
+15. Retry budgets
+Now we reach an important large-scale concept.
+Imagine your service normally handles:
+1,000,000 requests/minute
+You allow:
+3 retries per request
+That sounds reasonable.
+But during an outage:
+1,000,000 original
++
+3,000,000 retries
+=
+4,000,000 requests
+Your retry policy can potentially produce 3× additional traffic.
+That's exactly when your dependency is least capable of handling traffic.
+So instead of asking only:
+"How many times can this request retry?"
+production systems can ask:
+"How much retry traffic can the system afford?"
+For example:
+normal traffic = 1,000,000/min
+
+retry budget = 5%
+
+maximum retry traffic ≈ 50,000/min
+Once the budget is exhausted:
+don't retry
+This is a fundamentally different model.
+________________________________________
+16. Why retry budgets are powerful
+Suppose PaymentService is failing.
+Without a budget:
+Failures
+   ↓
+Retries
+   ↓
+More traffic
+   ↓
+More failures
+   ↓
+More retries
+With a retry budget:
+Failures
+   ↓
+Retries
+   ↓
+Retry budget decreases
+   ↓
+Budget exhausted
+   ↓
+Retries stop
+The system sacrifices some availability to protect the overall system.
+This is a recurring theme in distributed systems:
+Sometimes the correct reliability strategy is to stop trying.
+________________________________________
+17. Backoff strategies
+Let's go deeper than just "exponential backoff."
+Fixed backoff
+100ms
+100ms
+100ms
+100ms
+Simple, but synchronization remains a problem.
+________________________________________
+Linear backoff
+100ms
+200ms
+300ms
+400ms
+Increasing delay, but not aggressively.
+________________________________________
+Exponential backoff
+100ms
+200ms
+400ms
+800ms
+1600ms
+Useful when the dependency may need increasing recovery time.
+But all clients can still synchronize.
+________________________________________
+18. Jitter
+Let's compare.
+Without jitter:
+Client A → 800ms
+Client B → 800ms
+Client C → 800ms
+Client D → 800ms
+With jitter:
+Client A → 723ms
+Client B → 812ms
+Client C → 591ms
+Client D → 947ms
+Traffic gets spread.
+A common conceptual model is:
+backoff = exponential(...)
+delay = random(0, backoff)
+This is called full jitter.
+There are several jitter strategies; the important thing at this stage is understanding the purpose rather than memorizing formulas.
+________________________________________
+19. Retry + Idempotency
+Now let's return to the most important problem.
+Suppose:
+POST /inventory/reserve
+Request:
+{
+  "productId": "IPHONE-17",
+  "quantity": 1
+}
+First attempt:
+OrderService
+      |
+      v
+InventoryService
+      |
+      v
+reserve item
+      |
+      v
+database updated
+      |
+      X
+response lost
+OrderService sees:
+timeout
+If it retries:
+reserve item again
+we have duplicate business effects.
+So we introduce a logical operation identity:
+reservationId = ORD-1001
+Every retry carries:
+ORD-1001
+The server can then distinguish:
+new operation
+from:
+retry of existing operation
+This is the core of idempotency.
+________________________________________
+20. But idempotency requires durable state
+This is where your previous exercise was heading.
+Suppose InventoryService does:
+check reservationId
+reserve item
+save reservationId
+and crashes:
+check
+  ↓
+reserve
+  ↓
+CRASH
+  ↓
+save reservationId never happens
+Retry arrives.
+The service sees:
+reservationId not found
+and reserves another item.
+Therefore:
+The deduplication record and the business state change need appropriate atomicity.
+For a relational database, a common approach is to use a transaction plus a uniqueness constraint.
+Conceptually:
+BEGIN TRANSACTION
+
+INSERT reservation(
+    reservation_id = ORD-1001,
+    product_id = IPHONE-17
+)
+
+UPDATE inventory
+SET available = available - 1
+WHERE product_id = IPHONE-17
+  AND available > 0
+
+COMMIT
+with:
+UNIQUE(reservation_id)
+Now two concurrent requests with:
+ORD-1001
+can't both create separate reservations.
+The database becomes part of your idempotency mechanism.
+________________________________________
+21. But transactions don't eliminate UNKNOWN
+This is crucial.
+Suppose:
+BEGIN
+reserve inventory
+COMMIT
+The database commits successfully.
+Then:
+InventoryService
+      |
+      X
+   crashes
+OrderService receives:
+timeout
+What does OrderService know?
+Still:
+UNKNOWN
+The transaction guaranteed:
+the database state change was atomic.
+It did not guarantee:
+the caller received the response.
+This distinction is fundamental.
+So even with perfect transactions:
+operation succeeded
++
+response lost
+is still possible.
+That's why idempotency and retry work together.
+________________________________________
+22. Retry is not Exactly Once
+This is another important concept.
+People sometimes say:
+"We'll retry until it succeeds, so the operation happens exactly once."
+No.
+A distributed network doesn't magically give you exactly-once execution.
+You can have:
+request sent
+server executes
+response lost
+client retries
+server receives retry
+The operation was executed twice at the transport/request level.
+What you can often achieve is something closer to:
+effectively-once business semantics
+through:
+idempotency key
++
+durable deduplication
++
+atomic state changes
+That distinction is important.
+________________________________________
+23. Java implementation perspective
+Now you can understand what a production retry abstraction is really doing.
+Conceptually:
+Response execute(Request request) {
+
+    Deadline deadline = Deadline.start();
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+
+        try {
+            return call(request, deadline.remaining());
+        }
+        catch (Exception e) {
+
+            if (!retryPolicy.isRetryable(e)) {
+                throw e;
+            }
+
+            if (deadline.expired()) {
+                throw new TimeoutException();
+            }
+
+            Duration delay =
+                retryPolicy.calculateBackoff(attempt);
+
+            sleep(delay);
+        }
+    }
+
+    throw new RetryExhaustedException();
+}
+But notice what isn't contained in this code:
+Is the operation idempotent?
+That's a business/application concern.
+A generic HTTP retry library cannot safely know whether:
+POST /payment
+can be repeated.
+That's why production retry design is more than configuring a library.
+________________________________________
+24. The production architecture we're building
+At this point, your mental model should look like:
+                    Incoming operation
+                           |
+                           v
+                    Set deadline
+                           |
+                           v
+                    Perform attempt
+                           |
+              +------------+------------+
+              |                         |
+           success                    failure
+              |                         |
+              v                         v
+            return              classify failure
+                                      |
+                         +------------+-------------+
+                         |            |             |
+                     permanent    transient      unknown
+                         |            |             |
+                         v            |        idempotency?
+                       fail           |             |
+                                      |       +-----+-----+
+                                      |       |           |
+                                      |      safe       unsafe
+                                      |       |           |
+                                      +-------+         reconcile/
+                                              |          query
+                                           retry
+                                              |
+                                         backoff
+                                              |
+                                           jitter
+                                              |
+                                        retry budget
+                                              |
+                                           deadline
+                                              |
+                                           attempt
+That's a production retry system.
+________________________________________
+25. Where retry meets other distributed-system patterns
+This is why I don't want you to study these as isolated definitions.
+Retry naturally connects to:
+Retry
+ ├── Timeout
+ ├── Deadline
+ ├── Idempotency
+ ├── Transactions
+ ├── Rate limiting
+ ├── Circuit breaker
+ ├── Bulkhead
+ ├── Queue
+ ├── Load balancing
+ └── Observability
+For example:
+Retry + circuit breaker
+If a dependency is obviously down:
+retry
+retry
+retry
+retry
+is stupid.
+A circuit breaker can say:
+"Stop calling it for now."
+Retry and circuit breakers solve different parts of the problem.
+________________________________________
+Retry + queue
+Instead of:
+HTTP request
+   ↓
+dependency fails
+   ↓
+retry immediately
+sometimes we can do:
+producer
+   ↓
+queue
+   ↓
+consumer
+   ↓
+dependency
+Now the queue provides buffering and asynchronous retry.
+That changes the entire failure model.
+________________________________________
+26. Production observability
+A retry mechanism without metrics is dangerous.
+At minimum, you want to know:
+retry_attempts_total
+retry_success_after_retry
+retry_exhausted
+retryable_errors
+non_retryable_errors
+retry_delay
+retry_budget_consumed
+And importantly:
+original requests
+vs
+retry requests
+Imagine your dashboard says:
+requests = 1M/min
+Looks fine.
+But hidden underneath:
+original = 500K
+retries  = 500K
+You've doubled your traffic.
+A mature system treats retry traffic as something worth measuring independently.
+________________________________________
+27. Now let's test whether Retry is actually complete
+You have this system:
+Client
+   |
+   v
+OrderService
+   |
+   v
+PaymentService
+   |
+   v
+Bank
+Requirements:
+Client deadline = 5 seconds
+Payment call timeout = configurable
+Payment may temporarily return 503
+Payment operation charges money
+Network responses can be lost
+10,000 requests/sec normally
+PaymentService occasionally experiences:
+503 for 2 seconds
+I want you to design the retry policy.
+Don't write Java code yet.
+Answer these:
+1.
+Would you retry 503?
+Why?
+2.
+Would you retry a 400?
+Why?
+3.
+The payment operation charges money.
+How do you make a retry safe if:
+payment succeeded
+response was lost
+4.
+Where does the idempotency key come from?
+Who creates it?
+5.
+Suppose PaymentService is unavailable for 2 seconds.
+Would you retry immediately?
+What backoff strategy?
+6.
+Why do we need jitter?
+7.
+The client has only 5 seconds total.
+How should retries interact with that deadline?
+8.
+Should Client, OrderService, and PaymentService all retry independently?
+Why or why not?
+9.
+Suppose PaymentService is receiving 10,000 requests/sec and suddenly 80% fail.
+What prevents retries from turning:
+10,000 req/s
+into:
+30,000 req/s
+or worse?
+10.
+Finally:
+What is the single biggest danger of retry?
+I don't want:
+"retry storm."
+That's one symptom.
+Give me the deeper principle.
+
+Timeout
+Our three lessons:
+1.	Connection vs Read vs Request Timeout 
+2.	Timeout Propagation Through Distributed Systems 
+3.	Cascading Failures + Deadline Propagation 
+We will not move to Lesson 2 until Lesson 1 is solid.
+________________________________________
+Lesson 1 — Connection vs Read vs Request Timeout
+1. Problem → Why did engineers need timeouts?
+Start with a simple Java service:
+OrderService
+     |
+     | HTTP
+     v
+PaymentService
+Without a timeout, OrderService could theoretically wait forever:
+OrderService
+     |
+     | request
+     v
+PaymentService
+     |
+     | ... never responds ...
+     |
+     |
+     |
+     v
+   ?
+Imagine your Java thread is sitting here:
+PaymentResponse response =
+    paymentClient.charge(request);
+What happens if PaymentService:
+•	crashes? 
+•	becomes overloaded? 
+•	gets stuck waiting for its database? 
+•	has a network problem? 
+•	receives the request but never sends a response? 
+Your thread waits.
+One thread isn't a problem.
+Now imagine:
+10,000 concurrent requests
+and each waits indefinitely.
+You can end up with:
+Threads / connections occupied
+        ↓
+less capacity
+        ↓
+requests wait longer
+        ↓
+more resources occupied
+        ↓
+system becomes slower
+        ↓
+eventually collapse
+So timeout isn't merely:
+"Don't wait too long."
+It is a resource-protection mechanism.
+That's the first important mental model.
+________________________________________
+2. Naive solution → "Just set a timeout"
+An engineer might say:
+client.setTimeout(5 seconds);
+Looks simple.
+But what does "5 seconds" actually mean?
+Consider an HTTP request.
+There are multiple stages:
+Client
+  |
+  | DNS lookup
+  |
+  | TCP connection
+  |
+  | TLS handshake
+  |
+  | send request
+  |
+  | wait for response
+  |
+  | receive response
+  v
+Server
+Where exactly should the five seconds apply?
+This is why production networking libraries expose different timeout concepts.
+________________________________________
+3. Connection Timeout
+Suppose:
+OrderService
+     |
+     | TCP connection
+     X
+PaymentService
+The client is trying to establish a connection.
+Maybe:
+PaymentService
+is unreachable.
+Or the network path is broken.
+Or the server isn't accepting connections quickly enough.
+The connection timeout limits how long we're willing to wait to establish the connection.
+Conceptually:
+connect()
+   |
+   |------ waiting ------|
+                         |
+                      timeout
+For example:
+connectionTimeout = 500ms
+means:
+"If I can't establish the connection within this amount of time, stop trying this connection attempt."
+________________________________________
+4. But connection succeeded
+Now suppose:
+OrderService
+     |
+     | TCP connection succeeds
+     v
+PaymentService
+So connection timeout is no longer relevant.
+Then we send:
+POST /payment
+and the server does:
+receive request
+     |
+     v
+query database
+     |
+     v
+wait...
+     |
+     v
+wait...
+Meanwhile:
+OrderService
+     |
+     | waiting for response
+     |
+     |
+     |
+     X
+This is where read/response timeout becomes important.
+________________________________________
+5. Read Timeout
+A read timeout is concerned with waiting for data from an established connection.
+Conceptually:
+TCP connection established
+        |
+        v
+send request
+        |
+        v
+wait for response bytes
+        |
+        |..............|
+                     timeout
+The important distinction:
+Connection timeout
+    ↓
+Could I establish communication?
+
+Read timeout
+    ↓
+After communication was established,
+did I receive data within the allowed time?
+________________________________________
+6. Here's where it gets interesting
+Suppose PaymentService starts responding.
+You receive:
+HTTP/1.1 200 OK
+Then nothing.
+OrderService
+     |
+     | <--- HTTP headers
+     |
+     | <--- some bytes
+     |
+     | ........ waiting ........
+     |
+Depending on the client/library, the relevant read/response timeout semantics may concern waiting for the next data rather than the entire operation.
+This is why you cannot blindly interpret:
+readTimeout = 2 seconds
+as:
+"The whole HTTP request must finish in two seconds."
+That may be completely wrong.
+________________________________________
+7. Request Timeout / Overall Timeout
+Now we introduce the concept you really need for distributed systems:
+How long are we willing to spend on the entire operation?
+Imagine:
+DNS       50ms
+connect  100ms
+TLS       80ms
+write     20ms
+server   800ms
+read     200ms
+----------------
+total   1.25 sec
+A request/overall timeout might say:
+maximum operation duration = 2 seconds
+So regardless of where the time is spent:
+t = 0
+   |
+   +-- DNS
+   +-- connect
+   +-- TLS
+   +-- request
+   +-- server processing
+   +-- response
+   |
+t = 2 sec
+   |
+   X timeout
+This is much closer to the concept of a deadline.
+We'll make that distinction very important in Lesson 2.
+________________________________________
+8. The three mental models
+Don't memorize library-specific terminology because different Java libraries use slightly different names and semantics.
+Instead remember:
+CONNECT
+   ↓
+Can I establish the connection?
+
+READ / RESPONSE
+   ↓
+Once connected, am I receiving response data?
+
+REQUEST / DEADLINE
+   ↓
+How long can the entire logical operation take?
+That mental model survives changes in:
+•	Java HTTP client 
+•	Apache HttpClient 
+•	OkHttp 
+•	Netty 
+•	gRPC 
+•	cloud SDKs 
+________________________________________
+9. Scale/failure → What breaks?
+Now let's construct a production failure.
+Suppose:
+OrderService
+has:
+1,000 worker threads
+and calls:
+PaymentService
+PaymentService becomes slow.
+Normally:
+request duration = 100ms
+So each worker is occupied briefly.
+But now:
+request duration = 30 seconds
+If requests keep arriving:
+workers
+████████████████████████████████
+             all occupied
+Eventually:
+new request
+    ↓
+no worker
+    ↓
+queue
+    ↓
+queue grows
+    ↓
+latency grows
+And now something interesting happens.
+The problem started in:
+PaymentService
+but eventually:
+OrderService
+also becomes unhealthy.
+This is the beginning of a cascading failure.
+We'll study this deeply in Lesson 3.
+________________________________________
+10. Why "just increase the timeout" is dangerous
+Suppose your service currently has:
+timeout = 2 sec
+Some requests fail because PaymentService is slow.
+An engineer says:
+"Let's increase it to 30 seconds."
+Now instead of:
+2 sec × many requests
+you have:
+30 sec × many requests
+You've increased the amount of time each request can consume resources.
+This can make the system less resilient, not more.
+A timeout is therefore not just an error-handling setting.
+It is a capacity-control mechanism.
+________________________________________
+11. Solution → What architecture/component solves it?
+A production service generally needs multiple layers of time control.
+Conceptually:
+                    Request
+                       |
+                       v
+                Overall deadline
+                       |
+             +---------+---------+
+             |                   |
+          Connect              Response
+          timeout              timeout
+For example:
+Overall deadline = 3 sec
+Connection timeout = 300 ms
+Response/read timeout = bounded
+The exact numbers depend on the system.
+The architecture matters more than the numbers.
+________________________________________
+12. Internals → What's actually happening?
+Let's look underneath HTTP.
+At a simplified level:
+Application
+    |
+    v
+HTTP client
+    |
+    v
+TCP socket
+    |
+    v
+Network
+When you call:
+client.send(request);
+the client may perform:
+1. Resolve host
+2. Establish TCP connection
+3. TLS handshake
+4. Write HTTP request
+5. Wait for response
+6. Read response
+7. Return to application
+Timeouts can exist around different stages.
+Connection timeout
+Controls stage 2.
+Read/response timeout
+Controls waiting for data during stages 5–6.
+Overall request deadline
+Controls the entire logical operation.
+And here is a subtle but important point:
+Timeouts don't stop the remote operation.
+Suppose:
+OrderService
+    |
+    | POST payment
+    v
+PaymentService
+    |
+    | processes payment
+    |
+    X
+OrderService timeout
+OrderService timing out does not mean PaymentService stopped.
+PaymentService may continue:
+PaymentService
+    |
+    v
+charge card
+    |
+    v
+success
+while OrderService has already returned:
+timeout
+This is exactly the same uncertainty we encountered with Retry.
+________________________________________
+13. Timeout creates UNKNOWN
+This is the connection between our previous topic and this one.
+With Retry:
+timeout
+   ↓
+did operation succeed?
+   ↓
+UNKNOWN
+So:
+Timeout is one of the major ways a distributed system creates an UNKNOWN outcome.
+Example:
+OrderService                    PaymentService
+
+   POST /payment -------------------->
+
+                                  charge succeeds
+
+   <------------- response ----------X
+                    lost
+
+   timeout
+From OrderService's perspective:
+UNKNOWN
+From PaymentService's perspective:
+SUCCESS
+Two machines can simultaneously have different realities about the same operation.
+That's distributed systems.
+________________________________________
+14. Trade-offs
+Timeouts give us:
+Protection
+We don't wait forever.
+Resource reclamation
+Threads/connections can be released.
+Failure detection
+The caller can move on.
+Bounded latency
+We can establish an upper bound on waiting.
+But we sacrifice:
+False failures
+The operation might still succeed remotely.
+Lost work
+We may abandon a request that was close to completion.
+Retry complexity
+Timeout frequently triggers retry decisions.
+Cascading complexity
+Poorly chosen timeouts can actually contribute to failure propagation.
+________________________________________
+15. Java connection
+You've probably seen something like:
+HttpClient.newBuilder()
+    .connectTimeout(Duration.ofMillis(500))
+    .build();
+That is specifically related to connection establishment.
+With other Java HTTP/client libraries you'll encounter concepts named things like:
+connectTimeout
+readTimeout
+responseTimeout
+callTimeout
+requestTimeout
+socketTimeout
+deadline
+Don't assume these names are interchangeable.
+The exact semantics depend on the library.
+The useful engineering question is:
+"Which phase of the operation does this timer actually bound?"
+That's a much better question than:
+"What's the timeout value?"
+________________________________________
+16. Design exercise — Lesson 1
+Consider:
+Client
+   |
+   v
+OrderService
+   |
+   v
+PaymentService
+PaymentService normally responds in:
+100ms
+Occasionally it takes:
+5 seconds
+Your OrderService has:
+500 worker threads
+and receives:
+1,000 requests/sec
+Answer these:
+A.
+What problem does a connection timeout solve?
+B.
+If the TCP connection succeeds but PaymentService takes 5 seconds before sending a response, which timeout concept becomes relevant?
+C.
+If OrderService has a 2-second overall request deadline, should it wait 5 seconds for PaymentService?
+Why?
+D.
+PaymentService receives the request, starts processing it, and then OrderService times out after 2 seconds.
+Did the timeout cancel the payment operation?
+E.
+If OrderService retries after that timeout, what dangerous situation can occur?
+F.
+Why can increasing the timeout from 2 seconds → 30 seconds actually make an overloaded system worse?
+Timeout — Lesson 2: Timeout Propagation Through Distributed Systems
+We'll assume Lesson 1's distinction is understood:
+Connection timeout
+    ↓
+establish connection
+
+Read/response timeout
+    ↓
+wait for response data
+
+Overall deadline
+    ↓
+bound the logical operation
+Now we move to the more important production question:
+When Service A calls Service B, how does A's time limit affect B, and everything B calls?
+This is timeout/deadline propagation.
+________________________________________
+1. Problem → Why did engineers need propagation?
+Consider a real service chain:
+Client
+   |
+   v
+API Gateway
+   |
+   v
+Order Service
+   |
+   v
+Payment Service
+   |
+   v
+Bank Service
+Suppose the user is willing to wait:
+5 seconds
+You might naïvely configure:
+Gateway       timeout = 5 sec
+Order         timeout = 5 sec
+Payment       timeout = 5 sec
+Bank          timeout = 5 sec
+Looks reasonable.
+But imagine the timeline:
+t=0s
+Client → Gateway
+
+t=0.5s
+Gateway → Order
+
+t=1.0s
+Order → Payment
+
+t=2.0s
+Payment → Bank
+At this point, we've already spent:
+2 seconds
+The user has only:
+3 seconds remaining
+But if BankService has its own independent:
+5 second timeout
+it might continue working until:
+t=7s
+The original user request was only supposed to live for:
+5 seconds
+So we've created work that outlives the request that caused it.
+That is the problem propagation solves.
+________________________________________
+2. Naive solution → Every service chooses its own timeout
+Imagine:
+Gateway
+ timeout = 5s
+    |
+    v
+Order
+ timeout = 5s
+    |
+    v
+Payment
+ timeout = 5s
+    |
+    v
+Bank
+ timeout = 5s
+Each service says:
+"I will wait up to 5 seconds for my dependency."
+But nobody knows how much time the original caller has left.
+This creates a critical problem:
+Local timeout
+      ≠
+Global request deadline
+Every service is making decisions in isolation.
+________________________________________
+3. The better model: propagate a deadline
+Instead of sending only:
+POST /payment
+the request carries some representation of:
+deadline = 15:30:05.000
+Conceptually:
+Client
+deadline = T
+   |
+   v
+Gateway
+deadline = T
+   |
+   v
+Order
+deadline = T
+   |
+   v
+Payment
+deadline = T
+   |
+   v
+Bank
+deadline = T
+Each service can calculate:
+remaining time = deadline - current time
+So suppose:
+Original deadline = 5 sec
+At different points:
+Gateway:
+remaining = 5.0s
+
+Order:
+remaining = 4.2s
+
+Payment:
+remaining = 3.1s
+
+Bank:
+remaining = 1.8s
+Now Bank doesn't say:
+"My timeout is 5 seconds."
+It says:
+"The caller's request has only 1.8 seconds left."
+That's the key idea.
+________________________________________
+4. Timeout vs Deadline
+This distinction is extremely important.
+Timeout
+A duration:
+5 seconds
+It means:
+"Wait for up to 5 seconds from now."
+Deadline
+An absolute point in time:
+15:30:05.000
+It means:
+"This operation must finish by this point."
+Imagine:
+Service A
+   |
+   | timeout = 5 sec
+   v
+Service B
+   |
+   | timeout = 5 sec
+   v
+Service C
+Each service starts its own five-second clock.
+Now compare:
+Service A
+deadline = 15:30:05
+   |
+   v
+Service B
+deadline = 15:30:05
+   |
+   v
+Service C
+deadline = 15:30:05
+The second model preserves the original request's time budget.
+________________________________________
+5. Why absolute deadlines are powerful
+Suppose:
+Client deadline = 10:00:05
+OrderService receives it at:
+10:00:02
+It immediately knows:
+remaining = 3 seconds
+Then it calls PaymentService at:
+10:00:03
+Payment knows:
+remaining = 2 seconds
+No complicated negotiation is required.
+Every participant can independently calculate:
+deadline - now
+________________________________________
+6. Scale/failure → What breaks without propagation?
+Now let's create a real failure.
+                    ┌── Inventory
+                    │
+Client
+  │                 └── Pricing
+  v
+Order
+  │
+  └─────────────── Payment
+Suppose Order has a 2-second user deadline.
+But internally:
+Inventory timeout = 5s
+Pricing timeout   = 5s
+Payment timeout   = 5s
+Order starts all three calls.
+Now the dependencies become slow.
+t=0
+Order starts calls
+
+t=2
+User deadline expires
+
+t=2+
+Order returns timeout to client
+But what happened to the downstream calls?
+They may still be running:
+Inventory  ────────────────>
+Pricing    ────────────────>
+Payment    ────────────────>
+You've returned the request to the user, but your system is still doing work.
+This is called work after the caller has given up.
+At high traffic, that becomes dangerous.
+________________________________________
+7. Why "zombie work" is dangerous
+Imagine:
+10,000 requests/sec
+and each request creates:
+3 downstream calls
+That's:
+30,000 downstream operations/sec
+Now suppose the client deadline is frequently exceeded.
+The upstream service stops caring about those operations, but downstream services continue processing them.
+You get:
+Client
+  X
+  |
+Order
+  X
+  |
+Payment ─────────────── still working
+  |
+Database ───────────── still working
+The system is spending resources on requests nobody is waiting for anymore.
+This can make an overloaded system even more overloaded.
+________________________________________
+8. Solution → Deadline propagation
+The architecture becomes:
+Client
+ deadline = T
+     |
+     v
+Gateway
+ deadline = T
+     |
+     v
+Order
+ deadline = T
+     |
+     +--------> Inventory
+     |           deadline = T
+     |
+     +--------> Pricing
+     |           deadline = T
+     |
+     +--------> Payment
+                 deadline = T
+Each service calculates its remaining budget.
+Conceptually:
+Duration remaining =
+    deadline.minus(Instant.now());
+Then:
+callDependency(remaining);
+The downstream operation cannot arbitrarily exceed the caller's remaining budget.
+________________________________________
+9. But there's a subtle problem: don't blindly pass the same timeout
+Suppose:
+remaining = 100ms
+and OrderService wants to call PaymentService.
+Should it send:
+timeout = 100ms
+Maybe.
+But there is local overhead:
+serialization
+network
+scheduling
+deserialization
+cleanup
+So production systems often need to account for those realities.
+More importantly:
+A service may need to reserve some time for its own work after the dependency returns.
+Example:
+Remaining deadline = 500ms
+
+Payment call = 400ms
+
+Order needs:
+  50ms processing
+  20ms serialization
+  30ms response
+
+Total = 500ms
+That's already razor-thin.
+So deadline propagation isn't simply:
+"pass the same number everywhere."
+It's:
+Pass the caller's remaining time and make local decisions within that budget.
+________________________________________
+10. Internals → How does this actually travel?
+There are several ways depending on the communication protocol.
+For HTTP, you can propagate deadline information through headers.
+Conceptually:
+X-Request-Deadline: 2026-08-15T15:30:05.000Z
+Or a framework may propagate a timeout/deadline context automatically.
+In gRPC, deadlines are a first-class concept.
+The exact wire format varies, but the architecture is the same:
+Request
+   |
+   +-- business data
+   |
+   +-- tracing context
+   |
+   +-- deadline/timeout context
+Then downstream services extract that context.
+________________________________________
+11. Deadline propagation + cancellation
+Now we reach something even more interesting.
+Suppose:
+Client
+   |
+   v
+Order
+   |
+   v
+Payment
+Client cancels the request.
+Ideally:
+Client cancellation
+       |
+       v
+Order
+       |
+       v
+Payment
+should stop unnecessary work.
+This is cancellation propagation.
+Deadline propagation says:
+"You cannot work beyond this point in time."
+Cancellation propagation says:
+"The caller no longer wants this work at all."
+They're related but not identical.
+________________________________________
+12. Deadline propagation doesn't guarantee cancellation
+Suppose PaymentService is doing:
+chargeCard()
+OrderService's deadline expires.
+OrderService can stop waiting.
+But PaymentService may still be doing:
+chargeCard()
+unless the underlying system supports cancellation.
+So:
+timeout
+≠
+remote cancellation
+This is extremely important.
+You should never assume:
+future.get(2, SECONDS);
+means:
+"The remote operation was stopped after 2 seconds."
+It often means only:
+"I stopped waiting after 2 seconds."
+The distinction between waiting cancellation and operation cancellation matters enormously.
+________________________________________
+13. Failure scenario
+Let's construct a realistic timeline.
+Client
+  |
+  | deadline = 5s
+  v
+Order
+  |
+  | deadline = 5s
+  v
+Payment
+  |
+  | deadline = 5s
+  v
+Bank
+Timeline:
+t=0      Client → Order
+t=1s     Order → Payment
+t=2s     Payment → Bank
+t=5s     deadline expires
+What should happen?
+Ideally:
+Bank
+  ↓
+stop/cancel if possible
+
+Payment
+  ↓
+stop waiting / stop work if possible
+
+Order
+  ↓
+return deadline exceeded
+But if cancellation isn't supported:
+Order       X
+Payment     ────────────────>
+Bank        ────────────────>
+Payment and Bank may continue working.
+That's why deadline propagation alone doesn't completely solve cascading failures.
+It limits the lifetime of work, but cancellation and resource management matter too.
+________________________________________
+14. Java connection
+This maps directly to concepts you may have seen around:
+Future.get(timeout)
+CompletableFuture
+ExecutorService
+For example:
+future.get(2, TimeUnit.SECONDS);
+means approximately:
+"This caller is willing to wait two seconds for the future."
+It does not automatically mean:
+"The underlying distributed operation has been cancelled everywhere."
+That's a very important distinction.
+With asynchronous Java code:
+CompletableFuture
+you also need to reason about:
+waiting
+execution
+cancellation
+propagation
+as separate concepts.
+________________________________________
+15. Timeout budgets across a service chain
+Let's make this concrete.
+Original request:
+deadline = 5 seconds
+Suppose:
+Gateway processing      200ms
+Order processing        300ms
+Payment call           1.5s
+Database               500ms
+Response processing     200ms
+Total:
+2.7 seconds
+Fine.
+But now Payment becomes slow:
+Payment = 4 seconds
+Total:
+5.2 seconds
+The original request cannot meet its deadline.
+A good system should discover this before wasting another 4 seconds.
+The remaining budget tells it:
+"There's no point starting another expensive operation."
+This is a major benefit of deadlines.
+________________________________________
+16. Trade-offs
+Deadline propagation gives us:
+Bounded work
+Requests don't live indefinitely.
+Better resource protection
+Threads, connections, memory, and queues can be released sooner.
+Reduced zombie work
+Downstream services know the caller's time budget.
+Better tail latency control
+We can prevent extremely slow requests from consuming resources forever.
+But we sacrifice:
+Complexity
+Every service needs to understand deadline context.
+Clock concerns
+If you propagate absolute timestamps, clock handling matters.
+Less work completed
+A dependency might have succeeded at 5.1 seconds, but the caller's deadline was 5 seconds.
+Cancellation complexity
+Knowing that work should stop doesn't necessarily mean the underlying operation can actually be stopped.
+________________________________________
+17. A very important production principle
+Here's the principle I want you to remember:
+A timeout is local. A deadline is end-to-end.
+For example:
+Timeout:
+"PaymentService, I'll wait 2 seconds for you."
+
+Deadline:
+"Everyone involved in this request has until 15:30:05."
+The second one is much more powerful in distributed systems.
+________________________________________
+18. Connect this back to Retry
+Now our previous topic becomes much clearer.
+Suppose:
+deadline = 3 seconds
+Payment attempt 1:
+800ms
+fails.
+Should we retry?
+Maybe.
+But now we calculate:
+remaining = 2.2 seconds
+Then:
+backoff = 100ms
+Attempt 2 gets:
+~2.1 seconds remaining
+If it fails after 1.5 seconds:
+remaining = 600ms
+Should we do another retry?
+Maybe not.
+There isn't enough time.
+So:
+Retry policy
+       +
+Deadline
+       ↓
+intelligent retry decision
+This is why Retry and Timeout are deeply connected.
+________________________________________
+19. Design Exercise — Lesson 2
+Consider:
+Client
+  |
+  | deadline = 3 seconds
+  v
+OrderService
+  |
+  +------> InventoryService
+  |
+  +------> PricingService
+  |
+  +------> PaymentService
+              |
+              v
+          BankService
+Current implementation:
+Order → Inventory timeout = 5s
+Order → Pricing timeout   = 5s
+Order → Payment timeout   = 5s
+Payment → Bank timeout    = 5s
+The client deadline is only:
+3 seconds
+Now answer:
+A.
+What is fundamentally wrong with the current timeout configuration?
+B.
+What should OrderService propagate to its downstream services?
+C.
+At t = 2.5s, PaymentService calls BankService. How much time does Bank logically have?
+D.
+At t = 2.5s, PaymentService has only 500ms remaining, but Bank normally takes 800ms. Should PaymentService make the call?
+Why?
+E.
+If OrderService times out at 3 seconds, does that automatically stop PaymentService and BankService?
+F.
+What's the difference between:
+"stop waiting"
+and:
+"stop the remote operation"
+G.
+Why can deadline propagation help prevent cascading failures?
+
+Timeout — Lesson 3: Cascading Failures and Deadline Propagation
+This is where Timeout becomes a distributed-systems concept, rather than an HTTP-client configuration.
+The central question is:
+How can one slow dependency cause an entire distributed system to become unhealthy?
+And then:
+How do deadlines stop that slow dependency from consuming the entire system?
+________________________________________
+1. Start with the failure we're trying to prevent
+Consider:
+Client
+   |
+   v
+Order Service
+   |
+   v
+Payment Service
+   |
+   v
+Bank Service
+   |
+   v
+Database
+Normally:
+Order       20ms
+Payment     30ms
+Bank        50ms
+DB          10ms
+Everything is healthy.
+Now the database becomes slow:
+DB = 5 seconds
+What happens?
+Order
+  |
+  v
+Payment
+  |
+  v
+Bank
+  |
+  v
+DB
+  |
+  |---- 5 seconds ----|
+Bank requests become slow.
+Then Payment requests become slow.
+Then Order requests become slow.
+Then users see slow responses.
+The failure started here:
+DB
+but eventually manifests here:
+Client
+That's a cascading failure.
+________________________________________
+2. Why does slowness become a failure?
+This is one of the most important concepts in production engineering.
+Imagine OrderService has:
+500 worker threads
+Normally each request takes:
+100ms
+Very roughly, the service can sustain a high amount of concurrency because workers are released quickly.
+Now PaymentService becomes slow.
+Requests take:
+5 seconds
+Each worker is occupied much longer.
+So:
+100ms request
+   ↓
+worker occupied briefly
+
+5 second request
+   ↓
+worker occupied 50× longer
+You don't need 50× more traffic to create serious pressure.
+The service's concurrency starts filling up.
+________________________________________
+3. Queueing is the hidden enemy
+Imagine:
+500 workers
+and all are busy waiting for PaymentService.
+New requests arrive:
+new request
+    ↓
+no available worker
+    ↓
+queue
+    ↓
+wait
+The queue grows.
+Then:
+queue grows
+    ↓
+latency increases
+    ↓
+requests remain active longer
+    ↓
+more workers occupied
+    ↓
+queue grows further
+This is a feedback loop.
+Eventually:
+OrderService
+    ↓
+thread pool exhausted
+    ↓
+connection pool exhausted
+    ↓
+requests rejected/time out
+Now OrderService itself is unhealthy.
+________________________________________
+4. And now retry makes it worse
+Remember our previous topic.
+Suppose PaymentService starts timing out.
+OrderService says:
+"Let's retry."
+So:
+original request
+     |
+     +---- Payment attempt 1
+     |
+     +---- Payment attempt 2
+     |
+     +---- Payment attempt 3
+Instead of:
+1 request → 1 Payment call
+we now have:
+1 request → potentially 3 Payment calls
+At scale:
+10,000 original requests
+        ↓
+30,000 downstream attempts
+PaymentService becomes even more overloaded.
+Which causes:
+more latency
+   ↓
+more timeouts
+   ↓
+more retries
+   ↓
+more traffic
+This is a classic positive feedback loop.
+________________________________________
+5. The cascading-failure chain
+Put everything together:
+Database becomes slow
+        ↓
+Bank becomes slow
+        ↓
+Payment becomes slow
+        ↓
+Order requests become slow
+        ↓
+Order workers become occupied
+        ↓
+Order queue grows
+        ↓
+Order latency increases
+        ↓
+timeouts occur
+        ↓
+retries happen
+        ↓
+more downstream traffic
+        ↓
+dependencies become even slower
+        ↓
+system-wide failure
+This is why timeout configuration is an architectural concern.
+________________________________________
+6. Naive solution: "Give everything more time"
+Suppose engineers notice timeouts.
+They increase:
+Payment timeout: 2s → 10s
+Maybe:
+Bank timeout: 2s → 10s
+This feels reasonable:
+"The service is slow, so let's wait longer."
+But you've just increased the amount of time each request can consume resources.
+Instead of:
+worker occupied for 2s
+you now allow:
+worker occupied for 10s
+Under overload, this can make the problem dramatically worse.
+________________________________________
+7. The deeper problem: independent clocks
+Let's revisit the architecture:
+Client
+  |
+  | 2 sec timeout
+  v
+A
+  |
+  | 2 sec timeout
+  v
+B
+  |
+  | 2 sec timeout
+  v
+C
+Each service has its own clock.
+Suppose:
+A starts at t=0
+B starts at t=0.7
+C starts at t=1.4
+If each gets a fresh 2-second timeout:
+A deadline = t=2.0
+B deadline = t=2.7
+C deadline = t=3.4
+But the client stopped caring at:
+t=2.0
+So C might continue working for another:
+1.4 seconds
+after the client has already abandoned the request.
+That's orphaned/zombie work.
+________________________________________
+8. Deadline propagation changes the model
+Instead of each service saying:
+"I'll give my dependency two seconds."
+we say:
+"The original request must finish by this deadline."
+Example:
+Client deadline = t=2.0
+Then:
+A receives:
+deadline = t=2.0
+
+B receives:
+deadline = t=2.0
+
+C receives:
+deadline = t=2.0
+At:
+t=1.4
+C calculates:
+remaining = 600ms
+Not:
+"I have another 2 seconds."
+That is the fundamental difference.
+________________________________________
+9. Deadline propagation creates a shared time budget
+Think of the request as carrying a budget.
+For example:
+Total budget = 5 seconds
+It gets consumed:
+Gateway          200ms
+Order            300ms
+Payment          800ms
+Bank             1.2s
+DB               500ms
+--------------------------------
+Consumed         3.0s
+
+Remaining        2.0s
+Every downstream operation consumes from the same global budget.
+The budget isn't replenished when you cross a service boundary.
+This is a very useful mental model:
+A distributed request has one time budget, not a fresh timeout at every service.
+________________________________________
+10. What happens when the budget is too small?
+Suppose:
+remaining = 100ms
+and PaymentService normally takes:
+300ms
+Should we call it?
+Usually, no.
+Because the probability of useful completion within the remaining budget is low.
+Instead:
+remaining = 100ms
+Payment expected = 300ms
+
+       ↓
+
+Don't start expensive downstream work
+This is one of the major benefits of deadline propagation.
+We prevent work that has almost no chance of producing a useful result.
+________________________________________
+11. This protects the downstream service too
+This is subtle.
+Imagine PaymentService is already overloaded.
+Without deadline propagation:
+Order
+  |
+  | "wait up to 5 seconds"
+  v
+Payment
+Payment continues processing requests even when their callers have already abandoned them.
+With deadlines:
+Order
+  |
+  | deadline = 100ms remaining
+  v
+Payment
+Payment can recognize:
+"This request has almost no useful time left."
+It can reject or abandon work earlier, depending on the operation and cancellation semantics.
+That preserves resources for requests that still have a chance to succeed.
+________________________________________
+12. But there's an important limitation
+Deadline propagation does not magically cancel work.
+Suppose:
+Order
+  |
+  v
+Payment
+  |
+  v
+Bank
+Order's deadline expires.
+Order stops waiting.
+But Payment might still be executing:
+chargePayment()
+And Bank might still be executing:
+processTransaction()
+So:
+deadline exceeded
+        ≠
+remote operation cancelled
+This distinction is critical.
+________________________________________
+13. Cancellation is a separate mechanism
+There are really three concepts:
+Timeout
+"Stop waiting after this amount of time."
+Deadline
+"This operation must not outlive this point in time."
+Cancellation
+"Stop the work itself."
+They interact, but they aren't the same.
+                 Request lifetime
+                       |
+          +------------+------------+
+          |                         |
+       Deadline                  Cancellation
+          |                         |
+   time-based boundary       explicit stop signal
+A mature distributed system tries to propagate both time constraints and cancellation, where the underlying operation supports it.
+________________________________________
+14. A real failure timeline
+Let's make this concrete.
+Architecture:
+Client
+  |
+  v
+Order
+  |
+  v
+Payment
+  |
+  v
+Bank
+  |
+  v
+DB
+Client deadline:
+5 seconds
+Timeline:
+t=0.0    Client → Order
+
+t=0.1    Order → Payment
+
+t=0.2    Payment → Bank
+
+t=0.3    Bank → DB
+
+t=0.5    DB becomes slow
+Suppose DB now takes:
+10 seconds
+Without deadlines:
+Bank waits
+Payment waits
+Order waits
+Client waits
+Eventually:
+workers occupied
+connections occupied
+queues grow
+With deadline propagation:
+t=5.0
+deadline reached
+The request should be considered expired throughout the chain.
+The important difference isn't:
+"The database magically becomes faster."
+It doesn't.
+The difference is:
+We stop allowing an expired request to consume resources indefinitely.
+________________________________________
+15. Cascading failure is fundamentally about resource exhaustion
+Don't think only:
+"Service A calls Service B and B fails."
+The deeper mechanism is:
+Dependency slows
+      ↓
+work takes longer
+      ↓
+concurrency increases
+      ↓
+resources become occupied
+      ↓
+queues grow
+      ↓
+latency increases
+      ↓
+timeouts
+      ↓
+retries
+      ↓
+more work
+      ↓
+more resource exhaustion
+The resources might be:
+•	threads 
+•	CPU 
+•	memory 
+•	sockets 
+•	HTTP connections 
+•	database connections 
+•	queue capacity 
+•	event-loop capacity 
+•	locks 
+•	file descriptors 
+So a cascading failure is fundamentally a resource and feedback-loop problem.
+________________________________________
+16. Why tail latency matters
+Here's a very important production concept.
+Suppose 99% of Payment requests complete in:
+100ms
+but 1% take:
+5 seconds
+You might say:
+"Average latency is only 150ms. Everything is fine."
+Not necessarily.
+At large scale, those slow requests consume resources much longer.
+If you have:
+100,000 requests/sec
+then 1% means:
+1,000 slow requests/sec
+That's enough to create significant pressure.
+This is why distributed systems care heavily about:
+p50
+p95
+p99
+p99.9
+rather than only average latency.
+________________________________________
+17. Why fan-out makes this worse
+Consider:
+             ┌── Inventory
+             |
+Order ───────┼── Pricing
+             |
+             ├── Recommendation
+             |
+             └── Fraud
+Order calls four services.
+Suppose each has:
+p99 = 500ms
+The probability that all four are fast is lower than the probability that any one of them is fast.
+For a simplified independent model:
+P(each succeeds within deadline)
+≈ 0.99 × 0.99 × 0.99 × 0.99
+≈ 96.1%
+So even though every dependency individually has 99% success within the target latency, the combined request can have substantially worse tail behavior.
+This is one reason fan-out architectures need careful timeout and deadline design.
+________________________________________
+18. Deadline propagation + fan-out
+Suppose:
+Client deadline = 2 sec
+Order calls:
+Inventory
+Pricing
+Fraud
+If all happen concurrently:
+        ┌── Inventory
+        │
+Order ──┼── Pricing
+        │
+        └── Fraud
+all receive the same remaining deadline.
+If Fraud is slow:
+Inventory → success
+Pricing   → success
+Fraud     → deadline exceeded
+Order now has to decide:
+Is Fraud mandatory?
+That becomes a business-level availability decision.
+This is where timeout design intersects with architecture.
+Some dependencies are:
+critical
+Others are:
+optional / best-effort
+For example, recommendations may be safely dropped while payment cannot be.
+________________________________________
+19. Deadline propagation isn't just infrastructure
+This is a major insight.
+Suppose the request has:
+200ms remaining
+and your service needs to call:
+FraudService
+which normally takes:
+300ms
+Infrastructure alone cannot solve this.
+The business/application needs a policy:
+if fraud result unavailable:
+    reject order?
+    accept order?
+    queue for later?
+So deadlines eventually become business semantics.
+________________________________________
+20. Java connection
+Imagine:
+CompletableFuture<Order> processOrder(...) {
+    return inventory()
+        .thenCombine(pricing(), ...)
+        .thenCombine(fraud(), ...);
+}
+If one dependency becomes slow, you need to think about:
+How long do these futures live?
+What happens when the deadline expires?
+Are downstream operations cancelled?
+Are connections released?
+Are queued tasks removed?
+Does the deadline propagate to the next service?
+A local Java timeout like:
+future.orTimeout(2, TimeUnit.SECONDS)
+can prevent the caller from waiting forever.
+But it does not automatically mean:
+InventoryService
+PricingService
+FraudService
+all stop their work.
+That's why distributed timeout design cannot be solved solely with:
+orTimeout(...)
+________________________________________
+21. Production architecture
+A mature request path often looks conceptually like:
+                   Incoming request
+                         |
+                         v
+                  Extract deadline
+                         |
+                         v
+                  Calculate remaining
+                         |
+                +--------+--------+
+                |                 |
+          Enough time?        Not enough
+                |                 |
+               yes                fail fast
+                |
+                v
+          Call dependency
+                |
+          +-----+------+
+          |            |
+       success      timeout/error
+          |            |
+          v            v
+      continue      classify
+                         |
+                    retry?
+                         |
+                    deadline?
+                         |
+                    budget?
+And every downstream request receives the remaining deadline.
+________________________________________
+22. The relationship between Timeout, Retry and Cascading Failure
+At this point you can see the bigger picture:
+             Timeout
+                |
+                v
+          detects slowness
+                |
+                v
+       UNKNOWN operation?
+                |
+          +-----+-----+
+          |           |
+         yes          no
+          |           |
+       Retry?       fail
+          |
+     Backoff/Jitter
+          |
+     Retry budget
+          |
+      Deadline
+          |
+          v
+ prevent endless work
+          |
+          v
+ reduce cascading failure
+These aren't separate features.
+They're parts of one resilience strategy.
+________________________________________
+23. The key production principle
+If you remember only one thing from this lesson:
+A timeout protects the caller. A deadline protects the entire request path.
+And a second one:
+The goal isn't merely to make slow requests fail faster. The goal is to prevent slow work from consuming resources long enough to bring down healthy parts of the system.
+________________________________________
+24. Final Design Exercise for Timeout
+Let's see if you've really internalized it.
+You're designing:
+                         ┌── Inventory
+                         │
+Client → Gateway → Order ┼── Pricing
+                         │
+                         ├── Fraud
+                         │
+                         └── Payment → Bank → DB
+The user request has:
+deadline = 3 seconds
+Normal latency:
+Inventory = 100ms
+Pricing   = 50ms
+Fraud     = 200ms
+Payment   = 300ms
+Bank      = 200ms
+DB        = 50ms
+Suddenly DB becomes slow:
+DB = 5 seconds
+Answer these from an architecture perspective:
+A.
+What happens if every service has an independent 5-second timeout?
+B.
+What happens if the original 3-second deadline is propagated?
+C.
+At t = 2.8s, Payment wants to call Bank. Should it start the call?
+D.
+Suppose Payment already called Bank and then its deadline expires. Does Bank automatically stop?
+E.
+Why can a slow database eventually exhaust threads and connection pools in services that aren't themselves broken?
+F.
+Why can retries turn this into a positive feedback loop?
+G.
+Suppose Fraud is slow but Fraud is optional. What architectural decision could prevent Fraud from delaying the entire order?
+H.
+Most importantly:
+Why is "increase the timeout" often the wrong response to cascading latency?
+If you can explain those eight without relying on memorized definitions, then Timeout as a concept is complete.
+
