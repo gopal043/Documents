@@ -651,3 +651,31 @@ Designing consumers safely
 7. Java connection → How does this relate to things you've already used?
 
 8. Design exercise → I'll give you a small scenario and make you reason about it.
+
+
+
+Lesson 1 — CDN fundamentals
+    ↓
+Lesson 2 — Request routing
+    DNS, Anycast, BGP, PoP, edge selection
+    ↓
+Lesson 3 — HTTP caching
+    Cache-Control, ETag, Last-Modified, TTL
+    ↓
+Lesson 4 — Cache invalidation
+    Purge, versioned URLs, stale content
+    ↓
+Lesson 5 — Cache keys
+    Query params, headers, cookies, variants
+    ↓
+Lesson 6 — Cache stampede
+    Request coalescing, SWR, shielding
+    ↓
+Lesson 7 — CDN + security
+    TLS, WAF, DDoS, rate limiting
+    ↓
+Lesson 8 — CDN + dynamic APIs
+    Personalized vs public content
+    ↓
+Lesson 9 — Designing a CDN from scratch
+    Architecture + failure scenarios
