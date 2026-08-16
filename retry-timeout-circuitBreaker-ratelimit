@@ -9696,5 +9696,5482 @@ Load Shedding
   → discards work when capacity is exhausted
 Together, these create resilience engineering, not just a collection of patterns.
 
+Rate Limiting — our learning path
+1.	Why rate limiting exists 
+2.	Fixed Window 
+3.	Sliding Window 
+4.	Token Bucket 
+5.	Distributed Rate Limiting with Redis 
+6.	Production Architecture 
+7.	Fairness 
+8.	Failure modes and failure strategy 
+9.	Java/Spring implementation 
+10.	System-design interview problems 
+For every topic, I'll cover:
+•	the problem it solves 
+•	mathematical model 
+•	intuition 
+•	algorithm 
+•	data structures 
+•	concurrency implications 
+•	distributed-systems implications 
+•	Java implementation thinking 
+•	trade-offs 
+•	production failure modes 
+•	when to choose it 
+•	system-design interview reasoning 
+________________________________________
+Lesson 1 — Why Rate Limiting Exists
+Let's start before algorithms.
+Suppose you have:
+Client
+   |
+   v
+API Gateway
+   |
+   v
+Order Service
+   |
+   +----> PostgreSQL
+   |
+   +----> Payment Service
+   |
+   +----> Kafka
+Your API exposes:
+POST /orders
+Suppose the service can safely process:
+2,000 requests/sec
+But a client sends:
+50,000 requests/sec
+What happens?
+The obvious answer is:
+"The service becomes slow."
+But that's only the beginning.
+________________________________________
+1. Rate limiting is really a resource-protection mechanism
+Think about your system as a collection of finite resources.
+For example:
+CPU
+Memory
+DB connections
+DB IOPS
+Network bandwidth
+Kafka partitions
+Thread pools
+External API quota
+Connection pools
+Locks
+Every request consumes some amount of those resources.
+Conceptually:
+request
+   |
+   +--> CPU
+   +--> memory
+   +--> DB connection
+   +--> DB query
+   +--> network
+   +--> downstream API
+Therefore:
+Rate limiting controls how quickly work is allowed to enter a system.
+That's much more important than the common definition:
+"Allow only N requests per second."
+The latter is merely one implementation.
+________________________________________
+2. Why can't we just autoscale?
+This is an important system-design question.
+Suppose traffic increases:
+1000 req/s
+       ↓
+5000 req/s
+       ↓
+20000 req/s
+You might say:
+"Kubernetes will add more pods."
+True—but autoscaling doesn't solve every problem.
+Imagine:
+             20,000 req/s
+                  |
+        +---------+---------+
+        |         |         |
+       Pod       Pod       Pod
+        |         |         |
+        +---------+---------+
+                  |
+                DB
+             5,000 QPS
+Your application layer may scale horizontally, but your database may not.
+You have simply moved the bottleneck:
+Application capacity: 20k req/s
+Database capacity:     5k req/s
+The database becomes the system bottleneck.
+Rate limiting allows us to enforce:
+Incoming traffic <= sustainable capacity
+________________________________________
+3. Rate limiting protects against two very different things
+This distinction is extremely important.
+A. Accidental overload
+Example:
+A mobile application has a bug.
+Instead of:
+1 request / 10 seconds
+it accidentally sends:
+100 requests/sec
+Nothing malicious is happening.
+Rate limiting protects your infrastructure anyway.
+________________________________________
+B. Intentional abuse
+Example:
+Attacker
+   |
+   +---- 100k requests/sec
+   |
+   v
+Your API
+Potential goals:
+•	brute-force login 
+•	scrape data 
+•	exhaust expensive APIs 
+•	create excessive DB load 
+•	consume compute 
+•	cause denial of service 
+Rate limiting becomes one layer of defense.
+But remember:
+Rate limiting is not a complete DDoS defense.
+At sufficiently large traffic volumes, traffic may need to be stopped at CDN, WAF, load-balancer, network, or upstream infrastructure before it reaches your application.
+________________________________________
+4. Rate limiting also protects downstream systems
+This is where experienced backend engineers should think beyond the API itself.
+Imagine:
+API
+ |
+ v
+Order Service
+ |
+ v
+Payment Service
+Your service can process:
+10,000 req/s
+But payment provider allows:
+1,000 req/s
+Without limiting:
+10,000 req/s
+       |
+       v
+Payment API
+       |
+       X
+   throttling
+Your application may then experience:
+timeouts
+retries
+thread exhaustion
+connection exhaustion
+queue growth
+latency explosion
+And now connect this to what you've already learned.
+You completed:
+Timeout
+Retry
+Circuit Breaker
+Bulkhead
+Rate limiting is closely related.
+For example:
+Rate Limiter
+     |
+     v
+protect request admission
+     |
+     v
+Timeout
+     |
+     v
+Retry
+     |
+     v
+Circuit Breaker
+     |
+     v
+Bulkhead
+But these solve different failure dimensions.
+________________________________________
+5. Rate limiting vs timeout vs circuit breaker vs bulkhead
+This distinction is worth mastering.
+Mechanism	Main question
+Rate limiting	How much work may enter?
+Timeout	How long may one operation take?
+Retry	Should failed work be attempted again?
+Circuit breaker	Should we temporarily stop calling an unhealthy dependency?
+Bulkhead	How much concurrent work may consume this resource?
+For example:
+Rate limit
+100 requests/sec
+Controls rate.
+Bulkhead
+maximum 50 concurrent requests
+Controls concurrency.
+Timeout
+maximum 2 seconds/request
+Controls duration.
+These dimensions are different.
+________________________________________
+6. Rate vs concurrency
+This is one of the most important concepts.
+Suppose:
+Rate = 100 requests/sec
+Does that mean there can only be 100 requests executing simultaneously?
+No.
+Imagine each request takes 10 seconds.
+You could have approximately:
+100 req/sec × 10 sec
+= 1,000 concurrent requests
+This relationship is roughly described by Little's Law:
+L = λW
+where:
+L = average number of requests in system
+λ = arrival rate
+W = average time in system
+Example:
+λ = 100 requests/sec
+W = 2 sec
+
+L = 100 × 2
+  = 200 concurrent requests
+This is why rate limiting and bulkheading are complementary.
+You might have:
+Rate limiter:
+1000 req/sec
+
+Bulkhead:
+100 concurrent requests
+
+Timeout:
+2 seconds
+Each protects a different dimension.
+________________________________________
+7. Rate limiting provides admission control
+This is a powerful way to think about it.
+Imagine a nightclub.
+Capacity:
+500 people
+Outside:
+10,000 people
+You don't allow everyone inside and then discover the building is overloaded.
+You control admission.
+                  +----------------+
+10k people -----> | Admission      |
+                  | control        |
+                  +-------+--------+
+                          |
+                     500 allowed
+                          |
+                          v
+                       Club
+Rate limiting does something similar:
+                  +----------------+
+Requests -------->| Rate Limiter  |
+                  +-------+--------+
+                          |
+                  accepted / rejected
+                          |
+                          v
+                       Service
+This is called:
+Admission control
+And this concept appears throughout distributed systems.
+________________________________________
+8. But "100 requests/sec" isn't enough
+Now we reach the interesting part.
+Suppose the rule is:
+Maximum = 100 requests/minute
+A naïve implementation might say:
+00:00 → 100 requests allowed
+00:01 → counter reset
+Consider this traffic:
+00:00:59
+    100 requests
+
+00:01:00
+    100 requests
+You've technically respected:
+100 requests per minute
+for each fixed window.
+But during one real 2-second period:
+200 requests
+were accepted.
+This leads us to our first algorithm.
+________________________________________
+Lesson 2 — Fixed Window
+The basic idea is extremely simple.
+For each client:
+counter = 0
+window = 60 seconds
+Requests:
+request
+   |
+   v
+counter++
+   |
+   +---- counter <= limit ? accept
+   |
+   +---- counter > limit ? reject
+Suppose:
+limit = 100 requests/minute
+For client:
+user-123
+we maintain:
+window: 10:00 - 10:01
+count: 73
+Request arrives:
+count = 74
+Accept.
+Eventually:
+count = 100
+Next request:
+101 > 100
+Reject.
+At 10:01:
+counter = 0
+and a new window starts.
+________________________________________
+9. Why Fixed Window is attractive
+It's extremely cheap.
+You basically need:
+clientId -> counter
+For example:
+user-123 -> 73
+user-456 -> 12
+user-789 -> 99
+And expiration:
+user-123 -> expires in 43 sec
+In Redis this maps naturally to:
+INCR key
+EXPIRE key
+Conceptually:
+INCR rate:user-123
+If result:
+<= 100
+accept.
+Otherwise:
+reject
+This makes fixed-window limiting:
+•	simple 
+•	fast 
+•	memory efficient 
+•	easy to distribute 
+But it has a serious weakness.
+________________________________________
+10. The boundary problem
+Suppose:
+Limit = 100 requests/minute
+Traffic:
+10:00:59 → 100 requests
+10:01:00 → 100 requests
+The algorithm says:
+Window 1:
+100 <= 100 → accept
+
+Window 2:
+100 <= 100 → accept
+So:
+200 requests
+can happen within roughly:
+1 second
+This is the fixed-window boundary burst problem.
+Visually:
+                 window boundary
+                       |
+                       v
+       100 requests    |    100 requests
+    <----------------->|<----------------->
+       window 1         |      window 2
+That's why fixed window gives you a somewhat misleading guarantee.
+It doesn't really mean:
+"At most 100 requests in every arbitrary 60-second interval."
+It means:
+"At most 100 requests inside each predefined 60-second bucket."
+Those are not equivalent.
+________________________________________
+11. This distinction matters in system design
+When someone says:
+"Our API allows 100 requests per minute."
+Your next question should be:
+"What exactly does that guarantee mean?"
+Possible interpretations:
+Fixed calendar window
+10:00:00 → 10:00:59
+10:01:00 → 10:01:59
+Rolling 60 seconds
+For every request at time t:
+[t - 60 sec, t]
+contains at most 100 requests.
+Token bucket
+Something different again:
+steady refill rate
++
+controlled burst capacity
+These produce different behaviors.
+________________________________________
+12. Fixed window's deeper trade-off
+Why would anyone still use it?
+Because distributed systems are about trade-offs, not finding the theoretically perfect algorithm.
+Suppose you have:
+10 million clients
+A sophisticated sliding-window implementation may require significantly more state.
+Fixed window might only require:
+one counter/client/window
+That's attractive.
+If your requirement is:
+"Prevent obvious abuse; exact boundary behavior doesn't matter."
+Fixed window can be perfectly reasonable.
+But if your requirement is:
+"Strictly control traffic over arbitrary rolling intervals."
+You need something more sophisticated.
+
+Lesson 2 — Sliding Window Rate Limiting
+Good. Now let's move from the weakness of Fixed Window to the two main sliding-window approaches:
+Fixed Window
+     ↓
+Sliding Window Log
+     ↓
+Sliding Window Counter
+The important thing is not memorizing these algorithms. You should understand what guarantee each one is trying to provide, what state it needs, and what it costs.
+________________________________________
+1. First: what does "sliding window" actually mean?
+Suppose our rule is:
+100 requests / 60 seconds
+A fixed window asks:
+"How many requests occurred inside this predefined bucket?"
+For example:
+10:00:00 ───────────────── 10:01:00
+              100 requests
+Then:
+10:01:00 ───────────────── 10:02:00
+              100 requests
+The problem is that the boundary is artificial.
+A sliding window instead asks:
+For the current request at time t, how many requests occurred during the previous 60 seconds?
+So if the current time is:
+10:00:37
+we examine:
+09:59:37 ───────────────── 10:00:37
+At:
+10:00:38
+the window becomes:
+09:59:38 ───────────────── 10:00:38
+The window literally slides forward with time.
+________________________________________
+2. Why this fixes the boundary problem
+Remember our fixed-window attack:
+Limit = 100/minute
+
+10:00:59 → 100 requests
+10:01:00 → 100 requests
+Fixed window says:
+Window A = 100 ✓
+Window B = 100 ✓
+But sliding window sees:
+10:00:00
+       |
+       |       200 requests
+       |<------------------->|
+       10:00:59       10:01:00
+If those 200 requests occurred within the previous 60 seconds, the second batch cannot simply reset the counter.
+The system says:
+previous 60 sec = 200
+limit = 100
+
+200 > 100
+Therefore:
+REJECT
+That's the fundamental advantage.
+________________________________________
+3. Sliding Window Log
+Let's start with the mathematically clean version.
+For every client, maintain the timestamp of every accepted request.
+Suppose:
+limit = 5 requests / 10 seconds
+Client:
+user-123
+Request timestamps:
+[10.0, 11.2, 13.5, 15.1, 18.7]
+Now a request arrives at:
+20.0
+We look back 10 seconds:
+[10.0, 11.2, 13.5, 15.1, 18.7]
+  ^
+
+10.0 is exactly 10 seconds old
+Depending on your interval convention, you might remove timestamps at or before the lower boundary.
+For a half-open interval:
+(t - window, t]
+we remove:
+10.0
+Remaining:
+[11.2, 13.5, 15.1, 18.7]
+Count:
+4
+Therefore the new request is allowed:
+[11.2, 13.5, 15.1, 18.7, 20.0]
+Now there are 5 requests in the current sliding window.
+________________________________________
+4. The algorithm
+Conceptually:
+request arrives
+      |
+      v
+currentTime = now()
+      |
+      v
+remove timestamps <= currentTime - window
+      |
+      v
+count remaining timestamps
+      |
+      +---- count >= limit ---> REJECT
+      |
+      +---- count < limit ----> append timestamp
+                                  |
+                                  v
+                                ACCEPT
+The data structure is basically:
+clientId -> queue of timestamps
+For example:
+user-123 -> [11.2, 13.5, 15.1, 18.7]
+user-456 -> [12.1, 16.8]
+user-789 -> [19.3]
+Because timestamps arrive in chronological order, a queue/deque is natural.
+________________________________________
+5. Why a queue works
+This is an important implementation observation.
+Suppose:
+window = 60 sec
+and the queue contains:
+[100, 105, 110, 120, 150]
+Current time:
+160
+Oldest allowed boundary:
+160 - 60 = 100
+Remove expired timestamps from the front.
+[100, 105, 110, 120, 150]
+  ↑
+expired
+After removal:
+[105, 110, 120, 150]
+We never need to search the middle.
+That gives efficient cleanup assuming timestamps are inserted in order.
+________________________________________
+6. The big problem: memory
+Now let's think like a system designer.
+Suppose:
+limit = 1,000 requests/sec
+and you have:
+10 million clients
+Worst-case state could approach:
+10 million × 1,000 timestamps
+That's:
+10 billion timestamps
+Obviously unacceptable.
+Even if the average traffic is much lower, storing individual timestamps is expensive.
+This is the first major lesson:
+Sliding Window Log gives excellent accuracy by storing detailed history, but detailed history costs memory.
+________________________________________
+7. Complexity
+For one client:
+Let:
+N = number of requests inside the window
+Then state is approximately:
+O(N)
+per client.
+Across all clients:
+O(total requests in active windows)
+That's fundamentally different from fixed window.
+Fixed window might need:
+client → integer
+Sliding log needs:
+client → collection of timestamps
+So:
+Fixed Window
+Memory: O(clients)
+
+Sliding Log
+Memory: O(requests in active windows)
+This difference becomes huge at scale.
+________________________________________
+8. There's another problem: distributed concurrency
+Suppose you implement:
+if queue.size() < limit:
+    queue.add(now)
+    accept
+Two threads arrive simultaneously.
+Current state:
+count = 99
+limit = 100
+Thread A:
+reads 99
+Thread B:
+reads 99
+Both conclude:
+99 < 100
+Both append.
+Now:
+count = 101
+You've violated the limit.
+This is a classic check-then-act race condition.
+So the operation needs to behave atomically:
+remove expired
++
+count
++
+decide
++
+insert timestamp
+must effectively happen as one atomic operation.
+This becomes particularly important when we later implement distributed rate limiting with Redis.
+________________________________________
+9. Sliding Window Log in Redis
+A natural Redis structure is a sorted set.
+Conceptually:
+key = rate:user-123
+Members:
+request-id-1
+request-id-2
+request-id-3
+Scores:
+1710000000123
+1710000000456
+1710000000789
+The score is the timestamp.
+Then the algorithm becomes roughly:
+1. Remove entries older than window
+2. Count remaining entries
+3. If count >= limit → reject
+4. Otherwise add current request
+Redis has the right primitive for this kind of timestamp ordering.
+But there is a critical issue:
+Steps 1–4 cannot safely be implemented as independent network calls.
+Otherwise:
+Client A
+   |
+   | remove
+   | count
+   | add
+   v
+
+Client B
+   |
+   | remove
+   | count
+   | add
+can interleave.
+We eventually need an atomic server-side operation, commonly using Lua scripting or an equivalent atomic mechanism.
+We'll cover this deeply in the Redis lesson.
+________________________________________
+10. So why don't we always use Sliding Window Log?
+Because it's accurate but expensive.
+Imagine an API:
+GET /search
+with:
+10,000,000 users
+and:
+100 requests/minute/user
+A log-based limiter potentially stores millions/billions of individual timestamps.
+But notice something interesting.
+Do we actually need to know:
+exactly which 100 requests occurred?
+Usually not.
+We mostly need:
+approximately how many requests occurred recently?
+That observation leads to:
+Sliding Window Counter
+________________________________________
+11. Sliding Window Counter
+Instead of storing every request timestamp, we divide time into smaller fixed buckets.
+Suppose:
+window = 60 seconds
+We divide it into:
+6 × 10-second buckets
+Instead of:
+timestamp timestamp timestamp timestamp ...
+we maintain:
+10:00:00 → 13
+10:00:10 → 18
+10:00:20 → 7
+10:00:30 → 22
+10:00:40 → 11
+10:00:50 → 19
+Total:
+90 requests
+Much less state.
+________________________________________
+12. But how do we slide the window?
+Suppose current time is:
+10:01:05
+The last 60 seconds are approximately:
+10:00:05 → 10:01:05
+Our buckets are:
+10:00:00 - 10:00:10
+10:00:10 - 10:00:20
+...
+10:00:50 - 10:01:00
+10:01:00 - 10:01:10
+The current sliding window cuts through two buckets:
+             sliding window
+             <------------>
+
+10:00:05 ───────────────── 10:01:05
+     |                         |
+     v                         v
+  bucket                    current
+  partially                partially
+  included                  included
+So we need to estimate the partial contribution of those buckets.
+________________________________________
+13. The interpolation idea
+Suppose:
+previous bucket count = 100
+current bucket count  = 20
+and the current point is 25% into the current bucket.
+Then approximately 75% of the previous bucket belongs to the sliding window.
+So:
+estimated previous contribution
+≈ 100 × 0.75
+= 75
+Then:
+estimated sliding count
+≈ 75 + 20
+= 95
+If:
+limit = 100
+the request can be accepted.
+This is the key idea behind the common sliding-window counter approximation.
+________________________________________
+14. Why is it only an approximation?
+Because we're not storing individual request timestamps.
+Suppose the previous bucket contains:
+100 requests
+We don't know whether those 100 requests happened:
+at the beginning
+or:
+at the end
+of that bucket.
+We only know:
+bucket count = 100
+Therefore interpolation estimates how many belong to the actual sliding interval.
+This gives us an important spectrum:
+                  Accuracy
+                     ↑
+                     |
+Sliding Log     ██████████
+                     |
+Sliding Counter ███████
+                     |
+Fixed Window    █████
+                     |
+                     +------------→ memory / complexity
+The exact position depends on implementation, bucket size, workload, and required semantics, but the conceptual trade-off is what matters.
+________________________________________
+15. Bucket size becomes a design parameter
+Suppose:
+window = 60 sec
+Option A:
+6 buckets × 10 sec
+Option B:
+60 buckets × 1 sec
+Option C:
+2 buckets × 30 sec
+Generally:
+smaller buckets
+      ↓
+better temporal resolution
+      ↓
+better approximation
+      ↓
+more state
+while:
+larger buckets
+      ↓
+less state
+      ↓
+coarser approximation
+So this isn't merely an algorithm choice.
+It's a capacity-vs-accuracy engineering decision.
+________________________________________
+16. Compare the three algorithms
+Now put them together.
+Property	Fixed Window	Sliding Log	Sliding Counter
+State	Counter	Every timestamp	Bucket counters
+Accuracy	Low	Very high	Approximate
+Memory	Very low	High	Low/medium
+Boundary burst	Yes	No	Reduced
+Implementation	Simple	More complex	Moderate
+Distributed implementation	Easy-ish	More expensive	Moderate
+Good for huge scale	Yes	Potentially expensive	Yes
+Exact rolling-window semantics	No	Yes	Approximate
+The crucial mental model is:
+Fixed Window
+    ↓
+"I only know the count in this bucket."
+
+Sliding Log
+    ↓
+"I know every request."
+
+Sliding Counter
+    ↓
+"I know counts for smaller buckets."
+________________________________________
+17. A deeper distributed-systems observation
+There is something subtle here.
+Rate limiting isn't simply:
+counter + if
+It is a state consistency problem.
+You have state:
+number/timestamps of recent requests
+and multiple application instances:
+             Load Balancer
+                  |
+       +----------+----------+
+       |          |          |
+     Pod A      Pod B      Pod C
+       |          |          |
+       +----------+----------+
+                  |
+               Limiter
+If every pod maintains:
+local counter
+then your global limit isn't really global.
+Suppose:
+limit = 100 req/sec
+and:
+10 pods
+Each pod independently allows:
+100 req/sec
+You could accidentally allow:
+10 × 100
+= 1,000 req/sec
+So distributed rate limiting requires shared state or coordinated partitioning.
+That's why Redis appears so often in real architectures.
+________________________________________
+18. But Redis introduces another question
+Suppose Redis is unavailable.
+Your request path becomes:
+Client
+  |
+  v
+API
+  |
+  v
+Redis Rate Limiter
+  |
+  X Redis unavailable
+Now what?
+You have to decide:
+Fail open
+Redis unavailable
+      ↓
+allow request
+Availability wins, protection weakens.
+Fail closed
+Redis unavailable
+      ↓
+reject request
+Protection wins, availability suffers.
+There isn't a universally correct answer.
+For:
+public API
+you may choose one policy.
+For:
+expensive payment operation
+you may choose another.
+For:
+security-sensitive endpoint
+you may choose another again.
+This is why production rate limiting is much more interesting than the algorithm itself.
+________________________________________
+19. What I want you to remember from this lesson
+Don't memorize:
+"Sliding window uses timestamps."
+Instead remember this progression:
+Fixed Window
+asks:
+How many requests are in this predefined bucket?
+↓
+Sliding Window Log
+asks:
+What exact requests occurred during the last W seconds?
+↓
+Sliding Window Counter
+asks:
+Can I approximate that answer using aggregated time buckets?
+And the engineering trade-off is:
+More information
+      ↓
+better accuracy
+      ↓
+more memory/state
+      ↓
+more distributed-system complexity
+________________________________________
+20. One important interview question
+If an interviewer asks:
+"Design a rate limiter for 1 million users, 100 requests/minute/user."
+Don't immediately answer:
+"I'll use Redis."
+First ask:
+1.	Is the limit per user, per API key, per IP, or global? 
+2.	Is the limit a hard guarantee or approximate? 
+3.	Are bursts allowed? 
+4.	What happens when the limiter is unavailable? 
+5.	Do we need a rolling-window guarantee? 
+6.	What's the acceptable memory cost? 
+7.	What's the expected request rate? 
+8.	How many application instances exist? 
+9.	Does the limit need to be globally consistent? 
+10.	What is the acceptable false-rejection/false-acceptance behavior? 
+Those questions determine the algorithm.
+
+Lesson 3 — Token Bucket
+This is the rate-limiting algorithm I want you to understand mathematically, because Token Bucket is one of the most useful models in real production systems.
+The key idea is surprisingly simple:
+A request doesn't consume "permission per second." It consumes a token. Tokens accumulate over time, up to a maximum capacity.
+That gives us something Fixed Window and Sliding Window don't naturally provide:
+controlled bursts + controlled long-term rate.
+________________________________________
+1. Start with the problem
+Suppose our API should support:
+10 requests / second
+A naïve interpretation is:
+every second → allow exactly 10
+But real traffic isn't perfectly smooth.
+Imagine a user loading a page.
+The browser might simultaneously request:
+GET /profile
+GET /orders
+GET /notifications
+GET /recommendations
+GET /preferences
+Five requests arrive almost simultaneously.
+You don't necessarily want to reject them just because they happened within the same millisecond.
+What you really want is something like:
+Long-term average:
+10 requests/sec
+
+Short burst:
+perhaps 20 requests immediately
+Then the system should return to approximately:
+10 requests/sec
+That is exactly what Token Bucket models.
+________________________________________
+2. The physical analogy
+Imagine a bucket.
+             tokens enter
+                  ↓
+             +---------+
+             | • • • • |
+             | • • • • |
+             | • • • • |
+             +---------+
+                  |
+                  ↓
+              requests
+There are three parameters:
+Bucket capacity
+Maximum number of tokens:
+C = 20 tokens
+Refill rate
+Tokens added per second:
+R = 10 tokens/sec
+Request cost
+Usually:
+1 request = 1 token
+So:
+capacity = 20
+refill rate = 10/sec
+cost = 1
+________________________________________
+3. What happens when requests arrive?
+Initially:
+tokens = 20
+A request arrives.
+Consume one:
+20 → 19
+Another:
+19 → 18
+After 5 requests:
+20 → 15
+Nothing complicated yet.
+________________________________________
+4. The interesting part: refill
+Suppose we've consumed all tokens:
+tokens = 0
+The refill process adds:
+10 tokens/sec
+After:
+100 ms
+we have approximately:
+1 token
+After:
+500 ms
+we have:
+5 tokens
+After:
+1 second
+we have:
+10 tokens
+After:
+2 seconds
+we would have:
+20 tokens
+but the bucket's capacity is only 20.
+So:
+tokens = min(capacity, currentTokens + refill)
+This min() is extremely important.
+Tokens cannot accumulate forever.
+________________________________________
+5. The mathematical model
+Let's define:
+C = bucket capacity
+r = refill rate, tokens/sec
+T = current time
+t_last = last time bucket was updated
+Elapsed time:
+Δt = T - t_last
+New token count:
+tokens = min(
+    C,
+    tokens + Δt × r
+)
+Then the request costs:
+cost = 1
+If:
+tokens >= cost
+accept:
+tokens = tokens - cost
+Otherwise:
+reject
+That's essentially the entire algorithm.
+But the consequences are much more interesting.
+________________________________________
+6. Why 10 req/sec can allow 20 requests instantly
+This is one of the most common interview questions.
+Configuration:
+C = 20
+r = 10 tokens/sec
+Bucket starts full:
+20 tokens
+Now 20 requests arrive simultaneously:
+R1 → token 20 → 19
+R2 → 19 → 18
+...
+R20 → 1 → 0
+All 20 are accepted.
+You might ask:
+"But the limit is 10 requests/sec!"
+No.
+The configuration actually means:
+Maximum burst = 20 requests
+Long-term replenishment = 10 requests/sec
+This distinction is fundamental.
+________________________________________
+7. Burst capacity vs sustained rate
+Think of Token Bucket as having two independent controls.
+Refill rate
+Controls:
+How much traffic can the system sustain over time?
+r = 10 requests/sec
+Bucket capacity
+Controls:
+How large of a burst can the system absorb?
+C = 20 requests
+So:
+              Token Bucket
+                   |
+          +--------+--------+
+          |                 |
+     refill rate       capacity
+          |                 |
+     sustained rate     burst size
+This is one reason Token Bucket is so powerful.
+________________________________________
+8. Visualizing traffic
+Suppose:
+r = 10/sec
+C = 20
+Traffic can look like:
+requests
+  ^
+20| ████████████████████
+  |                     \
+10|                      █████ █████ █████
+  | 
+  +--------------------------------------> time
+       burst             sustained
+The bucket lets you borrow against previously accumulated capacity.
+If the system has been quiet for a while, tokens accumulate.
+Then the client can spend those accumulated tokens in a burst.
+________________________________________
+9. Think of tokens as stored permission
+This mental model is useful.
+A token is effectively:
+permission to perform one unit of work.
+When traffic is low:
+requests < refill rate
+tokens accumulate.
+When traffic suddenly increases:
+requests > refill rate
+the client spends those stored permissions.
+Eventually:
+tokens → 0
+and now the sustained traffic is constrained by the refill rate.
+So Token Bucket naturally transforms:
+quiet period
+     ↓
+stored capacity
+     ↓
+burst
+     ↓
+empty bucket
+     ↓
+sustained rate
+________________________________________
+10. Compare with Fixed Window
+Suppose:
+10 requests/sec
+Fixed Window:
+00.0 ───────── 01.0
+       10
+Then:
+01.0 ───────── 02.0
+       10
+Boundary problem:
+00.99 → 10 requests
+01.01 → 10 requests
+Potentially:
+20 requests in ~20 ms
+Token Bucket doesn't have that artificial reset boundary.
+Tokens refill continuously according to elapsed time.
+________________________________________
+11. Compare with Sliding Window
+Sliding Window tries to answer:
+How many requests happened in the previous W seconds?
+Token Bucket asks something different:
+How much permission has accumulated to perform work?
+That's a very important distinction.
+For example:
+Sliding Window:
+100 requests / 60 seconds
+is about a rolling historical count.
+Token Bucket:
+capacity = 100
+refill = 100/60 sec
+is about accumulated credit.
+These can produce different behavior even if their parameters look similar.
+________________________________________
+12. Token Bucket supports weighted requests
+This is where it becomes particularly useful for APIs.
+Not every request costs the same.
+Suppose:
+GET /health
+cost = 1
+
+GET /profile
+cost = 2
+
+POST /generate-report
+cost = 20
+Now your bucket isn't really limiting:
+requests
+It is limiting:
+work units
+Suppose:
+tokens = 50
+A report request:
+cost = 20
+leaves:
+50 - 20 = 30
+Another report:
+30 - 20 = 10
+Another:
+10 < 20
+Reject.
+This lets you model heterogeneous workloads.
+________________________________________
+13. Why weighted rate limiting is powerful
+Imagine your service has three endpoints:
+GET /users
+GET /orders
+POST /analytics/report
+Their average resource consumption:
+users:
+1 CPU unit
+
+orders:
+3 CPU units
+
+report:
+20 CPU units
+A simple request-count limiter treats them equally:
+1 request = 1
+That's not necessarily what you want.
+A weighted token bucket can approximate:
+users   → 1 token
+orders  → 3 tokens
+report  → 20 tokens
+Now you're limiting resource consumption, not merely HTTP request count.
+This is a much more advanced way of thinking about rate limiting.
+________________________________________
+14. Fractional refill and time
+In real implementations, don't think:
+every second:
+    add 10 tokens
+That is a possible implementation, but it's often unnecessary.
+Instead use lazy refill.
+Suppose:
+r = 10 tokens/sec
+At:
+t = 0
+tokens = 5
+No background job runs.
+Request arrives at:
+t = 0.7 sec
+Calculate:
+elapsed = 0.7
+refill = 0.7 × 10
+       = 7
+Therefore:
+tokens = min(C, 5 + 7)
+       = 12
+Then consume one:
+12 → 11
+This is much more efficient.
+No timer is required per user.
+________________________________________
+15. This is a beautiful optimization
+Imagine:
+10 million users
+If you have a background refill task for every user:
+user 1 → timer
+user 2 → timer
+user 3 → timer
+...
+user 10M → timer
+That's ridiculous.
+Lazy refill means:
+We calculate what the bucket should contain only when a request arrives.
+State can simply be:
+clientId
+tokens
+lastUpdated
+For example:
+user-123:
+    tokens = 13.4
+    lastUpdated = 17:55:42.300
+That's enough to reconstruct the current bucket state.
+________________________________________
+16. Java implementation thinking
+A conceptual Java model:
+class Bucket {
+    double tokens;
+    long lastRefillNanos;
+}
+On request:
+long now = System.nanoTime();
+
+long elapsed = now - bucket.lastRefillNanos;
+
+double refill =
+        elapsed / 1_000_000_000.0 * refillRate;
+
+bucket.tokens =
+        Math.min(capacity, bucket.tokens + refill);
+
+bucket.lastRefillNanos = now;
+
+if (bucket.tokens >= cost) {
+    bucket.tokens -= cost;
+    return ALLOW;
+}
+
+return REJECT;
+This is conceptual, not production-ready.
+Why?
+Because concurrency immediately becomes a problem.
+________________________________________
+17. Concurrency problem
+Suppose:
+tokens = 1
+Two threads arrive simultaneously.
+Thread A             Thread B
+   |                    |
+read tokens = 1      read tokens = 1
+   |                    |
+1 >= 1 ✓              1 >= 1 ✓
+   |                    |
+consume               consume
+Both may succeed.
+But only one token existed.
+You've overspent the bucket.
+So the following state transition must be atomic:
+refill
++
+check
++
+consume
++
+update timestamp
+This is a read-modify-write atomicity problem.
+In a single JVM, you could use:
+synchronized
+or locks / atomic state structures.
+But in a distributed system:
+Pod A
+Pod B
+Pod C
+a JVM lock isn't enough.
+That's where distributed rate limiting becomes interesting.
+________________________________________
+18. Distributed Token Bucket
+Imagine:
+                  Load Balancer
+                       |
+          +------------+------------+
+          |            |            |
+        Pod A        Pod B        Pod C
+          |            |            |
+          +------------+------------+
+                       |
+                     Redis
+Suppose global bucket state is:
+user-123:
+    tokens = 7.5
+    lastRefill = T
+All pods must coordinate around this shared state.
+The operation conceptually becomes:
+1. Read current tokens
+2. Calculate elapsed time
+3. Refill
+4. Cap at capacity
+5. Check cost
+6. Consume if possible
+7. Persist tokens + timestamp
+Those operations must be atomic.
+Otherwise:
+Pod A ─┐
+       ├── race
+Pod B ─┘
+can overspend tokens.
+________________________________________
+19. Why Redis is a natural fit
+Redis gives us:
+•	low latency 
+•	centralized shared state 
+•	atomic operations 
+•	Lua scripting 
+•	TTL 
+•	sorted sets / hashes / strings 
+•	horizontal deployment options 
+For a token bucket, we often need only small state such as:
+tokens
+last_refill_timestamp
+which is much cheaper than a sliding-window log containing every request timestamp.
+This is one reason Token Bucket is attractive at high scale.
+________________________________________
+20. Token Bucket vs Leaky Bucket
+You will often hear:
+Token Bucket
+Leaky Bucket
+Don't treat them as synonyms.
+A useful conceptual distinction:
+Token Bucket
+Allows controlled bursts.
+        burst
+          ↓
+████████████████
+          \
+           \ steady traffic
+Leaky Bucket
+Conceptually processes traffic at a controlled output rate.
+incoming
+   ↓
+queue
+   ↓
+████████████
+   ↓
+constant output
+So:
+Token Bucket → burst tolerance
+Leaky Bucket → smoother output
+There are different implementations and terminology in networking literature, but this conceptual distinction is extremely useful for system design.
+________________________________________
+21. A subtle question: what happens after idle time?
+Suppose:
+capacity = 100
+rate = 10/sec
+The client makes no requests for:
+1 hour
+Do we accumulate:
+10 × 3600 = 36,000 tokens?
+No.
+The bucket is capped:
+tokens <= 100
+So after enough idle time:
+tokens = 100
+This matters because otherwise an idle client could return after an hour and generate a gigantic burst.
+The bucket capacity is therefore a maximum stored credit.
+________________________________________
+22. Deriving maximum burst
+Suppose:
+C = 100
+r = 10/sec
+Maximum instantaneous burst from a full bucket:
+B = C
+So:
+B = 100 requests
+After that, tokens arrive at:
+10/sec
+If the client continuously consumes at:
+20 requests/sec
+then:
+net depletion = 20 - 10
+              = 10 tokens/sec
+Starting with 100 tokens:
+time to empty = 100 / 10
+              = 10 seconds
+This gives you a useful capacity calculation.
+________________________________________
+23. Sustainable rate
+If requests cost one token:
+sustainable request rate ≈ refill rate
+So:
+r = 10 tokens/sec
+means long-term sustainable traffic is approximately:
+10 requests/sec
+assuming the bucket is not repeatedly allowed to refill above that consumption rate.
+The bucket capacity determines how much temporary excess traffic can be absorbed.
+________________________________________
+24. A useful formula
+If:
+C = bucket capacity
+r = refill rate
+λ = incoming request rate
+and:
+λ > r
+the bucket is draining at approximately:
+λ - r
+tokens/sec.
+Therefore, if initially full:
+time to exhaustion ≈ C / (λ - r)
+Example:
+C = 100
+r = 10
+λ = 25
+Then:
+time ≈ 100 / (25 - 10)
+     ≈ 6.67 sec
+So the system can temporarily absorb 25 req/sec, but after roughly 6.67 seconds the bucket is exhausted.
+That's the sort of reasoning that makes you strong in system design.
+________________________________________
+25. Token Bucket as a traffic envelope
+There's a deeper mathematical interpretation.
+For a bucket with:
+capacity = C
+rate = r
+over a sufficiently long interval of length t, the amount of traffic allowed is bounded approximately by:
+A(t) <= C + r × t
+where:
+C = initial burst credit
+r × t = newly generated credit
+This is a powerful way to understand the algorithm.
+For example:
+C = 100
+r = 10/sec
+During a 5-second interval, the maximum theoretical amount that can pass, starting with a full bucket, is approximately:
+100 + (10 × 5)
+= 150
+The exact interpretation depends on the initial bucket state and request timing, but the traffic envelope is:
+burst allowance + sustained allowance
+That is much more precise than saying:
+"10 requests per second."
+________________________________________
+26. Token Bucket gives you a two-dimensional SLA
+This is perhaps the most useful mental model.
+Instead of:
+10 req/sec
+you can specify:
+Sustained rate = 10 req/sec
+Burst capacity = 100 requests
+So your API contract becomes:
+              burst capacity
+                    |
+                    v
+            +---------------+
+            |      100      |
+            +---------------+
+                   /
+                  /
+                 /  10/sec
+                /
+---------------/------------------> time
+This is much closer to how real production traffic behaves.
+________________________________________
+27. Where Token Bucket fits in your overall system
+Imagine:
+                    Internet
+                       |
+                       v
+                 CDN / WAF
+                       |
+                       v
+                API Gateway
+                       |
+                Rate Limiter
+                       |
+              +--------+--------+
+              |                 |
+         Authentication      Routing
+              |                 |
+              +--------+--------+
+                       |
+                 Application
+                       |
+             +---------+---------+
+             |         |         |
+            DB       Kafka    External API
+You may have multiple token buckets.
+For example:
+Global:
+10,000 req/sec
+
+Per API key:
+100 req/sec
+
+Per endpoint:
+50 req/sec
+
+Per expensive operation:
+5 req/sec
+And perhaps different capacities:
+normal endpoint:
+rate = 100/sec
+burst = 200
+
+expensive endpoint:	
+rate = 5/sec
+burst = 10
+This is hierarchical rate limiting.
+We'll eventually discuss how these limits interact.
+________________________________________
+28. One subtle production issue: fairness
+Suppose you have:
+100 requests/sec global
+and two users:
+User A → 99 req/sec
+User B → 1 req/sec
+The global limiter is perfectly satisfied.
+But is the system fair?
+Maybe not.
+User A can dominate the shared capacity.
+This is why production systems often combine:
+Global limit
++
+Per-user limit
++
+Per-IP limit
++
+Endpoint limit
+For example:
+Global       → 10,000/sec
+Per customer → 100/sec
+Per IP        → 50/sec
+Expensive API → 5/sec
+Now we're moving from rate limiting algorithms into fairness and resource allocation, which is one of the final topics in your roadmap.
+________________________________________
+29. Token Bucket vs Sliding Window: the key distinction
+If you remember only one thing from this lesson, remember this:
+Sliding Window
+Controls recent historical activity:
+"How many requests happened recently?"
+Token Bucket
+Controls accumulated permission:
+"How much work is currently allowed?"
+Therefore:
+Sliding Window
+      ↓
+history-oriented
+
+Token Bucket
+      ↓
+credit-oriented
+This difference explains why Token Bucket naturally handles bursts.
+________________________________________
+30. Interview-level answer
+If an interviewer asks:
+"Why would you choose Token Bucket?"
+A strong answer is:
+"I'd use Token Bucket when I want to enforce a sustainable average rate while allowing bounded bursts. The refill rate controls long-term throughput, while bucket capacity controls the maximum accumulated burst. It can be implemented with small per-client state—typically current token count and last-refill timestamp—and is therefore attractive for distributed rate limiting. I'd still need to make the refill/check/consume operation atomic across instances, and I'd define a failure policy for when the shared limiter is unavailable."
+That's a much stronger answer than:
+"Token Bucket allows N requests per second."
+
+Lesson 4 — Distributed Rate Limiting with Redis
+Now we move from algorithm design to distributed-systems design.
+This is where the real engineering begins.
+You already understand Token Bucket:
+capacity
+refill rate
+tokens
+consume
+The question now is:
+How do multiple Java instances enforce one shared rate limit correctly?
+________________________________________
+1. The problem: multiple application instances
+Suppose you have:
+                    Load Balancer
+                         |
+          +--------------+--------------+
+          |              |              |
+       Java Pod A     Java Pod B     Java Pod C
+          |              |              |
+          +--------------+--------------+
+                         |
+                      Database
+Your API receives:
+1000 requests/sec
+You want:
+user-123 → maximum 100 requests/sec
+The first instinct might be to put a token bucket inside every JVM.
+Pod A:
+user-123 → 100 tokens
+
+Pod B:
+user-123 → 100 tokens
+
+Pod C:
+user-123 → 100 tokens
+But now your actual limit is approximately:
+100 × 3 = 300 requests/sec
+instead of:
+100 requests/sec
+You've created three independent limiters.
+________________________________________
+2. Why local memory doesn't give a global limit
+Imagine four pods:
+              user-123
+                  |
+           Load Balancer
+                  |
+       +----------+----------+
+       |          |          |
+      A          B          C
+Suppose each JVM says:
+maximum = 100/sec
+Traffic:
+A → 100
+B → 100
+C → 100
+Total:
+300/sec
+The application thinks:
+"I enforced 100/sec."
+But the system actually allowed:
+300/sec
+This is the first fundamental distributed-rate-limiting principle:
+If the limit is global, the limiter's state must be globally coordinated.
+________________________________________
+3. Possible solutions
+There are several architectural approaches.
+Approach A — Sticky routing
+Route the same user consistently to the same pod.
+user-123 → Pod A
+user-456 → Pod B
+user-789 → Pod C
+Then local state could work.
+But this introduces problems:
+•	uneven load 
+•	pod failures 
+•	rebalancing complexity 
+•	scaling complications 
+•	hot users 
+•	more complicated load balancing 
+So it is rarely the preferred general solution.
+________________________________________
+Approach B — Centralized limiter
+                 +-----------+
+Request --------> Redis      |
+                 | limiter   |
+                 +-----------+
+                       |
+                       v
+                    allow?
+                       |
+                       v
+                    Service
+All application instances consult the same shared state.
+This is the common architecture.
+________________________________________
+Approach C — Dedicated rate-limit service
+You could build:
+Java Pods
+    |
+    v
+Rate Limit Service
+    |
+    v
+Redis
+This is useful when rate limiting becomes a platform capability shared by many services.
+But now you've introduced another network hop and another distributed service.
+For many systems, having the application communicate directly with Redis is simpler.
+________________________________________
+4. Why Redis?
+Redis is a natural fit because the limiter needs:
+very low latency
+shared state
+atomic operations
+high throughput
+expiration
+And Redis provides primitives useful for this.
+For Token Bucket, the state can be tiny.
+For example:
+rate:user-123
+    tokens = 37
+    last_refill = 1723740000123
+You don't need to store every request.
+Compare that with Sliding Window Log:
+rate:user-123
+    1723740000001
+    1723740000014
+    1723740000032
+    1723740000055
+    ...
+Token Bucket is therefore particularly attractive for large-scale distributed limiting.
+________________________________________
+5. The Redis data model
+For a Token Bucket, conceptually we need:
+key
+ ├── tokens
+ └── lastRefillTime
+For example:
+rate_limit:user-123
+
+tokens = 37.5
+lastRefill = 1723740000123
+Configuration might be:
+capacity = 100
+refillRate = 10 tokens/sec
+When a request arrives:
+currentTime = now
+Calculate:
+elapsed = currentTime - lastRefill
+Then:
+newTokens =
+    min(capacity,
+        tokens + elapsed × refillRate)
+Then:
+if newTokens >= requestCost:
+    newTokens -= requestCost
+    ALLOW
+else:
+    REJECT
+Finally store:
+tokens = newTokens
+lastRefill = currentTime
+That is the state transition.
+________________________________________
+6. But here's the critical problem
+You might implement this in Java:
+GET tokens
+GET lastRefill
+
+calculate refill
+
+if enough tokens:
+    SET tokens
+    SET lastRefill
+Looks reasonable.
+But it's incorrect under concurrency.
+Suppose Redis contains:
+tokens = 1
+Two requests arrive:
+Pod A                 Pod B
+  |                     |
+  | GET tokens          |
+  |-------------------->|
+  |       1             |
+  |                     |
+  |                     | GET tokens
+  |                     |------------>
+  |                     |      1
+Both see:
+tokens = 1
+Both say:
+1 >= 1
+Both accept.
+Now you've spent:
+2 tokens
+when only one existed.
+________________________________________
+7. This is a classic atomicity problem
+The operation isn't simply:
+GET
+or:
+SET
+The operation is:
+READ
+   ↓
+CALCULATE
+   ↓
+CHECK
+   ↓
+CONSUME
+   ↓
+WRITE
+That entire sequence must behave atomically.
+Think of it as:
+              +----------------------+
+request ----> | Token Bucket         |
+              |                      |
+              | refill               |
+              | check                |
+              | consume              |
+              | update               |
+              +----------------------+
+No other request should be able to interleave inside that state transition.
+This is exactly where Redis Lua scripting becomes useful.
+________________________________________
+8. Redis Lua: move the decision to Redis
+Instead of:
+Java
+ |
+ +--> GET
+ |
+ +--> calculate
+ |
+ +--> SET
+we send the algorithm to Redis:
+Java
+ |
+ | execute script
+ v
+Redis
+ |
+ +-- read state
+ +-- calculate refill
+ +-- check tokens
+ +-- consume
+ +-- update state
+ |
+ v
+ALLOW / REJECT
+The important property is:
+The script executes atomically within Redis.
+Conceptually:
+-- pseudo-code
+
+read tokens
+read lastRefill
+
+calculate elapsed
+calculate refill
+
+tokens = min(capacity, tokens + refill)
+
+if tokens >= cost then
+    tokens = tokens - cost
+    save tokens
+    save timestamp
+    return ALLOW
+else
+    save state
+    return REJECT
+end
+This prevents the race we saw earlier.
+________________________________________
+9. Why "atomic" matters so much
+Suppose:
+tokens = 1
+Requests A and B arrive.
+With atomic execution:
+Redis
+
+Request A:
+    read 1
+    consume
+    write 0
+    return ALLOW
+
+Request B:
+    read 0
+    reject
+Correct.
+Without atomicity:
+A reads 1
+B reads 1
+
+A accepts
+B accepts
+
+tokens = 0
+Incorrect.
+The final value looks reasonable:
+tokens = 0
+but two requests were admitted.
+This is an important distributed-systems lesson:
+Correct final state does not necessarily mean correct concurrent behavior.
+________________________________________
+10. Don't use Redis INCR blindly
+A common beginner implementation is:
+INCR rate:user-123
+and:
+if count <= limit
+    allow
+This works reasonably for a simple Fixed Window limiter.
+But Token Bucket is different.
+We need:
+tokens
++
+time elapsed
++
+refill
++
+capacity
++
+cost
+A single integer counter cannot represent that state.
+You need at least:
+tokens
+lastRefill
+So:
+INCR
+alone isn't enough.
+________________________________________
+11. Fixed Window with Redis
+For comparison, Fixed Window is much simpler.
+Suppose:
+100 requests/minute
+Key:
+rate:user-123:2026-08-15T18:05
+Then conceptually:
+INCR key
+EXPIRE key 60
+If:
+count <= 100
+allow.
+This is why Fixed Window is so popular:
+algorithm
+    ↓
+counter
+    ↓
+Redis INCR
+Very simple.
+Token Bucket:
+algorithm
+    ↓
+state + time calculation
+    ↓
+atomic read/modify/write
+More sophisticated.
+________________________________________
+12. TTL and state cleanup
+Suppose a user makes one request.
+You create:
+rate_limit:user-123
+What happens if the user disappears forever?
+You don't want Redis accumulating:
+millions of inactive users
+So rate-limiter keys should generally have expiration.
+But there's a subtlety.
+For Token Bucket, expiration isn't simply:
+EXPIRE = 60 seconds
+because the bucket state represents something different from a fixed window.
+You typically want to expire state after some period of inactivity.
+For example:
+last request
+     |
+     +------ inactivity ------+
+                              |
+                              v
+                         delete state
+When the user returns:
+new bucket = full bucket
+or whatever initialization policy your system defines.
+________________________________________
+13. Initialization matters
+Suppose a brand-new user appears.
+Should they receive:
+tokens = capacity
+?
+Usually, yes.
+Example:
+capacity = 100
+First request:
+new bucket
+tokens = 100
+consume:
+99
+This allows a new client to burst immediately.
+But that's a policy decision.
+You could initialize differently if your business requirement demands it.
+The important thing is:
+Define the initial state explicitly.
+________________________________________
+14. Redis latency is now part of your API latency
+Our request path has become:
+Client
+   |
+   v
+Load Balancer
+   |
+   v
+Java
+   |
+   v
+Redis
+   |
+   v
+Java
+   |
+   v
+Business logic
+Every request now depends on Redis.
+Suppose:
+Application processing = 10 ms
+Redis = 1 ms
+Fine.
+But if Redis becomes:
+50 ms
+your API latency increases significantly.
+And if Redis is unavailable:
+?
+Now we reach a very important production question.
+________________________________________
+15. What happens when Redis fails?
+There are two classic strategies.
+Fail open
+Redis unavailable
+       |
+       v
+ALLOW request
+Advantages:
+•	application remains available 
+•	user requests aren't blocked by limiter outage 
+Disadvantages:
+•	rate limit protection disappears 
+•	downstream systems can become overloaded 
+•	abusive traffic can get through 
+________________________________________
+Fail closed
+Redis unavailable
+       |
+       v
+REJECT request
+Advantages:
+•	protects infrastructure 
+•	protects downstream dependencies 
+•	preserves the safety boundary 
+Disadvantages:
+•	legitimate traffic fails 
+•	Redis becomes effectively part of your availability boundary 
+Neither is universally correct.
+________________________________________
+16. A better production answer: classify the endpoint
+Suppose:
+GET /products
+and:
+POST /transfer-money
+Should they have identical failure behavior?
+Probably not.
+For a low-risk read API:
+Redis failure → potentially fail open
+For an expensive or security-sensitive operation:
+Redis failure → potentially fail closed
+You can also use:
+local emergency limiter
+as a fallback.
+Architecture:
+                  Redis
+                    |
+              available?
+              /         \
+            yes          no
+            |             |
+         global        local
+         limiter       limiter
+The fallback isn't equivalent to the global limiter, but it can prevent total loss of protection.
+________________________________________
+17. Local + distributed limiter
+A sophisticated production architecture can have:
+Request
+   |
+   v
+Local limiter
+   |
+   v
+Redis limiter
+   |
+   v
+Application
+Why local first?
+Suppose an obviously abusive client sends:
+100,000 req/sec
+You don't want every request to reach Redis just to learn:
+REJECT
+A local limiter can cheaply reject some traffic.
+Then Redis enforces the distributed/global policy.
+Conceptually:
+                 Request
+                    |
+                    v
+             Local limiter
+              /          \
+          reject         allow
+            |              |
+          return           v
+                        Redis
+                     /          \
+                 reject        allow
+                    |             |
+                  return          app
+This can reduce Redis load substantially.
+But it introduces a new problem:
+Local limits must be designed carefully so they don't unfairly reject traffic that should be globally allowed.
+________________________________________
+18. Redis Cluster and the hot-key problem
+Now imagine:
+user-123
+is an extremely active customer.
+All requests hit:
+rate_limit:user-123
+That's one Redis key.
+In Redis Cluster, a key maps to a particular hash slot.
+Therefore:
+10,000 requests/sec
+        |
+        v
+rate_limit:user-123
+        |
+        v
+one shard
+That key can become a hot key.
+Your overall Redis cluster might have:
+10 shards
+but one customer could overload one shard.
+This is an important scalability problem.
+________________________________________
+19. Why can't we just split the key?
+You might think:
+user-123-1
+user-123-2
+user-123-3
+and distribute them across shards.
+But now the limiter needs to know the global token state across multiple shards.
+You've traded:
+hot key
+for:
+distributed coordination
+which is considerably harder.
+This leads to an important principle:
+A globally precise limiter inherently requires some form of coordination.
+At very large scale, you often have to decide how much precision you're willing to sacrifice to gain scalability.
+________________________________________
+20. The "exact global limit" problem
+Suppose:
+limit = 1000 req/sec
+and you have:
+100 application instances
+Could we simply give each instance:
+10 req/sec
+?
+Not really.
+Suppose traffic distribution is:
+Pod A → 500 req/sec
+Pod B → 20
+Pod C → 5
+...
+Pod A needs more capacity while others have unused capacity.
+Static allocation is inefficient.
+You could dynamically redistribute quotas, but now you've built a coordination protocol.
+This is why centralized or coordinated limiting is attractive when precise global semantics matter.
+________________________________________
+21. Multi-region rate limiting
+Now let's make the system harder.
+Suppose:
+                 Global DNS
+                /          \
+               /            \
+        US Region         EU Region
+           |                  |
+        Redis US           Redis EU
+Global limit:
+user-123 → 100 requests/sec
+If both regions independently allow:
+US → 100/sec
+EU → 100/sec
+global traffic can become:
+200/sec
+So what do we do?
+________________________________________
+Option A — Single global Redis
+US ────────┐
+           |
+EU ────────+──> Global Redis
+           |
+APAC ──────┘
+Strong global coordination.
+But:
+•	cross-region latency 
+•	network dependency 
+•	global outage blast radius 
+•	harder availability characteristics 
+________________________________________
+Option B — Regional quotas
+For example:
+Global = 100/sec
+
+US  = 50/sec
+EU  = 30/sec
+APAC = 20/sec
+Now each region can enforce locally.
+Much lower latency.
+But traffic isn't always distributed according to those assumptions.
+You may need quota redistribution.
+________________________________________
+Option C — Approximate global limiting
+Allow some controlled deviation.
+For example:
+target = 100/sec
+actual = occasionally 105–110/sec
+If the business can tolerate this, the system becomes much easier to scale.
+This is a fundamental distributed-systems trade-off:
+more consistency
+       ↕
+more coordination
+       ↕
+more latency / complexity
+versus:
+more availability / scalability
+       ↕
+less precise global enforcement
+________________________________________
+22. Time is another subtle problem
+Token Bucket depends on:
+elapsed time
+So time becomes part of correctness.
+Imagine:
+Pod A clock = 12:00:00.100
+Pod B clock = 11:59:59.900
+If each instance independently calculates elapsed time, clock skew can produce incorrect refill calculations.
+A distributed limiter should therefore carefully decide where authoritative time comes from.
+Possible approaches include:
+•	Redis/server-side time 
+•	carefully controlled monotonic time locally 
+•	centralized timestamp generation 
+•	accepting bounded clock skew 
+A Java detail:
+System.currentTimeMillis()
+is wall-clock time.
+It can move forward or backward due to clock adjustments.
+For measuring elapsed durations within one JVM:
+System.nanoTime()
+is generally the better primitive because it is monotonic.
+But you cannot directly compare nanoTime() values across different machines.
+That's an important distinction.
+________________________________________
+23. Redis server time can help
+If the limiter's state lives in Redis, you can have the atomic operation obtain time from the Redis side rather than trusting each Java pod's wall clock.
+Conceptually:
+Java
+  |
+  | execute atomic limiter script
+  v
+Redis
+  |
+  +--> get current server time
+  |
+  +--> calculate refill
+  |
+  +--> consume tokens
+  |
+  +--> return result
+Now the calculation has a single time authority for that limiter operation.
+That can simplify correctness.
+________________________________________
+24. What should the Redis response contain?
+Don't just return:
+true / false
+A useful rate limiter can return:
+allowed
+remaining
+retryAfter
+For example:
+allowed = false
+remaining = 0
+retryAfter = 250ms
+Then the API can produce:
+HTTP/1.1 429 Too Many Requests
+Retry-After: 1
+and potentially rate-limit headers such as:
+Limit
+Remaining
+Reset
+The exact header contract should be designed consistently across your API.
+________________________________________
+25. Why Retry-After is important
+Suppose the user is rejected:
+tokens = 0
+but:
+refillRate = 10 tokens/sec
+and the request costs:
+1 token
+Then approximately:
+time until next token
+≈ 1 / 10
+≈ 100ms
+Returning a retry hint is much better than forcing the client to blindly retry.
+And now connect this to your previous lesson.
+If the client does:
+429
+  ↓
+immediately retry
+  ↓
+429
+  ↓
+retry
+  ↓
+429
+you can create a retry storm.
+This is why rate limiting and your previously studied retry/backoff mechanisms are connected.
+________________________________________
+26. The dangerous interaction: Retry + Rate Limiting
+Imagine:
+100 clients
+all hit the rate limit.
+All receive:
+429
+Suppose every client retries after exactly:
+1 second
+Then:
+t=0       100 requests → rejected
+          |
+          ↓
+t=1 sec   100 requests → retry simultaneously
+          |
+          ↓
+          burst
+You've created synchronized traffic.
+Better clients use:
+exponential backoff
++
+jitter
+So the retries spread out:
+client A → 0.82s
+client B → 1.13s
+client C → 1.47s
+client D → 0.91s
+...
+This is an excellent example of how different resilience patterns interact.
+________________________________________
+27. Production architecture
+A reasonable architecture might look like:
+                         Internet
+                            |
+                            v
+                       CDN / WAF
+                            |
+                            v
+                      Load Balancer
+                            |
+             +--------------+--------------+
+             |              |              |
+          Java Pod A     Java Pod B     Java Pod C
+             |              |              |
+             +--------------+--------------+
+                            |
+                  +---------+---------+
+                  |                   |
+            Local limiter       Redis Cluster
+                  |                   |
+                  |             Token Bucket
+                  |                   |
+                  +---------+---------+
+                            |
+                            v
+                       Application
+                            |
+             +--------------+--------------+
+             |              |              |
+            DB           Kafka        External APIs
+There can be multiple limiter layers:
+WAF
+ ↓
+global protection
+ ↓
+per-IP
+ ↓
+per-user
+ ↓
+per-API-key
+ ↓
+per-endpoint
+ ↓
+business operation
+But don't blindly add layers.
+Every layer adds:
+latency
+complexity
+state
+failure modes
+________________________________________
+28. A very important design distinction: global vs local limits
+You should explicitly classify limits.
+Global
+Entire service:
+100,000 req/sec
+Protects infrastructure.
+Per customer
+customer-A:
+1000 req/sec
+Protects fairness.
+Per IP
+IP:
+50 req/sec
+Helps abuse protection.
+Per endpoint
+POST /report:
+10 req/sec
+Protects expensive operations.
+Per downstream dependency
+Payment provider:
+100 req/sec
+Protects an external system.
+A mature architecture may use several of these.
+________________________________________
+29. The real question isn't "Which algorithm?"
+At production scale, the question becomes:
+What resource am I protecting, who owns that resource, and what fairness/availability guarantee do I need?
+For example:
+POST /generate-report
+might consume:
+CPU = high
+DB = medium
+external API = high
+Therefore:
+per-user request limit
+may not be enough.
+You might need:
+request rate limit
++
+concurrency limit
++
+downstream quota
++
+timeout
++
+circuit breaker
+This connects directly to your previous resilience lessons.
+________________________________________
+30. A complete request path
+Let's combine everything you've learned.
+Client
+  |
+  v
+Rate Limit
+  |
+  | allowed?
+  v
+Bulkhead
+  |
+  | capacity?
+  v
+Application
+  |
+  v
+Timeout
+  |
+  v
+Downstream
+  |
+  | failure?
+  v
+Circuit Breaker
+  |
+  | retryable?
+  v
+Retry + Backoff
+These aren't interchangeable.
+They control different dimensions:
+Rate Limiter → admission/rate
+Bulkhead     → concurrency
+Timeout      → duration
+Circuit Breaker → dependency health
+Retry        → failure recovery
+That mental model is extremely valuable in system design.
+________________________________________
+31. What I would design for a typical Java service
+For a large Java backend, I'd start with:
+                    API Gateway
+                         |
+                  coarse protection
+                         |
+                         v
+                  Java application
+                         |
+                  local fast limiter
+                         |
+                         v
+                    Redis
+                         |
+               distributed limiter
+                         |
+                         v
+                   business logic
+And I'd define:
+1. Per-user limit
+2. Per-IP limit where appropriate
+3. Endpoint-specific limits
+4. Global service protection
+5. Burst capacity
+6. Redis timeout
+7. Redis failure policy
+8. 429 response semantics
+9. Retry-After
+10. Metrics
+But the exact architecture depends on traffic and consistency requirements.
+________________________________________
+32. Metrics you absolutely want
+A production rate limiter without observability is dangerous.
+Track:
+rate_limit_allowed_total
+rate_limit_rejected_total
+Also:
+rejection rate
+Redis latency
+Redis errors
+limiter latency
+tokens remaining
+hot keys
+429 rate
+Break them down by:
+endpoint
+customer
+API key
+region
+where appropriate and safe.
+For example:
+/checkout
+429 rate = 12%
+might indicate a legitimate capacity problem.
+Whereas:
+/IP
+429 rate = 95%
+might indicate abuse.
+________________________________________
+33. The most important failure modes
+For your system-design preparation, memorize the failure categories, not implementation trivia.
+1. Redis unavailable
+fail-open?
+fail-closed?
+fallback?
+2. Redis slow
+limiter becomes API latency
+3. Hot key
+one customer overloads one Redis shard
+4. Clock inconsistency
+incorrect refill calculations
+5. Race condition
+multiple requests overspend tokens
+6. Network partition
+application ↔ Redis disconnected
+7. Redis failover
+state availability / consistency questions
+8. Multi-region coordination
+global limit becomes difficult
+9. Retry storm
+429 → synchronized retries → more overload
+10. Noisy neighbor
+one customer consumes shared capacity
+These are the issues interviewers care about at senior level.
+________________________________________
+34. The architecture in one picture
+                         INTERNET
+                            |
+                            v
+                       +---------+
+                       | CDN/WAF |
+                       +----+----+
+                            |
+                            v
+                      +-----------+
+                      |   LB      |
+                      +-----+-----+
+                            |
+              +-------------+-------------+
+              |             |             |
+              v             v             v
+           Java A        Java B        Java C
+              |             |             |
+              +-------------+-------------+
+                            |
+                     Local limiter
+                            |
+                            v
+                  +------------------+
+                  |  Redis Cluster   |
+                  |                  |
+                  | token bucket     |
+                  | shared state     |
+                  +--------+---------+
+                           |
+                           v
+                     Business Logic
+                           |
+             +-------------+-------------+
+             |             |             |
+             v             v             v
+            DB           Kafka       External API
+The critical path is:
+Request
+   ↓
+Local protection
+   ↓
+Distributed Redis limiter
+   ↓
+Application
+And the critical correctness boundary is:
+          Redis
+            |
+   +--------+--------+
+   | atomic operation |
+   |                  |
+   | refill           |
+   | check            |
+   | consume          |
+   | persist          |
+   +------------------+
+________________________________________
+35. What you should be able to explain now
+At this point, if I ask:
+"Why can't I implement a global rate limiter using an AtomicLong in each Java pod?"
+You should answer:
+Because each pod has independent state. An atomic operation provides thread safety only within that JVM; it doesn't coordinate state across instances. A global limit requires shared or coordinated state.
+If I ask:
+"Why isn't Redis GET + SET enough?"
+You should answer:
+Because the limiter operation is a read-modify-write transaction. Concurrent requests can read the same token balance and both consume it. The refill, check, consume, and update operations need atomic execution, such as a Redis Lua script.
+If I ask:
+"Why Token Bucket rather than Sliding Window?"
+You should answer:
+Token Bucket naturally provides a sustainable rate plus bounded burst capacity, while requiring relatively small state. Sliding Window is more directly concerned with the number of requests in a rolling historical interval and can require substantially more state.
+If I ask:
+"What happens if Redis goes down?"
+The correct senior-level answer isn't simply:
+"Fail open."
+You should say:
+It depends on the protected resource and availability requirements. We need an explicit failure policy—fail-open, fail-closed, or a local fallback limiter—and should consider the security, overload, and availability consequences.
+That's the level of reasoning I want you to develop.
+Lesson 5 — Production Rate Limiting: Architecture, Fairness & Failure
+Now we move from “how does the algorithm work?” to the question that matters in a real production system:
+How do I design a rate limiter that remains useful when traffic, users, regions, dependencies, and failures all behave badly?
+This is the level where rate limiting becomes distributed-systems engineering.
+________________________________________
+1. Start with the actual resource
+Don't begin with:
+"We need 1,000 requests/sec."
+Begin with:
+What resource am I protecting?
+Suppose:
+POST /generate-report
+One request might consume:
+CPU        → 200 ms
+DB         → 5 queries
+Memory     → 100 MB peak
+Kafka      → 3 messages
+External API → 1 call
+Meanwhile:
+GET /health
+might consume almost nothing.
+So:
+1 report request != 1 health request
+A sophisticated limiter therefore may assign costs.
+health       → 1 token
+profile      → 2 tokens
+search       → 5 tokens
+report       → 20 tokens
+Now you're limiting resource consumption, not merely HTTP request count.
+That is a much stronger design.
+________________________________________
+2. A production system usually has multiple limits
+A common mistake is designing one giant limiter:
+1000 requests/sec
+Real systems often have several independent protection boundaries.
+For example:
+                    Incoming Request
+                           |
+                           v
+                    Global Limiter
+                    100k req/sec
+                           |
+                           v
+                     Per-IP Limit
+                      100 req/sec
+                           |
+                           v
+                   Per-Customer Limit
+                     1k req/sec
+                           |
+                           v
+                    Endpoint Limit
+                 /generate-report
+                       10/sec
+                           |
+                           v
+                  Downstream Limit
+                  Payment API 100/sec
+Each limiter answers a different question.
+________________________________________
+3. Why global + per-user limits?
+Imagine:
+Global capacity = 10,000 req/sec
+You have:
+Customer A → 9,900 req/sec
+Customer B →    50 req/sec
+Customer C →    50 req/sec
+Technically:
+9,900 + 50 + 50 = 10,000
+No global limit was violated.
+But Customer A is effectively monopolizing the system.
+That's the noisy-neighbor problem.
+So you might define:
+Global:
+10,000/sec
+
+Per customer:
+500/sec
+Now:
+Customer A → 500/sec
+Customer B → 50/sec
+Customer C → 50/sec
+There is still unused global capacity, but no single customer can destroy everyone else's experience.
+This is where fairness enters.
+________________________________________
+4. Fairness is not the same as equality
+Suppose you have customers:
+Free customer
+Premium customer
+Enterprise customer
+Giving everyone:
+100 req/sec
+is equal.
+But it may not be fair according to your business model.
+You could instead define:
+Free       → 10/sec
+Premium    → 100/sec
+Enterprise → 1000/sec
+Now fairness means:
+capacity is allocated according to an explicit policy.
+So when designing a rate limiter, ask:
+Fair to whom?
+Possible dimensions:
+•	IP 
+•	user 
+•	API key 
+•	customer 
+•	tenant 
+•	subscription tier 
+•	endpoint 
+•	region 
+________________________________________
+5. Hierarchical rate limiting
+This leads to an important architecture.
+Suppose:
+Global = 100,000 req/sec
+Then:
+Tenant A = 10,000
+Tenant B = 5,000
+Tenant C = 1,000
+And inside Tenant A:
+/search = 5,000
+/report = 500
+/write = 2,000
+You can visualize:
+Global
+  |
+  +--------------------------+
+  |                          |
+Tenant A                  Tenant B
+  |                          |
+  +----+----+                 |
+  |    |    |                 |
+search report write         endpoints
+This is hierarchical rate limiting.
+The request may have to pass multiple policies.
+________________________________________
+6. But don't overdo hierarchical limits
+Every limiter introduces:
+latency
+state
+coordination
+failure modes
+operational complexity
+Imagine:
+Request
+  |
+  v
+Global Redis
+  |
+  v
+Customer Redis
+  |
+  v
+Endpoint Redis
+  |
+  v
+Downstream Redis
+  |
+  v
+Application
+You've created four additional distributed operations.
+That's terrible if every request has to synchronously execute all of them.
+So a good design asks:
+Which limit actually protects which bottleneck?
+Only enforce limits where they provide meaningful protection.
+________________________________________
+7. Rate limiting vs load shedding
+These concepts are related but different.
+Rate limiting
+Controls:
+How much traffic is admitted.
+Load shedding
+Controls:
+What work do we sacrifice when the system is already overloaded?
+Imagine:
+CPU = 95%
+DB connections = 100%
+queue = full
+Even requests below their nominal rate limit may need to be rejected.
+That's load shedding.
+For example:
+Normal:
+accept everything within rate limits
+
+Overloaded:
+reject low-priority requests
+preserve critical traffic
+________________________________________
+8. Priority-based load shedding
+Suppose your system has:
+Payment
+Search
+Recommendations
+Analytics
+When overloaded, you might want:
+Payment       → preserve
+Search        → preserve partially
+Recommendations → reduce
+Analytics     → reject
+This is more sophisticated than a simple:
+HTTP 429
+You are effectively saying:
+Not all work has equal value.
+This is an important production principle.
+________________________________________
+9. Rate limiting + bulkhead
+You've already learned Bulkhead, so connect the two.
+Suppose:
+Rate:
+1000 requests/sec
+But each request takes:
+5 seconds
+Potential concurrency:
+1000 × 5
+= 5000 concurrent requests
+That can destroy your thread pool.
+So:
+Rate Limiter
+    ↓
+1000 req/sec
+
+Bulkhead
+    ↓
+200 concurrent requests
+Now the system has two protection dimensions:
+Rate → how quickly work enters
+Concurrency → how much work exists simultaneously
+This is why rate limiting does not replace bulkheading.
+________________________________________
+10. Rate limiting + timeout
+Suppose downstream latency increases:
+100 ms
+  ↓
+500 ms
+  ↓
+2 sec
+  ↓
+10 sec
+Without timeout:
+requests accumulate
+      ↓
+threads occupied
+      ↓
+connection pool exhausted
+      ↓
+latency explosion
+Rate limiting only controls arrival rate.
+It doesn't force an individual request to finish.
+Therefore:
+Rate Limiter
+     ↓
+Bulkhead
+     ↓
+Timeout
+can work together.
+________________________________________
+11. Rate limiting + retry
+This is one of the most dangerous interactions.
+Suppose:
+Rate limit = 100/sec
+1000 clients receive:
+429
+Every client retries after exactly 1 second.
+At:
+t = 1 sec
+you get another synchronized burst.
+This is a retry storm.
+Therefore rate-limited clients should generally use:
+backoff
++
+jitter
+rather than synchronized retries.
+The resilience mechanisms you've studied are not isolated topics—they form a system.
+________________________________________
+12. Failure mode #1 — Redis is down
+This is the classic production question.
+Architecture:
+Java
+ |
+ v
+Redis
+ X
+Now what?
+There are three broad strategies.
+________________________________________
+Strategy A — Fail open
+Redis failure
+     ↓
+ALLOW
+Good for:
+•	high availability 
+•	low-risk reads 
+•	non-critical APIs 
+Bad for:
+•	abuse protection 
+•	expensive operations 
+•	fragile downstreams 
+________________________________________
+Strategy B — Fail closed
+Redis failure
+     ↓
+REJECT
+Good when:
+•	protecting a very expensive resource 
+•	security is more important than availability 
+•	downstream capacity is dangerous to exceed 
+But it creates a new problem:
+Redis has effectively become part of your application's availability path.
+________________________________________
+Strategy C — Local fallback
+                 Redis
+                /     \
+          available   unavailable
+              |           |
+              v           v
+          global       local
+          limiter      limiter
+This is often a practical compromise.
+But local fallback cannot perfectly enforce a global limit.
+________________________________________
+13. Why local fallback is approximate
+Suppose:
+Global limit = 1000/sec
+You have:
+10 pods
+During Redis failure, each pod could enforce:
+100/sec
+Then theoretically:
+10 × 100 = 1000/sec
+Sounds perfect.
+But pods don't necessarily receive traffic equally.
+Suppose:
+Pod A → 500 req/sec
+Pod B → 50
+Pod C → 20
+...
+Pod A may reject legitimate requests while other pods have unused capacity.
+Therefore local fallback trades:
+global precision
+for:
+availability
+________________________________________
+14. Failure mode #2 — Redis is slow
+This is actually more dangerous than an immediate Redis failure.
+Suppose normal Redis latency:
+1 ms
+Then:
+10 ms
+Then:
+100 ms
+Your rate limiter is in the request's critical path.
+So:
+API latency
+≈ application latency
++ Redis latency
+If Redis becomes slow:
+100 ms Redis
++
+50 ms application
+=
+150 ms
+And if requests pile up waiting for Redis, you can get:
+thread pool exhaustion
+connection pool exhaustion
+queue growth
+So the limiter itself needs a timeout.
+________________________________________
+15. Never allow the limiter to wait forever
+Bad:
+request
+   ↓
+Redis
+   ↓
+wait...
+   ↓
+wait...
+   ↓
+wait...
+Better:
+request
+   ↓
+Redis
+   ↓
+short timeout
+   |
+   +---- success → decision
+   |
+   +---- timeout → failure policy
+The rate limiter itself is a distributed dependency.
+Therefore the resilience patterns you've learned apply to it too.
+________________________________________
+16. Should you use a circuit breaker around Redis?
+Potentially—but carefully.
+Suppose Redis is unhealthy.
+Without protection:
+1M requests/sec
+      ↓
+1M Redis calls/sec
+      ↓
+Redis struggling
+      ↓
+more latency
+      ↓
+more queued requests
+      ↓
+worse Redis load
+A circuit breaker can stop hammering an unhealthy Redis.
+But then you must decide:
+circuit open
+     ↓
+fail open?
+fail closed?
+local fallback?
+So:
+Circuit breaker protects you from a failing rate-limiter dependency, but it doesn't magically decide the correct failure policy.
+________________________________________
+17. Failure mode #3 — Hot key
+Suppose one customer:
+enterprise-customer-A
+generates:
+500,000 req/sec
+and all requests touch:
+rate_limit:customer-A
+That key becomes extremely hot.
+Even a Redis cluster may have difficulty because one key is associated with one shard.
+This is a fundamental scaling issue.
+________________________________________
+18. The uncomfortable truth about hot keys
+You cannot simply distribute one exact counter across 100 Redis nodes without coordination.
+If you split:
+customer-A
+into:
+customer-A-1
+customer-A-2
+...
+customer-A-100
+you now need to know:
+total tokens across all 100
+That requires coordination.
+So you face:
+Exact global limit
+       ↕
+Distributed coordination
+       ↕
+Scalability
+You generally can't maximize all three simultaneously.
+________________________________________
+19. One solution: quota partitioning
+Suppose:
+Customer A:
+100,000 req/sec
+You can allocate:
+Shard 1 → 10,000
+Shard 2 → 10,000
+...
+Shard 10 → 10,000
+Now each shard has independent quota.
+But this isn't exactly equivalent to a global bucket.
+If:
+Shard 1 → 0 traffic
+Shard 2 → 20,000 traffic
+Shard 2 may reject traffic even though global unused capacity exists on Shard 1.
+You've exchanged:
+perfect utilization
+for:
+scalability
+This can be an excellent trade-off when the traffic volume justifies it.
+________________________________________
+20. Failure mode #4 — Multi-region
+Imagine:
+                    Global Users
+                         |
+              +----------+----------+
+              |                     |
+             US                    EU
+              |                     |
+          Redis US               Redis EU
+Global limit:
+1000 req/sec
+If each region independently allows:
+1000/sec
+you can get:
+2000/sec
+globally.
+________________________________________
+21. Three multi-region strategies
+Strategy 1 — Global centralized limiter
+US ─────┐
+EU ─────┼──> Global Redis
+APAC ───┘
+Pros:
+•	accurate global state 
+Cons:
+•	cross-region latency 
+•	global dependency 
+•	harder failure handling 
+________________________________________
+Strategy 2 — Regional quota
+Global = 1000
+
+US  = 500
+EU  = 300
+APAC = 200
+Pros:
+•	low latency 
+•	regional independence 
+Cons:
+•	wasted capacity if traffic shifts 
+________________________________________
+Strategy 3 — Approximate global limit
+Each region gets some local capacity and occasionally rebalances.
+Pros:
+•	scalable 
+•	highly available 
+Cons:
+•	temporary global overshoot 
+This is often acceptable when:
+1000/sec
+really means:
+"Approximately 1000/sec."
+rather than:
+"Under no circumstances may request 1001 occur."
+________________________________________
+22. Exactness is a business requirement
+This is a subtle but extremely important system-design lesson.
+Ask:
+Does the business actually require exact enforcement?
+For an API quota:
+1 million requests/month
+maybe a few extra requests aren't catastrophic.
+For:
+payment fraud protection
+approximation may be unacceptable.
+For:
+external API hard quota
+exceeding the limit may result in provider penalties.
+Therefore:
+Required precision
+       ↓
+determines architecture
+Don't introduce distributed consensus just because "exact" sounds better.
+________________________________________
+23. Failure mode #5 — Clock issues
+Token Bucket needs time.
+Suppose Pod A thinks:
+10:00:00
+Pod B thinks:
+09:59:58
+Now refill calculations can disagree.
+For a centralized Redis limiter, one useful approach is to have the Redis-side operation use a consistent server-side time source.
+Conceptually:
+Java
+  |
+  v
+Redis atomic operation
+  |
+  +--> current server time
+  +--> refill
+  +--> consume
+This avoids having every application instance independently decide the authoritative timestamp.
+________________________________________
+24. Fairness problem: bursty customers
+Suppose:
+Customer A:
+100 req/sec
+
+Customer B:
+100 req/sec
+Both have the same rate.
+But A's traffic is:
+10, 10, 10, 10...
+while B sends:
+100, 0, 100, 0...
+With Token Bucket, B may be perfectly valid if its bucket capacity allows the burst.
+So fairness isn't just about average rate.
+There are multiple fairness dimensions:
+average rate
+burst capacity
+concurrency
+priority
+latency
+You need to decide which one matters.
+________________________________________
+25. Fairness and Weighted Tokens
+Suppose:
+Free tier:
+cost multiplier = 1
+
+Premium:
+cost multiplier = 0.5
+
+Enterprise:
+cost multiplier = 0.1
+Or more intuitively:
+Free:
+10 tokens/sec
+
+Premium:
+100 tokens/sec
+
+Enterprise:
+1000 tokens/sec
+You can encode business priority directly into token allocation.
+But be careful:
+Rate limiting is infrastructure policy, not business authorization.
+The system should determine the customer's tier from trusted identity/authorization information, not from an arbitrary request parameter.
+________________________________________
+26. Rate limiting by IP has a weakness
+Suppose you use:
+10 requests/sec/IP
+This can be unfair behind NAT.
+For example:
+University
+    |
+    +---- 5,000 users
+    |
+    v
+one public IP
+Your limiter sees:
+1 IP
+but actually represents:
+5,000 users
+Therefore IP-based limits are useful for abuse protection, but they aren't necessarily a good fairness mechanism.
+User/API-key/tenant identity is often better when available.
+________________________________________
+27. Rate limiting by user also has a weakness
+A malicious actor can create:
+10,000 accounts
+and get:
+10,000 × per-user quota
+Therefore anti-abuse systems often combine:
+IP
++
+account
++
+device/fingerprint where appropriate
++
+API key
++
+behavioral signals
+Again, rate limiting is only one layer of abuse prevention.
+________________________________________
+28. Observability is part of the design
+You need to know:
+How many requests are being rejected?
+Who is being rejected?
+Why?
+Which limiter rejected them?
+Is Redis healthy?
+Are we hitting capacity?
+Useful metrics:
+rate_limit_allowed_total
+rate_limit_rejected_total
+rate_limit_decision_latency
+redis_latency
+redis_errors
+429_total
+And dimensions such as:
+service
+endpoint
+region
+tenant tier
+Be careful with unbounded labels such as raw user IDs—they can destroy metric systems through high cardinality.
+That's another production-level consideration.
+________________________________________
+29. Logging every rejection is usually wrong
+Suppose:
+100,000 requests/sec
+are rejected.
+If every rejection creates a log line:
+100k logs/sec
+your logging infrastructure becomes another bottleneck.
+Prefer:
+metrics
+sampling
+aggregated logs
+for high-volume limiter events.
+For example:
+/expensive-api
+429 rate = 34%
+is much more useful than millions of individual log entries.
+________________________________________
+30. A mature production architecture
+Putting everything together:
+                         INTERNET
+                            |
+                            v
+                      +-----------+
+                      | CDN / WAF |
+                      +-----+-----+
+                            |
+                            v
+                      +-----------+
+                      |   Load    |
+                      | Balancer  |
+                      +-----+-----+
+                            |
+            +---------------+---------------+
+            |               |               |
+            v               v               v
+         Java A           Java B           Java C
+            |               |               |
+            +---------------+---------------+
+                            |
+                    Local protection
+                            |
+                            v
+                    Distributed limiter
+                            |
+                     +------+------+
+                     |             |
+                 Redis healthy   Redis failure
+                     |             |
+                     v             v
+                  Redis        fallback policy
+                     |             |
+                     +------+------+
+                            |
+                            v
+                        Bulkhead
+And surrounding all of it:
+metrics
+tracing
+alerts
+capacity planning
+________________________________________
+31. Where should rate limiting live?
+This is a common interview question.
+There isn't one universal answer.
+At CDN/WAF
+Good for:
+DDoS
+IP-based abuse
+very cheap rejection
+At API Gateway
+Good for:
+API key
+tenant
+endpoint
+authentication-aware quotas
+Inside application
+Good for:
+business-specific limits
+resource-aware costs
+fine-grained policies
+At downstream client
+Good for:
+external API quotas
+database protection
+dependency-specific limits
+A mature system may use all of them, but for different purposes.
+________________________________________
+32. A useful principle: reject as early as possible
+Suppose a request is obviously invalid or over quota.
+Don't let it travel through:
+CDN
+→ Load Balancer
+→ Java
+→ DB
+→ external API
+before rejecting it.
+Ideally:
+Internet
+   |
+   v
+WAF / Gateway
+   |
+   X 429
+The earlier you reject, the less infrastructure the request consumes.
+This is load shedding at the edge.
+________________________________________
+33. But don't put every policy at the edge
+The gateway might not know:
+Does this request cost 1 or 20 tokens?
+because that requires application/business knowledge.
+So:
+Edge:
+cheap coarse limits
+
+Application:
+fine-grained business limits
+is often a good separation.
+________________________________________
+34. Putting your resilience lessons together
+You have now studied:
+Retry
+Timeout
+Circuit Breaker
+Bulkhead
+Rate Limiting
+Think of them as a coordinated defense system.
+                 Incoming traffic
+                       |
+                       v
+                Rate Limiter
+              "Should work enter?"
+                       |
+                       v
+                  Bulkhead
+            "How much concurrent
+                 work?"
+                       |
+                       v
+                   Timeout
+             "How long can it run?"
+                       |
+                       v
+                 Downstream
+                       |
+                 +-----+-----+
+                 |           |
+              healthy      failing
+                 |           |
+                 v           v
+                         Circuit Breaker
+                         "Should we stop?"
+                              |
+                              v
+                            Retry
+                         "Should we
+                          try again?"
+But be careful with retries.
+Retries increase traffic.
+Therefore a retry policy can undermine your rate limiter if you don't account for retry traffic.
+________________________________________
+35. A subtle system-design problem: where does retry count?
+Suppose client sends:
+1 request
+Your service performs:
+1 original
++
+2 retries
+=
+3 downstream calls
+If the rate limiter only counts the original API request:
+1 token
+but downstream sees:
+3 calls
+you may overload the dependency.
+So you may need separate limits:
+Incoming API:
+1000 req/sec
+
+Payment dependency:
+100 calls/sec
+The downstream limiter should account for actual downstream attempts.
+This is why rate limits should often exist at resource boundaries, not just at the API entry point.
+________________________________________
+36. A complete senior-level design example
+Suppose you're asked:
+Design an API serving 1 million users. Each user can make 100 requests/sec. The service has 20 application pods and Redis Cluster. The API must tolerate Redis failure.
+A reasonable answer:
+Step 1 — Identify limits
+Per user:
+100 req/sec
+
+Global:
+50,000 req/sec
+
+Expensive endpoint:
+1000 req/sec
+Step 2 — Algorithm
+Use:
+Token Bucket
+because we want:
+controlled bursts
++
+sustained rate
+Step 3 — Shared state
+Use Redis for distributed per-user state.
+Step 4 — Atomicity
+Use an atomic Redis-side operation for:
+refill
+check
+consume
+update
+Step 5 — Local protection
+Use a cheap local limiter to reject obvious overload and reduce Redis traffic.
+Step 6 — Redis failure
+For normal reads:
+local fallback / fail-open
+For expensive operations:
+fail-closed or strict fallback
+depending on business requirements.
+Step 7 — Fairness
+Per-user limits prevent one customer from monopolizing global capacity.
+Step 8 — Observability
+Monitor:
+429 rate
+Redis latency
+Redis errors
+hot keys
+per-tenant rejection
+global capacity
+Step 9 — Retry behavior
+Return:
+429
+Retry-After
+and require clients to use:
+backoff + jitter
+That's a complete architecture rather than merely naming Redis.
+________________________________________
+37. The deepest lesson
+A rate limiter is not really about counting requests.
+It is about resource allocation under contention.
+You have:
+finite resource
+       +
+many competing consumers
+       +
+unpredictable traffic
+       +
+failures
+and you're trying to answer:
+Who gets to consume the resource, how much, and under what failure conditions?
+That's why the topic naturally leads to:
+Rate limiting
+      ↓
+Admission control
+      ↓
+Fairness
+      ↓
+Load shedding
+      ↓
+Backpressure
+      ↓
+Queueing
+      ↓
+Capacity planning
+This is the deeper system-design connection.
+________________________________________
+38. Rate Limiting module — completed
+You've now covered:
+1. Why rate limiting exists
+        ↓
+2. Fixed Window
+        ↓
+3. Sliding Window Log
+        ↓
+4. Sliding Window Counter
+        ↓
+5. Token Bucket
+        ↓
+6. Distributed Token Bucket with Redis
+        ↓
+7. Production architecture
+        ↓
+8. Fairness
+        ↓
+9. Failure handling
+The next thing I recommend is not immediately jumping to another unrelated system-design topic.
+The best next step is to make this practical.
+
+Lesson 6 — Build a Production-Grade Rate Limiter in Java
+Now we turn the theory into an implementation.
+We will build this progressively rather than jumping straight into Spring annotations.
+Our target architecture:
+HTTP Request
+     │
+     ▼
+RateLimitFilter
+     │
+     ▼
+Local limiter ──────── fast protection
+     │
+     ▼
+Redis limiter ──────── global/shared protection
+     │
+     ├── ALLOW ─────────────► Controller
+     │
+     └── REJECT ────────────► HTTP 429
+And our distributed algorithm will be Token Bucket.
+________________________________________
+1. First define the contract
+Before writing Java, define what the limiter actually does.
+A useful abstraction is:
+public interface RateLimiter {
+
+    RateLimitResult tryAcquire(
+        String key,
+        int permits
+    );
+}
+And:
+public record RateLimitResult(
+    boolean allowed,
+    long remainingTokens,
+    Duration retryAfter
+) {}
+So the application doesn't care whether the implementation uses:
+local memory
+Redis
+Redis Cluster
+another service
+It only sees:
+tryAcquire(...)
+       ↓
+RateLimitResult
+This is an important design principle:
+Separate the rate-limiting policy from the storage mechanism.
+________________________________________
+2. Why tryAcquire()?
+Notice we aren't doing:
+acquire();
+which might block.
+We're doing:
+tryAcquire();
+Rate limiting is fundamentally an admission decision.
+You normally don't want:
+request
+   ↓
+wait for rate-limit capacity
+   ↓
+maybe eventually execute
+That can turn a rate limiter into a queue.
+Instead:
+request
+   ↓
+check capacity
+   ├── allow
+   └── reject immediately
+This is especially important for protecting overloaded systems.
+________________________________________
+3. Token Bucket state
+Our bucket needs:
+final class BucketState {
+
+    double tokens;
+    long lastRefillNanos;
+
+    BucketState(double tokens, long lastRefillNanos) {
+        this.tokens = tokens;
+        this.lastRefillNanos = lastRefillNanos;
+    }
+}
+Conceptually:
+Bucket
+┌─────────────────────────────┐
+│ capacity = 100              │
+│                             │
+│ tokens = 73                 │
+│                             │
+│ lastRefill = T              │
+└─────────────────────────────┘
+Configuration:
+public record RateLimitConfig(
+    long capacity,
+    double refillTokensPerSecond
+) {}
+Example:
+new RateLimitConfig(
+    100,
+    10
+);
+means:
+maximum burst = 100
+sustainable rate = 10/sec
+________________________________________
+4. The mathematical operation
+When a request arrives at time now:
+elapsed = now - lastRefill
+Then:
+refilledTokens =
+    elapsed × refillRate
+And:
+tokens =
+    min(capacity,
+        oldTokens + refilledTokens)
+Then if:
+tokens >= requestedCost
+consume:
+tokens -= requestedCost
+Otherwise reject.
+The important point:
+We don't need a background thread continuously adding tokens.
+This is a common misunderstanding.
+________________________________________
+5. Lazy refill
+Suppose:
+capacity = 100
+refillRate = 10/sec
+At:
+t = 0
+tokens = 0
+Nobody sends requests for 5 seconds.
+Do we need a scheduler to add:
+10
+20
+30
+40
+50
+every second?
+No.
+When the next request arrives at:
+t = 5 sec
+we calculate:
+0 + (5 × 10)
+= 50
+and continue.
+This is called lazy refill.
+It saves enormous amounts of unnecessary work.
+________________________________________
+6. Local implementation
+Let's first build a single-JVM implementation.
+public final class InMemoryRateLimiter
+        implements RateLimiter {
+
+    private final ConcurrentHashMap<String, BucketState> buckets =
+            new ConcurrentHashMap<>();
+
+    private final RateLimitConfig config;
+
+    public InMemoryRateLimiter(RateLimitConfig config) {
+        this.config = config;
+    }
+
+    @Override
+    public RateLimitResult tryAcquire(
+            String key,
+            int permits) {
+
+        // implementation
+    }
+}
+Why ConcurrentHashMap?
+Because multiple request threads will access:
+user-123
+user-456
+user-789
+simultaneously.
+But ConcurrentHashMap alone is not enough.
+________________________________________
+7. The subtle concurrency problem
+Suppose:
+BucketState state = buckets.get(key);
+Two threads can execute:
+Thread A → read tokens = 1
+Thread B → read tokens = 1
+Both consume.
+So we need the entire state transition to be atomic.
+One simple approach for an in-memory implementation is:
+buckets.compute(key, (k, state) -> {
+    // refill
+    // check
+    // consume
+    // update
+    return state;
+});
+But there is another challenge:
+We need to return the decision from inside the atomic operation.
+You can use a holder:
+AtomicReference<RateLimitResult> result =
+        new AtomicReference<>();
+
+buckets.compute(key, (k, state) -> {
+
+    // calculate
+
+    result.set(...);
+
+    return updatedState;
+});
+
+return result.get();
+This works, but don't rush into clever code.
+For production code, clarity is more important than squeezing everything into one expression.
+________________________________________
+8. A cleaner local implementation
+We can make the bucket itself responsible for its state transition:
+final class TokenBucket {
+
+    private final long capacity;
+    private final double refillRate;
+
+    private double tokens;
+    private long lastRefillNanos;
+
+    TokenBucket(
+            long capacity,
+            double refillRate,
+            long now) {
+
+        this.capacity = capacity;
+        this.refillRate = refillRate;
+        this.tokens = capacity;
+        this.lastRefillNanos = now;
+    }
+
+    synchronized RateLimitResult tryAcquire(
+            int permits,
+            long now) {
+
+        refill(now);
+
+        if (tokens >= permits) {
+
+            tokens -= permits;
+
+            return new RateLimitResult(
+                    true,
+                    (long) tokens,
+                    Duration.ZERO
+            );
+        }
+
+Now the critical transition:
+refill
+  ↓
+check
+  ↓
+consume
+  ↓
+return
+is protected by the same lock.
+________________________________________
+9. Why synchronized here?
+For a single JVM, the bucket's state is mutable:
+tokens
+lastRefillNanos
+Multiple threads can access it.
+So:
+synchronized
+gives us:
+Thread A
+   |
+   +-- refill
+   +-- check
+   +-- consume
+   +-- update
+   |
+   unlock
+before:
+Thread B
+can enter.
+This is enough for the local implementation.
+But now comes the critical distributed-systems question:
+What happens when there are 20 JVMs?
+________________________________________
+10. Why this local implementation isn't globally correct
+Architecture:
+                 Load Balancer
+                /      |      \
+               /       |       \
+            Pod A    Pod B    Pod C
+              |        |        |
+           bucket    bucket   bucket
+Each bucket is independent.
+So:
+Pod A → 100
+Pod B → 100
+Pod C → 100
+can become:
+300 requests
+even if the intended global limit is:
+100
+Therefore:
+The local limiter is a protection layer, not the authoritative global limiter.
+________________________________________
+11. Production architecture: two levels
+This leads to a very useful architecture:
+Request
+   |
+   v
+Local limiter
+   |
+   v
+Redis limiter
+   |
+   v
+Application
+Why local first?
+Because Redis is a distributed dependency.
+If a request can be rejected locally, there's no reason to spend:
+network round trip
+serialization
+Redis CPU
+Redis connection
+just to reject it.
+________________________________________
+12. But what should the local limit be?
+Suppose global:
+10,000/sec
+and:
+20 pods
+You might configure local:
+500/sec/pod
+But this isn't a guarantee of exactly:
+10,000/sec
+because load isn't perfectly distributed.
+For example:
+Pod A → 800
+Pod B → 100
+Pod C → 50
+...
+So local limits should generally be treated as:
+cheap defensive protection
+rather than the source of truth for the global quota.
+________________________________________
+13. Redis becomes the authoritative state
+Now let's model Redis state.
+For:
+user-123
+we could conceptually store:
+rate_limit:user-123
+
+tokens
+last_refill
+For example:
+tokens = 37
+last_refill = 1723740000123
+Configuration might be:
+capacity = 100
+refillRate = 10/sec
+________________________________________
+14. Don't do this from Java
+A tempting implementation:
+TokenState state = redis.get(key);
+
+state = refill(state);
+
+if (state.tokens() >= permits) {
+    state = consume(state);
+    redis.set(key, state);
+    return ALLOW;
+}
+
+return REJECT;
+Looks fine.
+It isn't.
+Consider:
+Redis:
+tokens = 1
+Two requests:
+A → GET → 1
+B → GET → 1
+
+A → consume
+B → consume
+Both were allowed.
+We just overspent the bucket.
+________________________________________
+15. Redis Lua is the critical piece
+The entire operation needs to happen atomically.
+Conceptually:
+local state = redis.call("HMGET", KEYS[1],
+                         "tokens",
+                         "lastRefill")
+
+local tokens = state[1]
+local lastRefill = state[2]
+
+-- initialize if necessary
+
+-- calculate elapsed time
+
+-- refill
+
+-- check capacity
+
+-- consume if allowed
+
+-- save new state
+
+return result
+The important concept isn't Lua itself.
+The important concept is:
+The state transition executes atomically inside Redis.
+________________________________________
+16. Java architecture
+I'd separate the Redis implementation:
+public final class RedisRateLimiter
+        implements RateLimiter {
+
+    private final RedisTemplate<String, Object> redis;
+
+    private final RateLimitConfig config;
+
+    @Override
+    public RateLimitResult tryAcquire(
+            String key,
+            int permits) {
+
+        // execute atomic Redis operation
+    }
+}
+And keep the application-facing interface:
+RateLimiter
+unchanged.
+Now:
+Application
+    |
+    v
+RateLimiter
+    |
+    +---- InMemoryRateLimiter
+    |
+    +---- RedisRateLimiter
+This is clean dependency inversion.
+________________________________________
+17. Why not expose Redis everywhere?
+Bad architecture:
+controller
+    ↓
+RedisTemplate
+    ↓
+Lua script
+Then:
+service
+    ↓
+RedisTemplate
+and:
+filter
+    ↓
+RedisTemplate
+Now your rate-limiting algorithm is scattered through the application.
+Better:
+Controller / Filter
+       |
+       v
+RateLimiter
+       |
+       v
+RedisRateLimiter
+       |
+       v
+Redis
+The infrastructure detail stays behind the abstraction.
+________________________________________
+18. The key design
+Your key should identify the quota subject.
+Examples:
+rate:user:{userId}
+rate:api-key:{apiKey}
+rate:tenant:{tenantId}
+rate:ip:{ip}
+For endpoint-specific quotas:
+rate:user:{userId}:endpoint:{endpoint}
+But be careful.
+If you blindly combine:
+user
++
+endpoint
++
+HTTP method
++
+region
++
+device
++
+...
+you can create enormous key cardinality.
+That means:
+millions of keys
+which means:
+memory
+TTL churn
+CPU
+network
+Rate limiting itself can become expensive.
+________________________________________
+19. Key cardinality
+Suppose:
+10 million users
+and you create:
+10 keys/user
+That's:
+100 million keys
+Even if each key is tiny, the metadata overhead matters.
+Therefore key design is a capacity-planning problem.
+Ask:
+How many active subjects?
+How many keys per subject?
+How long do keys live?
+How much memory per key?
+How frequently are keys touched?
+That's the kind of thinking expected from a senior engineer.
+________________________________________
+20. TTL
+Inactive rate-limit state shouldn't live forever.
+When we update a bucket, we can set an expiration.
+Conceptually:
+SET state
+EXPIRE state N
+But TTL must be chosen carefully.
+If:
+refillRate = 10/sec
+capacity = 100
+and the user disappears, there's little reason to preserve their bucket indefinitely.
+A common policy is to expire after a period of inactivity.
+The exact TTL is a capacity and semantics decision, not a universal constant.
+________________________________________
+21. The Redis script should return more than a boolean
+Don't make Redis return only:
+1
+or:
+0
+Return enough information to build a useful API response:
+allowed
+remaining
+retryAfter
+Conceptually:
+Redis
+  ↓
+[1, 73, 0]
+means:
+allowed = true
+remaining = 73
+retryAfter = 0
+Or:
+[0, 0, 120]
+means:
+allowed = false
+remaining = 0
+retryAfter = 120ms
+Now Java can translate that into HTTP behavior.
+________________________________________
+22. HTTP layer
+A Spring filter is a natural place for request-level rate limiting.
+Conceptually:
+@Component
+public class RateLimitFilter
+        extends OncePerRequestFilter {
+
+    private final RateLimiter rateLimiter;
+
+    @Override
+    protected void doFilterInternal(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            FilterChain filterChain)
+            throws ServletException, IOException {
+
+        String key = resolveKey(request);
+
+        RateLimitResult result =
+                rateLimiter.tryAcquire(key, 1);
+
+        if (!result.allowed()) {
+
+            response.setStatus(429);
+
+            response.setHeader(
+                    "Retry-After",
+                    String.valueOf(
+                        result.retryAfter()
+                                .toSeconds()
+                    )
+            );
+
+            return;
+        }
+
+        filterChain.doFilter(request, response);
+    }
+}
+This gives us:
+HTTP request
+    ↓
+filter
+    ↓
+rate limiter
+    ↓
+429 OR application
+________________________________________
+23. But don't put business-specific limits only in the filter
+A filter knows:
+HTTP request
+path
+method
+headers
+identity
+But it may not know:
+report generation cost = 20
+payment operation cost = 50
+Therefore:
+Filter:
+coarse request-level limiting
+
+Service:
+business/resource-aware limiting
+is often a better design.
+________________________________________
+24. Cost-based rate limiting
+Let's say:
+search → cost 1
+export → cost 10
+generate-report → cost 50
+Then:
+rateLimiter.tryAcquire(key, cost);
+A user with:
+100 tokens
+could do:
+100 searches
+or:
+10 exports
+or:
+2 reports
+depending on your policy.
+This is much closer to protecting actual infrastructure capacity.
+________________________________________
+25. A warning about double
+You noticed our example uses:
+double tokens;
+This is convenient for teaching.
+But in a production implementation, floating-point arithmetic deserves careful consideration.
+You don't want tiny floating-point errors causing unexpected admission decisions.
+A common approach is to represent time and tokens using integer units.
+For example:
+microtokens
+nanoseconds
+or another fixed-point representation.
+Then:
+tokens = 73_500_000
+might mean:
+73.5 logical tokens
+This makes arithmetic deterministic.
+The exact representation depends on your throughput and precision requirements.
+________________________________________
+26. Don't use wall-clock time for local elapsed calculations
+For local Java bucket calculations, prefer:
+System.nanoTime()
+for measuring elapsed time.
+Why?
+Because:
+System.currentTimeMillis()
+is wall-clock time and can be adjusted.
+nanoTime() is designed for measuring elapsed durations.
+But remember:
+nanoTime() values are only meaningful within the same JVM; don't send them to Redis as a cross-machine timestamp.
+For the distributed limiter, use an authoritative Redis-side time strategy or another explicitly coordinated time source.
+________________________________________
+27. Redis failure policy belongs outside the algorithm
+Your Token Bucket algorithm should answer:
+Do I have capacity?
+It shouldn't answer:
+What does the business want when Redis is unavailable?
+That's an infrastructure policy.
+You can therefore have:
+try {
+    return redisLimiter.tryAcquire(key, cost);
+} catch (RedisException e) {
+    return failurePolicy.onRedisFailure(key);
+}
+Where:
+failurePolicy
+    ├── FAIL_OPEN
+    ├── FAIL_CLOSED
+    └── LOCAL_FALLBACK
+This separation is excellent for testing.
+________________________________________
+28. Local fallback
+Suppose Redis fails.
+Architecture:
+                 Redis
+                /     \
+             UP        DOWN
+             |           |
+             v           v
+         distributed    local
+           bucket       bucket
+The local fallback provides approximate protection.
+But you should monitor that state:
+rate_limiter_redis_failure_total
+rate_limiter_fallback_total
+If fallback mode lasts for 30 minutes, that's not normal operation.
+It is an incident.
+________________________________________
+29. Redis timeout
+Don't let:
+redisLimiter.tryAcquire(...)
+hang indefinitely.
+Configure a short timeout appropriate to your latency budget.
+Think:
+API timeout = 500 ms
+You cannot reasonably have:
+Redis limiter timeout = 2 sec
+because the limiter can outlive the request itself.
+The limiter's timeout must fit inside the request's overall latency budget.
+________________________________________
+30. Metrics
+At minimum:
+rate_limit_allowed_total
+rate_limit_rejected_total
+rate_limit_decision_latency
+rate_limit_redis_errors
+rate_limit_redis_latency
+rate_limit_fallback_total
+And ideally:
+429_total
+broken down by:
+endpoint
+tenant tier
+region
+Be careful with user IDs as metric labels.
+High-cardinality labels can be disastrous.
+________________________________________
+31. Tests — don't just test the happy path
+A production limiter needs several categories of tests.
+Functional
+bucket starts full
+consume succeeds
+consume fails when empty
+refill occurs
+capacity is respected
+Boundary
+exactly one token
+zero tokens
+exact capacity
+capacity + 1
+Time
+no elapsed time
+small elapsed time
+large elapsed time
+clock movement
+Concurrency
+100 threads
+same key
+exactly N permits available
+Expected:
+successful acquisitions <= N
+This is extremely important.
+________________________________________
+32. The concurrency test
+Suppose:
+capacity = 100
+Then launch:
+1000 concurrent requests
+against the same key.
+If no refill occurs during the test, the result should be approximately:
+100 allowed
+900 rejected
+Not:
+107 allowed
+and definitely not:
+500 allowed
+This test catches race conditions that ordinary unit tests won't.
+________________________________________
+33. Redis integration tests
+For the distributed implementation, test against a real Redis instance.
+A good development/test setup can use:
+Docker
++
+Redis
+Then verify:
+Java A ──┐
+         ├── Redis
+Java B ──┘
+Both applications share the same bucket.
+This is fundamentally different from testing two local objects.
+________________________________________
+34. The most important distributed test
+Run:
+Pod A
+Pod B
+Pod C
+with:
+global capacity = 100
+Then generate:
+1000 concurrent requests
+across all pods.
+Expected:
+≈100 allowed
+≈900 rejected
+subject to refill timing.
+This proves the global coordination is working.
+________________________________________
+35. Load testing
+Functional correctness isn't enough.
+You need to measure:
+requests/sec
+Redis ops/sec
+limiter latency
+application latency
+CPU
+memory
+Redis CPU
+Redis memory
+network
+Then increase traffic:
+10k/sec
+50k/sec
+100k/sec
+500k/sec
+1M/sec
+Watch where the bottleneck appears.
+Maybe Redis becomes the bottleneck before Java.
+Maybe network does.
+Maybe the limiter's Lua script does.
+Maybe connection pools do.
+That's why load testing is part of rate-limiter design.
+________________________________________
+36. Production architecture we're building
+The final conceptual structure is:
+                   HTTP Request
+                        |
+                        v
+               +------------------+
+               | RateLimitFilter  |
+               +--------+---------+
+                        |
+                        v
+               +------------------+
+               | Local Limiter    |
+               +--------+---------+
+                        |
+                    allowed?
+                   /         \
+                 no           yes
+                 |             |
+                429            v
+                         +------------+
+                         | Redis      |
+                         | Limiter    |
+                         +-----+------+
+                               |
+                         allowed?
+                        /         \
+                      no           yes
+                      |             |
+                     429            v
+                              +-----------+
+                              | Controller|
+                              +-----------+
+And Redis executes:
+refill
+  ↓
+check
+  ↓
+consume
+  ↓
+persist
+as one atomic state transition.
+________________________________________
+37. The senior-level mental model
+Don't memorize:
+"Use Redis Lua."
+Memorize the reasoning:
+Multiple JVMs
+      ↓
+local state isn't global
+      ↓
+need shared state
+      ↓
+Redis
+      ↓
+read-modify-write race
+      ↓
+need atomic state transition
+      ↓
+Redis-side atomic script
+      ↓
+Redis becomes dependency
+      ↓
+need timeout + failure policy
+      ↓
+Redis can become bottleneck
+      ↓
+local limiter + hot-key strategy
+      ↓
+multiple tenants compete
+      ↓
+fairness + hierarchical limits
+That chain of reasoning is what makes you a strong system designer.
+________________________________________
+38. Your Java implementation roadmap
+We'll build the code in this order:
+1. RateLimiter interface
+          ↓
+2. RateLimitResult
+          ↓
+3. TokenBucket
+          ↓
+4. InMemoryRateLimiter
+          ↓
+5. RedisRateLimiter
+          ↓
+6. Atomic Redis script
+          ↓
+7. Spring Filter
+          ↓
+8. Failure policy
+          ↓
+9. Metrics
+          ↓
+10. Concurrency tests
+          ↓
+11. Redis integration tests
+          ↓
+12. Load test
+Don't skip directly to Redis.
+Understanding the local implementation first makes the distributed version much easier to reason about.
+Lesson 7 — Build the Local Token Bucket Correctly in Java
+Today we implement the single-JVM rate limiter first.
+This is important because if you don't understand the concurrency model here, Redis will just hide the same problems behind a network call.
+Our goal:
+Many Java threads
+      │
+      ▼
+same user/key
+      │
+      ▼
+Token Bucket
+      │
+ ┌────┴────┐
+ │         │
+ALLOW    REJECT
+________________________________________
+1. Start with the contract
+We'll keep the interface small:
+public interface RateLimiter {
+
+    RateLimitResult tryAcquire(String key, int permits);
+}
+Result:
+public record RateLimitResult(
+        boolean allowed,
+        long remainingTokens,
+        Duration retryAfter
+) {
+
+    public static RateLimitResult allowed(long remaining) {
+        return new RateLimitResult(
+                true,
+                remaining,
+                Duration.ZERO
+        );
+    }
+
+    public static RateLimitResult rejected(
+            long remaining,
+            Duration retryAfter) {
+
+        return new RateLimitResult(
+                false,
+                remaining,
+                retryAfter
+        );
+    }
+}
+Notice something important:
+The caller doesn't know whether we're using:
+memory
+Redis
+database
+remote rate-limit service
+That's intentional.
+________________________________________
+2. Our Token Bucket model
+For each key:
+┌──────────────────────────────┐
+│ capacity = 100               │
+│ refill = 10 tokens/sec       │
+│                              │
+│ tokens = 73                  │
+│ lastRefill = T               │
+└──────────────────────────────┘
+Interpretation:
+capacity
+   ↓
+maximum burst
+
+refill rate
+   ↓
+long-term sustainable rate
+So:
+capacity = 100
+refill = 10/sec
+means a user could immediately consume 100 tokens if the bucket is full, but over a long period their average rate approaches 10 requests/sec.
+________________________________________
+3. Don't use a scheduled refill thread
+A beginner implementation might do:
+@Scheduled(fixedRate = 100)
+void refill() {
+    // add tokens
+}
+Don't.
+Imagine:
+1 million users
+You don't want:
+1 million buckets
+       ×
+scheduled refill work
+Instead use lazy refill.
+When a request arrives:
+now
+ ↓
+calculate elapsed time
+ ↓
+calculate tokens earned
+ ↓
+update bucket
+No request means no work.
+________________________________________
+4. The TokenBucket class
+Let's write the actual class.
+public final class TokenBucket {
+
+    private final long capacity;
+    private final long refillTokensPerSecond;
+
+    private long tokens;
+    private long lastRefillNanos;
+
+    public TokenBucket(
+            long capacity,
+            long refillTokensPerSecond,
+            long nowNanos) {
+
+        if (capacity <= 0) {
+            throw new IllegalArgumentException(
+                    "capacity must be > 0");
+        }
+
+        if (refillTokensPerSecond <= 0) {
+            throw new IllegalArgumentException(
+                    "refill rate must be > 0");
+        }
+
+        this.capacity = capacity;
+        this.refillTokensPerSecond =
+                refillTokensPerSecond;
+
+        this.tokens = capacity;
+        this.lastRefillNanos = nowNanos;
+    }
+}
+We're deliberately starting with integer tokens.
+That avoids unnecessary floating-point complexity.
+________________________________________
+5. Why long instead of double?
+Suppose:
+refill = 10.0 tokens/sec
+and:
+elapsed = 123456789 ns
+You eventually get floating-point calculations like:
+1.23456789 tokens
+Floating-point arithmetic can introduce tiny precision errors.
+For many applications this is fine.
+But a rate limiter is an admission-control mechanism:
+allow
+or
+reject
+Tiny arithmetic differences can affect boundary decisions.
+So for a production design, I prefer integer/fixed-point accounting when practical.
+We'll simplify the first implementation further by calculating refill in whole tokens.
+________________________________________
+6. Refill logic
+Conceptually:
+private void refill(long nowNanos) {
+
+    long elapsedNanos =
+            nowNanos - lastRefillNanos;
+
+    if (elapsedNanos <= 0) {
+        return;
+    }
+
+    long tokensToAdd =
+            elapsedNanos
+            * refillTokensPerSecond
+            / 1_000_000_000L;
+
+    if (tokensToAdd <= 0) {
+        return;
+    }
+
+    tokens = Math.min(
+            capacity,
+            tokens + tokensToAdd
+    );
+
+    lastRefillNanos = nowNanos;
+}
+Looks reasonable.
+But there's a subtle bug.
+________________________________________
+7. The fractional-token problem
+Suppose:
+refill = 10/sec
+That's:
+1 token / 100ms
+Now request arrives after:
+50ms
+Calculation:
+50ms × 10/sec
+= 0.5 token
+Integer arithmetic gives:
+0 tokens
+If we simply return, we lose that 50ms.
+Then another 50ms arrives:
+elapsed = 50ms
+Again:
+0 tokens
+We've lost the entire second half.
+So we need to preserve fractional elapsed time.
+________________________________________
+8. Better: calculate using elapsed time without throwing away remainder
+We can advance lastRefillNanos only by the time actually converted into whole tokens.
+private void refill(long nowNanos) {
+
+    long elapsedNanos =
+            nowNanos - lastRefillNanos;
+
+    if (elapsedNanos <= 0) {
+        return;
+    }
+
+    long tokensToAdd =
+            elapsedNanos
+                    * refillTokensPerSecond
+                    / NANOS_PER_SECOND;
+
+    if (tokensToAdd <= 0) {
+        return;
+    }
+
+    tokens = Math.min(
+            capacity,
+            tokens + tokensToAdd
+    );
+
+    long consumedNanosForRefill =
+            tokensToAdd
+                    * NANOS_PER_SECOND
+                    / refillTokensPerSecond;
+
+    lastRefillNanos +=
+            consumedNanosForRefill;
+}
+Now the fractional elapsed time remains available for the next call.
+This is a small detail, but it is exactly the kind of detail that separates:
+"I know Token Bucket"
+from:
+"I can implement Token Bucket."
+________________________________________
+9. But there is another issue: overflow
+This expression:
+elapsedNanos * refillTokensPerSecond
+can overflow a long.
+For example:
+elapsedNanos ≈ billions
+refillRate   ≈ millions
+The multiplication can exceed:
+Long.MAX_VALUE
+Production implementations must either:
+•	constrain configuration values, 
+•	use safe arithmetic, 
+•	use a different representation, 
+•	or use double/fixed-point carefully. 
+This is why implementing algorithms in production isn't just translating equations into code.
+________________________________________
+10. Now the most important method
+We need:
+public synchronized RateLimitResult tryAcquire(
+        int permits,
+        long nowNanos)
+Why synchronized?
+Because these operations must be one atomic transition:
+refill
+   ↓
+check
+   ↓
+consume
+   ↓
+update
+You cannot allow another thread to enter between those steps.
+________________________________________
+11. Correct implementation
+public synchronized RateLimitResult tryAcquire(
+        int permits,
+        long nowNanos) {
+
+    if (permits <= 0) {
+        throw new IllegalArgumentException(
+                "permits must be > 0");
+    }
+
+    if (permits > capacity) {
+        return RateLimitResult.rejected(
+                tokens,
+                Duration.ofNanos(Long.MAX_VALUE)
+        );
+    }
+
+    refill(nowNanos);
+
+    if (tokens >= permits) {
+
+        tokens -= permits;
+
+        return RateLimitResult.allowed(tokens);
+    }
+
+    long missingTokens =
+            permits - tokens;
+
+    long retryAfterNanos =
+            calculateRetryAfter(missingTokens);
+
+    return RateLimitResult.rejected(
+            tokens,
+            Duration.ofNanos(retryAfterNanos)
+    );
+}
+The key ordering is:
+refill
+ ↓
+check
+ ↓
+consume
+Never:
+check
+ ↓
+refill
+ ↓
+consume
+unless you've deliberately designed it that way.
+________________________________________
+12. Calculate Retry-After
+Suppose:
+tokens = 3
+requested = 8
+We need:
+missing = 5
+Suppose:
+refill = 10 tokens/sec
+Then:
+5 / 10
+= 0.5 sec
+So approximately:
+retryAfter = 500ms
+Conceptually:
+private long calculateRetryAfter(
+        long missingTokens) {
+
+    return Math.ceil(
+            (double) missingTokens
+            * NANOS_PER_SECOND
+            / refillTokensPerSecond
+    );
+}
+Again, production code should use safe arithmetic for extreme configurations.
+________________________________________
+13. Important edge case: request cost > capacity
+Suppose:
+capacity = 10
+but:
+request cost = 20
+That request can never succeed.
+The bucket can never contain 20 tokens.
+So don't let it wait forever.
+Return rejection immediately.
+This is a surprisingly common mistake in poorly designed token-bucket implementations.
+________________________________________
+14. Now support multiple keys
+We need:
+user-A → bucket A
+user-B → bucket B
+user-C → bucket C
+Use:
+private final ConcurrentHashMap<String, TokenBucket> buckets =
+        new ConcurrentHashMap<>();
+Then:
+public RateLimitResult tryAcquire(
+        String key,
+        int permits) {
+
+    TokenBucket bucket =
+            buckets.computeIfAbsent(
+                    key,
+                    ignored -> createBucket()
+            );
+
+    return bucket.tryAcquire(
+            permits,
+            System.nanoTime()
+    );
+}
+This is a very clean design.
+________________________________________
+15. Why ConcurrentHashMap?
+Because many threads can simultaneously do:
+user-A
+user-B
+user-C
+We don't want to synchronize the entire map.
+ConcurrentHashMap lets different keys progress concurrently.
+Conceptually:
+Thread 1 → user-A bucket
+Thread 2 → user-B bucket
+Thread 3 → user-C bucket
+They don't need to block each other.
+But:
+Thread 1 → user-A
+Thread 2 → user-A
+must serialize inside user-A's bucket.
+That's exactly what our design does.
+________________________________________
+16. Why not synchronize the whole limiter?
+You could write:
+public synchronized RateLimitResult tryAcquire(...) {
+    ...
+}
+on the outer limiter.
+But then:
+user-A
+user-B
+user-C
+all compete for one lock.
+At high concurrency:
+Thread 1
+   ↓
+GLOBAL LOCK
+   ↓
+Thread 2 waits
+Thread 3 waits
+Thread 4 waits
+...
+You've created a scalability bottleneck.
+Better:
+              RateLimiter
+                   |
+       +-----------+-----------+
+       |           |           |
+    bucket-A    bucket-B    bucket-C
+       |           |           |
+      lock        lock        lock
+This is per-key concurrency.
+________________________________________
+17. But computeIfAbsent has an important property
+This:
+buckets.computeIfAbsent(
+    key,
+    ignored -> createBucket()
+);
+is designed for concurrent maps.
+But don't put expensive work into the mapping function.
+Bad:
+computeIfAbsent(
+    key,
+    k -> callRemoteService()
+);
+Now your map operation can unexpectedly become expensive.
+For bucket creation:
+allocate object
+initialize state
+is fine.
+________________________________________
+18. Full local limiter
+Putting it together:
+public final class InMemoryRateLimiter
+        implements RateLimiter {
+
+    private final long capacity;
+    private final long refillTokensPerSecond;
+
+    private final ConcurrentHashMap<String, TokenBucket>
+            buckets = new ConcurrentHashMap<>();
+
+    public InMemoryRateLimiter(
+            long capacity,
+            long refillTokensPerSecond) {
+
+        this.capacity = capacity;
+        this.refillTokensPerSecond =
+                refillTokensPerSecond;
+    }
+
+    @Override
+    public RateLimitResult tryAcquire(
+            String key,
+            int permits) {
+
+        TokenBucket bucket =
+                buckets.computeIfAbsent(
+                        key,
+                        ignored ->
+                                new TokenBucket(
+                                        capacity,
+                                        refillTokensPerSecond,
+                                        System.nanoTime()
+                                )
+                );
+
+        return bucket.tryAcquire(
+                permits,
+                System.nanoTime()
+        );
+    }
+}
+Architecture:
+InMemoryRateLimiter
+       |
+       +-- ConcurrentHashMap
+               |
+               +-- user-A → TokenBucket
+               |
+               +-- user-B → TokenBucket
+               |
+               +-- user-C → TokenBucket
+________________________________________
+19. Now let's break it
+Suppose:
+capacity = 5
+refill = 1/sec
+Initially:
+tokens = 5
+Requests:
+R1 → allow → 4
+R2 → allow → 3
+R3 → allow → 2
+R4 → allow → 1
+R5 → allow → 0
+R6 → reject
+After one second:
+tokens = 1
+Then:
+R7 → allow → 0
+Correct.
+________________________________________
+20. Burst behavior
+Suppose:
+capacity = 100
+refill = 10/sec
+A user is idle for a long time.
+Bucket:
+100
+They suddenly send:
+100 requests
+All can be accepted.
+Then:
+101st request
+is rejected.
+After one second:
+10 tokens
+become available.
+This is precisely why Token Bucket is useful:
+long-term rate = 10/sec
+burst = 100
+________________________________________
+21. The hidden memory problem
+Our map:
+ConcurrentHashMap<String, TokenBucket>
+can grow forever.
+Imagine:
+10 million unique users
+or worse:
+attacker sends random API keys
+You get:
+key1
+key2
+key3
+...
+key10million
+Every key creates a bucket.
+That's a memory attack.
+So production implementation needs an eviction strategy.
+________________________________________
+22. TTL / eviction in local memory
+You can track:
+lastAccess
+and periodically remove inactive buckets.
+For example:
+bucket inactive for 10 minutes
+        ↓
+remove
+But now you've introduced:
+cleanup thread
+eviction policy
+concurrency
+memory accounting
+This is why a production local limiter often uses a cache rather than a raw ConcurrentHashMap.
+Conceptually:
+ConcurrentHashMap
+       ↓
+simple but unbounded
+
+Cache
+       ↓
+TTL
+maximum size
+eviction
+________________________________________
+23. Another production option: bounded cache
+Conceptually:
+Cache<String, TokenBucket>
+    maximumSize = N
+    expireAfterAccess = T
+Then:
+inactive users
+      ↓
+evicted
+This prevents an attacker from filling JVM memory indefinitely.
+But eviction has a semantic consequence.
+If a bucket is evicted:
+old state disappears
+When the user returns:
+new bucket
+and may receive a fresh burst.
+So eviction is not purely a memory optimization.
+It can affect rate-limit behavior.
+________________________________________
+24. Concurrency test
+This is where things become interesting.
+Suppose:
+capacity = 100
+refill = effectively disabled
+Start:
+1000 threads
+Each calls:
+tryAcquire("user-123", 1);
+Expected:
+allowed = 100
+rejected = 900
+Our bucket's:
+synchronized
+protects:
+refill
+check
+consume
+so we don't overspend tokens.
+________________________________________
+25. What happens without synchronization?
+Imagine:
+tokens = 1
+Two threads:
+Thread A → reads 1
+Thread B → reads 1
+Then:
+A → 1 >= 1 → consume
+B → 1 >= 1 → consume
+Result:
+2 successful requests
+from:
+1 token
+That's a classic check-then-act race.
+________________________________________
+26. volatile does NOT solve this
+A common attempted fix:
+private volatile long tokens;
+This does not make:
+read
+check
+subtract
+write
+atomic.
+volatile gives visibility guarantees.
+It doesn't turn a compound operation into:
+atomic compare-and-consume
+This distinction is fundamental Java concurrency knowledge.
+________________________________________
+27. Could we use AtomicLong?
+You might think:
+AtomicLong tokens;
+and:
+tokens.getAndAdd(-1);
+That can work for some simple counters.
+But Token Bucket state consists of multiple related values:
+tokens
++
+lastRefill
+We need to update them consistently.
+You can't independently modify:
+tokens
+and:
+lastRefill
+without risking inconsistent state.
+You need one atomic state transition.
+Possible solutions include:
+synchronized
+Lock
+CAS over immutable state
+For this implementation, synchronized is simple and correct.
+________________________________________
+28. Could we use ReentrantLock?
+Yes.
+private final ReentrantLock lock =
+        new ReentrantLock();
+Then:
+lock.lock();
+
+try {
+    refill();
+    check();
+    consume();
+} finally {
+    lock.unlock();
+}
+This gives more control:
+tryLock()
+fairness configuration
+interruptible locking
+But don't use complexity unless you need it.
+For a small per-bucket critical section:
+synchronized
+is perfectly reasonable.
+________________________________________
+29. Important insight: lock granularity
+We want:
+user-A → lock A
+user-B → lock B
+not:
+all users → global lock
+This is a recurring distributed-systems principle:
+Synchronize at the smallest scope that preserves correctness.
+Later, Redis will give us the distributed equivalent:
+user-A bucket state
+updated atomically without locking the entire Redis database.
+________________________________________
+30. One more subtle issue: hot keys
+Suppose:
+user-A
+receives:
+100,000 requests/sec
+All requests hit:
+bucket-A
+Our synchronized bucket becomes:
+Thread 1 ─┐
+Thread 2 ─┤
+Thread 3 ─┤
+Thread 4 ─┤
+           ▼
+       synchronized
+       bucket-A
+Only one thread modifies that bucket at a time.
+That's correct.
+But it means a single extremely hot key can become a contention point.
+Usually that's acceptable because the limiter is supposed to serialize decisions for that subject.
+If throughput requirements become extreme, you need more sophisticated quota partitioning or upstream shaping.
+________________________________________
+31. Test with a fake clock
+Our current code uses:
+System.nanoTime()
+which makes deterministic unit tests annoying.
+A better design is to inject a clock abstraction.
+For example:
+public interface NanoClock {
+    long nanoTime();
+}
+Production:
+public final class SystemNanoClock
+        implements NanoClock {
+
+    @Override
+    public long nanoTime() {
+        return System.nanoTime();
+    }
+}
+Test:
+public final class FakeNanoClock
+        implements NanoClock {
+
+    private long now;
+
+    @Override
+    public long nanoTime() {
+        return now;
+    }
+
+    public void advance(Duration duration) {
+        now += duration.toNanos();
+    }
+}
+Now your tests can say:
+clock.advance(Duration.ofSeconds(5));
+instead of:
+Thread.sleep(5000);
+That's a huge improvement.
+________________________________________
+32. Why Thread.sleep() in tests is bad
+Imagine:
+Thread.sleep(1000);
+in 500 tests.
+Your test suite becomes:
+500 seconds
+And timing tests become flaky because of:
+OS scheduling
+CI load
+GC pauses
+CPU contention
+Injecting time makes rate-limiter tests:
+fast
+deterministic
+repeatable
+This is an important production-quality design technique.
+________________________________________
+33. Better architecture with injected clock
+Our class becomes:
+public final class TokenBucket {
+
+    private final long capacity;
+    private final long refillTokensPerSecond;
+    private final NanoClock clock;
+
+    private long tokens;
+    private long lastRefillNanos;
+
+    public TokenBucket(
+            long capacity,
+            long refillTokensPerSecond,
+            NanoClock clock) {
+
+        this.capacity = capacity;
+        this.refillTokensPerSecond =
+                refillTokensPerSecond;
+        this.clock = clock;
+
+        this.tokens = capacity;
+        this.lastRefillNanos =
+                clock.nanoTime();
+    }
+
+    public synchronized RateLimitResult tryAcquire(
+            int permits) {
+
+        long now = clock.nanoTime();
+
+        refill(now);
+
+        // ...
+    }
+}
+Now production and testing use the same implementation.
+________________________________________
+34. The resulting object model
+              RateLimiter
+                   │
+                   ▼
+        InMemoryRateLimiter
+                   │
+          ConcurrentHashMap
+                   │
+       ┌───────────┼───────────┐
+       ▼           ▼           ▼
+    Bucket A    Bucket B    Bucket C
+       │           │           │
+     lock        lock        lock
+       │           │           │
+     state       state       state
+And:
+                 TokenBucket
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+       tokens             lastRefillNanos
+The invariant is:
+The bucket's state transition must be atomic.
+________________________________________
+35. What we have accomplished
+We now have a correct conceptual local limiter with:
+✓ Token Bucket
+✓ Lazy refill
+✓ Per-key buckets
+✓ Thread-safe state transition
+✓ Per-key locking
+✓ Burst support
+✓ Retry-after calculation
+✓ Request costs
+✓ Clock injection
+✓ Memory/eviction considerations
+But it is still not production distributed rate limiting.
+Why?
+Because:
+Pod A → bucket-A
+Pod B → bucket-A
+are two different buckets.
+________________________________________
+36. The next big jump
+Now we're ready for the interesting part:
+                    Load Balancer
+                         │
+             ┌───────────┼───────────┐
+             ▼           ▼           ▼
+           Pod A       Pod B       Pod C
+             │           │           │
+             └───────────┼───────────┘
+                         ▼
+                       Redis
+                         │
+                         ▼
+                  Shared bucket
+But we won't simply write:
+redis.get()
+redis.set()
+because that would introduce a race.
+We'll build:
+Java
+  ↓
+Redis
+  ↓
+Lua
+  ↓
+atomic refill + consume
+And we'll answer the important questions:
+1.	What exactly do we store in Redis? 
+2.	Why GET → calculate → SET is incorrect. 
+3.	How the Lua script works line by line. 
+4.	How Redis TIME helps with distributed time. 
+5.	How TTL is handled. 
+6.	How Java invokes the script. 
+7.	How two pods simultaneously competing for the last token behave. 
+8.	What happens when Redis times out. 
+9.	How to design fail-open vs fail-closed. 
+10.	How Redis Cluster changes the design. 
+
 
 
