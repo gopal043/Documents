@@ -1,0 +1,6689 @@
+Distributed Transactions / Saga
+Our roadmap:
+Lesson 1 → Why distributed transactions become difficult
+Lesson 2 → Local transactions + distributed workflow
+Lesson 3 → Choreography
+Lesson 4 → Orchestration
+Lesson 5 → Compensation
+Lesson 6 → Failure, recovery + production design
+________________________________________
+Lesson 1 — Why Distributed Transactions Become Difficult
+Let's start without Saga.
+Suppose we're building an e-commerce system.
+A customer places an order:
+POST /orders
+Business operation:
+Create Order
+    ↓
+Reserve Inventory
+    ↓
+Charge Payment
+    ↓
+Create Shipment
+At first glance, this looks like one transaction.
+But architecturally:
+             Order Service
+                  │
+                  ├────────→ Inventory Service
+                  │
+                  ├────────→ Payment Service
+                  │
+                  └────────→ Shipping Service
+And each service may have its own database:
+Order Service       → Order DB
+Inventory Service   → Inventory DB
+Payment Service     → Payment DB
+Shipping Service    → Shipping DB
+Now the problem appears.
+________________________________________
+1. Why can't we simply use one database transaction?
+Inside one database:
+BEGIN;
+
+UPDATE accounts SET balance = balance - 100;
+INSERT INTO orders (...);
+
+COMMIT;
+The database can provide atomicity.
+Either:
+both happen
+or:
+neither happens
+That's easy because the database controls both operations.
+But now:
+Order DB
+Inventory DB
+Payment DB
+Shipping DB
+are separate systems.
+There is no ordinary:
+BEGIN
+    Order DB
+    Inventory DB
+    Payment DB
+    Shipping DB
+COMMIT
+that magically makes all four databases behave like one local transaction.
+That's the fundamental problem.
+________________________________________
+2. Let's see the failure
+Suppose the workflow is:
+Order
+ ↓
+Reserve inventory
+ ↓
+Charge payment
+ ↓
+Ship
+Everything works:
+Order = CREATED
+Inventory = RESERVED
+Payment = CHARGED
+Shipment = CREATED
+Great.
+But now:
+Payment = CHARGED
+and then:
+Shipping Service = DOWN
+What should happen?
+We now have:
+Order      = CREATED
+Inventory  = RESERVED
+Payment    = CHARGED
+Shipping   = FAILED
+We cannot simply say:
+ROLLBACK;
+because there is no single database transaction spanning all those services.
+________________________________________
+3. The first mental model
+A local transaction gives you:
+A → B → C
+with:
+ALL
+or
+NONE
+A distributed workflow often gives you:
+A → B → C → D
+where each step can commit independently.
+So you can get:
+A ✓
+B ✓
+C ✓
+D ✗
+The system is now in a partially completed state.
+That's the core problem Saga is designed around.
+________________________________________
+4. Why "just retry" isn't enough
+Suppose shipping failed.
+You might say:
+"Just retry shipping."
+Sometimes that works.
+But consider:
+Charge Payment
+The request times out.
+Did payment fail?
+We don't know.
+Possibilities:
+Case A:
+Payment never received request
+
+Case B:
+Payment received request
+Payment failed
+
+Case C:
+Payment received request
+Payment succeeded
+Response got lost
+The client sees:
+TIMEOUT
+but the real state might be:
+PAYMENT = SUCCESS
+If we blindly retry:
+Charge $100
+Charge $100 again
+we could charge the customer twice.
+This is where distributed systems become much more interesting.
+________________________________________
+5. Failure doesn't mean "operation failed"
+This is one of the most important concepts in distributed systems.
+Imagine:
+Order Service
+      |
+      | Charge $100
+      ↓
+Payment Service
+      |
+      | payment succeeds
+      ↓
+Payment DB
+      |
+      X
+      |
+response lost
+Order Service receives:
+timeout
+What does timeout mean?
+Not necessarily failure.
+It means:
+"I don't know the outcome."
+This is called an ambiguous outcome.
+The operation may have:
+not happened
+or:
+happened
+but the caller doesn't know which.
+________________________________________
+6. Why networks make this hard
+Suppose:
+A → B
+There are multiple failure points:
+A
+│
+│ request
+↓
+network
+│
+↓
+B
+│
+│ process request
+↓
+database
+│
+│ commit
+↓
+B
+│
+│ response
+↓
+network
+│
+↓
+A
+Failure could happen anywhere:
+request lost
+request duplicated
+B crashed
+DB failed
+DB committed but B crashed
+response lost
+response delayed
+So distributed transactions are difficult partly because:
+You cannot always distinguish "didn't happen" from "happened but I didn't hear about it."
+________________________________________
+7. The ACID property we want
+Local database transactions give us ACID.
+Especially:
+Atomicity
+Either everything commits
+or nothing commits.
+For our order:
+Order
+Inventory
+Payment
+Shipping
+we would ideally like:
+ALL SUCCESS
+or:
+NONE SUCCESS
+But across independent services, ordinary local transactions don't give us that.
+________________________________________
+8. "Why not just use a distributed transaction?"
+Excellent question.
+There is a classic approach called two-phase commit (2PC).
+Conceptually:
+             Coordinator
+              /   |   \
+             /    |    \
+            ↓     ↓     ↓
+          DB1    DB2   DB3
+The coordinator asks:
+"Can you all commit?"
+Phase 1:
+Prepare
+Each participant says:
+YES
+Then coordinator says:
+COMMIT
+This can provide much stronger atomicity across participants.
+So why don't microservices simply use 2PC everywhere?
+Because it has significant operational and performance costs.
+Let's understand why.
+________________________________________
+9. Two-phase commit — Phase 1
+Suppose:
+Order DB
+Inventory DB
+Payment DB
+Coordinator:
+"Prepare to commit."
+Each participant performs its local work but doesn't fully commit yet.
+Order DB      → PREPARED
+Inventory DB  → PREPARED
+Payment DB    → PREPARED
+Then coordinator asks:
+"Are you ready?"
+Everyone says:
+YES
+________________________________________
+10. Phase 2
+Coordinator:
+COMMIT
+Then:
+Order DB      → COMMITTED
+Inventory DB  → COMMITTED
+Payment DB    → COMMITTED
+The coordinator tries to make the whole operation atomic.
+Sounds great.
+But now imagine:
+Everyone says YES
+and then:
+Coordinator crashes
+Participants may be stuck in:
+PREPARED
+They cannot simply decide:
+"Let's rollback"
+because maybe the coordinator already told another participant to commit.
+This creates coordination complexity.
+________________________________________
+11. The deeper problem with 2PC
+2PC requires participants to hold resources while waiting for the global decision.
+For a high-volume system:
+100,000 requests/sec
+holding locks/resources across multiple systems can become expensive.
+You introduce:
+coordination
+blocking
+latency
+failure recovery complexity
+resource retention
+And microservices often deliberately want:
+Service A
+    ↓
+independent deployment
+    ↓
+independent database
+    ↓
+independent scaling
+2PC works against some of those goals.
+So instead of forcing:
+one giant atomic transaction
+we can change the problem.
+This is where Saga enters.
+________________________________________
+12. The key idea behind Saga
+Saga says:
+Instead of making the entire distributed workflow one atomic transaction, break it into a sequence of local transactions and define how to undo the business effects when later steps fail.
+For our order:
+T1 = Create Order
+T2 = Reserve Inventory
+T3 = Charge Payment
+T4 = Create Shipment
+Each transaction is local:
+T1 → Order DB
+T2 → Inventory DB
+T3 → Payment DB
+T4 → Shipping DB
+Then:
+T1 → T2 → T3 → T4
+If T4 fails, we don't perform a database rollback across all services.
+Instead, we execute compensating actions.
+For example:
+T4 failed
+ ↓
+Cancel Payment
+ ↓
+Release Inventory
+ ↓
+Cancel Order
+This is the basic Saga idea.
+________________________________________
+13. Saga changes the question
+Traditional transaction:
+"How can I make all these operations commit atomically?"
+Saga:
+"How can I make each operation locally reliable, and what business action should happen if the overall workflow cannot complete?"
+That's a profound shift.
+We're moving from:
+atomic rollback
+to:
+business compensation
+________________________________________
+14. Important: compensation is NOT rollback
+This distinction will become extremely important in Lesson 5.
+Suppose:
+Payment charged $100
+A database rollback would conceptually mean:
+pretend payment never happened
+But you can't rollback a remote payment processor's database transaction.
+Instead:
+Refund $100
+That's not rollback.
+It's a new business transaction.
+So:
+Rollback:
+undo the same transaction
+
+Compensation:
+perform another transaction that counteracts the business effect
+These are fundamentally different.
+________________________________________
+15. Example: airline booking
+Suppose:
+Reserve Flight
+    ↓
+Reserve Hotel
+    ↓
+Charge Customer
+Flight reservation succeeds:
+Flight = RESERVED
+Hotel succeeds:
+Hotel = RESERVED
+Payment fails:
+Payment = FAILED
+We can't rollback the flight database transaction from the payment service.
+Instead:
+Cancel Hotel
+    ↓
+Cancel Flight
+The business state moves toward:
+Flight = CANCELLED
+Hotel = CANCELLED
+Payment = NOT CHARGED
+That's compensation.
+________________________________________
+16. Saga is therefore a workflow of local transactions
+Think:
+                 Saga
+                  │
+       ┌──────────┼──────────┐
+       ↓          ↓          ↓
+      T1         T2         T3
+       │          │          │
+    local       local      local
+ transaction transaction transaction
+       │          │          │
+      DB1        DB2        DB3
+Each step commits independently.
+The Saga coordinates the overall business process.
+________________________________________
+17. But we have another problem
+Suppose:
+T1 succeeds
+T2 succeeds
+T3 fails
+We need to compensate:
+C2
+C1
+But what if:
+C2 fails?
+Now:
+T1 ✓
+T2 ✓
+T3 ✗
+C2 ✗
+We're not magically consistent.
+We now have failure during recovery.
+This is why Saga isn't:
+"Just call rollback methods."
+A production Saga needs:
+durability
+retry
+idempotency
+timeouts
+state tracking
+recovery
+dead-letter handling
+observability
+We'll build these later.
+________________________________________
+18. Another subtle problem: compensation isn't always possible
+Suppose:
+Send Email
+The email was successfully sent.
+Then a later step fails.
+Can you do:
+Undo email
+No.
+There is no general inverse operation.
+Or:
+Send SMS
+You cannot reliably "unsend" it.
+Or:
+Ship package
+Once physically shipped, compensation might mean:
+request return
+not:
+undo shipment
+Therefore:
+A Saga is not guaranteed to restore the exact previous state.
+It attempts to restore an acceptable business state.
+This is one of the most important ideas in Saga design.
+________________________________________
+19. The business state may be different from the original state
+Suppose:
+Order = CREATED
+Then:
+Payment = CHARGED
+Then shipping fails.
+Compensation:
+Refund payment
+Final state:
+Order = CANCELLED
+Payment = REFUNDED
+This is not the exact original state:
+Order didn't exist
+Payment didn't exist
+Instead, we reached a valid business outcome:
+Order cancelled
+Payment refunded
+That's often all we need.
+________________________________________
+20. Saga's fundamental guarantee
+Saga generally aims for something like:
+If the workflow succeeds, all required local transactions complete. If the workflow cannot succeed, compensating actions eventually move the system toward an acceptable business state.
+Notice the word:
+eventually.
+This is usually eventual consistency.
+During the Saga:
+Order = CREATED
+Inventory = RESERVED
+Payment = CHARGED
+Shipping = UNKNOWN
+The system may temporarily be in an intermediate state.
+That's acceptable if the business workflow is designed for it.
+________________________________________
+21. This is the trade-off
+With a distributed transaction:
+Strong atomicity
+      ↓
+Higher coordination cost
+With Saga:
+Local atomicity
+      +
+Distributed workflow
+      +
+Compensation
+      ↓
+Eventual consistency
+You trade:
+global atomicity
+for:
+scalability + autonomy + explicit recovery
+Neither is universally better.
+It's an architectural trade-off.
+________________________________________
+22. Let's make the workflow concrete
+Our order Saga:
+T1 Create Order
+        ↓
+T2 Reserve Inventory
+        ↓
+T3 Charge Payment
+        ↓
+T4 Create Shipment
+Success:
+T1 ✓
+ ↓
+T2 ✓
+ ↓
+T3 ✓
+ ↓
+T4 ✓
+
+Saga COMPLETE
+Failure at T3:
+T1 ✓
+ ↓
+T2 ✓
+ ↓
+T3 ✗
+Compensation:
+C2 Release Inventory
+        ↓
+C1 Cancel Order
+Final:
+Order = CANCELLED
+Inventory = AVAILABLE
+Payment = NOT CHARGED
+This is the core Saga structure.
+________________________________________
+23. But who controls this workflow?
+We now arrive at the two major Saga styles.
+Choreography
+Services react to events:
+OrderCreated
+    ↓
+Inventory
+    ↓
+InventoryReserved
+    ↓
+Payment
+    ↓
+PaymentCharged
+    ↓
+Shipping
+No central controller.
+Orchestration
+A central Saga orchestrator says:
+Reserve inventory
+       ↓
+Charge payment
+       ↓
+Create shipment
+and reacts to results.
+These are Lessons 3 and 4.
+________________________________________
+24. Why Saga exists — the complete chain
+Now you can see the progression:
+Microservices
+     ↓
+Separate databases
+     ↓
+One business operation spans services
+     ↓
+Local DB transaction cannot cover all services
+     ↓
+Distributed transaction / 2PC is expensive or undesirable
+     ↓
+Allow local commits
+     ↓
+Need a way to coordinate them
+     ↓
+Need a way to recover when later steps fail
+     ↓
+Saga
+That's why Saga exists.
+Not:
+"Saga is a design pattern for microservices."
+That's a definition.
+The reasoning above is the real understanding.
+________________________________________
+25. Saga vs database transaction
+This distinction should become automatic in your mind.
+Local transaction
+BEGIN
+  UPDATE A
+  UPDATE B
+COMMIT
+Database guarantees:
+atomicity
+Saga
+T1 commit
+    ↓
+T2 commit
+    ↓
+T3 commit
+    ↓
+T4 commit
+If T4 fails:
+C3
+ ↓
+C2
+ ↓
+C1
+The application architecture provides the recovery semantics.
+The database is only responsible for each local transaction.
+________________________________________
+26. A crucial consequence: intermediate states become visible
+With a normal transaction:
+Before → After
+Users generally don't observe the intermediate state.
+With Saga:
+State 1
+   ↓
+State 2
+   ↓
+State 3
+   ↓
+State 4
+Those states may exist for seconds, minutes, or longer.
+For example:
+Order = PAYMENT_PENDING
+is a legitimate state.
+Then:
+PAYMENT_SUCCESS
+or:
+PAYMENT_FAILED
+This means your domain model must often explicitly represent workflow states.
+That's a major consequence of adopting Saga.
+________________________________________
+27. State machines become important
+Instead of:
+Order:
+CREATED / NOT_CREATED
+you may need:
+CREATED
+   ↓
+INVENTORY_RESERVED
+   ↓
+PAYMENT_PENDING
+   ↓
+PAYMENT_CONFIRMED
+   ↓
+SHIPMENT_PENDING
+   ↓
+COMPLETED
+with failure paths:
+PAYMENT_FAILED
+CANCELLING
+CANCELLED
+Now your order is essentially a state machine.
+This becomes extremely useful when we design recovery.
+________________________________________
+28. What happens if the service crashes halfway through?
+Suppose:
+T2 Reserve Inventory
+commits successfully.
+Then Inventory Service crashes before responding.
+Order Service sees:
+timeout
+Again:
+Did reservation happen?
+Maybe.
+Therefore a Saga implementation must be able to answer:
+What is the current state of the workflow?
+That means Saga state cannot live only in memory.
+You need durable state somewhere.
+This becomes central in production design.
+________________________________________
+29. Saga state
+Conceptually:
+Saga ID: S123
+
+Order: CREATED
+Inventory: RESERVED
+Payment: PENDING
+Shipping: NOT_STARTED
+If the orchestrator crashes:
+restart
+it should be able to reconstruct:
+S123
+and continue.
+Otherwise:
+process crashed
+↓
+workflow forgotten
+↓
+inventory remains reserved forever
+That's obviously bad.
+________________________________________
+30. The first production principle
+A distributed workflow must be durable.
+Never design:
+public void executeSaga() {
+
+    reserveInventory();
+
+    chargePayment();
+
+    createShipment();
+}
+and assume the JVM staying alive is part of your consistency model.
+If the JVM dies after:
+reserveInventory()
+what tells the system:
+"Continue Saga S123"
+or:
+"Compensate Saga S123"
+?
+You need durable workflow state and/or durable events.
+________________________________________
+31. What Saga does NOT solve
+Very important.
+Saga does not magically give you:
+global ACID
+It does not prevent:
+partial completion
+It does not guarantee:
+instant consistency
+It does not make:
+network failures disappear
+It gives you a structured way to:
+coordinate local transactions
++
+recover from partial failure
+That's all.
+And that's already extremely powerful.
+________________________________________
+32. The conceptual model I want you to keep
+Imagine a business operation as a journey:
+Start
+  ↓
+Step 1
+  ↓
+Step 2
+  ↓
+Step 3
+  ↓
+Step 4
+  ↓
+Success
+Traditional transaction tries to make the entire journey:
+atomic
+Saga says:
+Each step can commit.
+
+If we can't finish the journey,
+take a controlled path back
+to an acceptable business state.
+That controlled path is compensation.
+________________________________________
+33. Lesson 1 summary
+Problem
+One business operation spans:
+multiple services
+multiple databases
+multiple network calls
+Local transaction
+Can atomically protect:
+one database
+Distributed transaction
+Tries to coordinate:
+multiple independent resources
+but introduces significant coordination and operational complexity.
+Saga
+Breaks the workflow into:
+local transactions
+and coordinates them through:
+workflow
++
+events/commands
++
+compensation
++
+durable state
+Core trade-off
+2PC-style thinking:
+"Everything commits atomically."
+
+Saga:
+"Each step commits locally, and failures are handled explicitly."
+________________________________________
+The one sentence to remember
+Saga exists because a business transaction can span multiple independently committed systems, and we need a way to turn partial failure into a controlled business outcome without requiring one global database transaction.
+
+Saga — Lesson 2: Local Transactions + Distributed Workflow
+Now we go one level deeper.
+Lesson 1 established the problem:
+One business operation
+        ↓
+multiple services
+        ↓
+multiple databases
+        ↓
+cannot use one normal ACID transaction
+        ↓
+need a distributed workflow
+        ↓
+Saga
+Today we answer the critical question:
+If the whole Saga isn't one transaction, what exactly is transactional?
+The answer is:
+Each step is a local transaction. The workflow connecting those transactions is distributed.
+That distinction is the foundation of Saga.
+________________________________________
+1. Start with a concrete system
+Let's use an e-commerce example throughout.
+                    Order
+                      │
+          ┌───────────┼───────────┐
+          ↓           ↓           ↓
+      Inventory     Payment     Shipping
+          │           │           │
+       DB #1        DB #2       DB #3
+Customer does:
+POST /orders
+Business workflow:
+1. Create order
+2. Reserve inventory
+3. Charge payment
+4. Create shipment
+We want:
+Order
+  ↓
+Inventory
+  ↓
+Payment
+  ↓
+Shipping
+But we do not want one giant distributed DB transaction.
+So we divide it.
+________________________________________
+2. What exactly is a "local transaction"?
+Take Inventory.
+Suppose inventory has:
+product_id = 101
+available = 10
+reserved = 0
+We need to reserve 2.
+Inside Inventory Service:
+BEGIN;
+
+UPDATE inventory
+SET available = available - 2,
+    reserved = reserved + 2
+WHERE product_id = 101
+  AND available >= 2;
+
+COMMIT;
+That's a normal database transaction.
+The database guarantees:
+available: 10 → 8
+reserved:    0 → 2
+happens atomically.
+So:
+Inventory Service
+       │
+       ↓
+Inventory DB
+       │
+   local ACID
+No Saga magic is needed here.
+________________________________________
+3. Saga is built on top of local ACID
+This is important.
+Saga does not replace database transactions.
+Instead:
+Saga
+  │
+  ├── Local Transaction 1
+  ├── Local Transaction 2
+  ├── Local Transaction 3
+  └── Local Transaction 4
+Each service still needs proper transactional boundaries.
+For example:
+Order Service
+    ↓
+BEGIN
+create order
+COMMIT
+then:
+Inventory Service
+    ↓
+BEGIN
+reserve inventory
+COMMIT
+then:
+Payment Service
+    ↓
+BEGIN
+record payment
+COMMIT
+The distributed part is between those local transactions.
+________________________________________
+4. The critical boundary
+Think of the architecture like this:
+             DISTRIBUTED WORKFLOW
+─────────────────────────────────────────────
+
+     Local TX             Local TX
+        │                    │
+        ↓                    ↓
+   Order DB             Inventory DB
+        │                    │
+      COMMIT               COMMIT
+        │                    │
+        └────── message ────┘
+The database transaction stops at:
+COMMIT
+The workflow continues through:
+message / command / event
+This gives us a very useful mental boundary:
+Database transactions provide local atomicity. Messages provide workflow progression.
+________________________________________
+5. Let's implement the naïve version first
+Imagine Order Service receives:
+POST /orders
+Naïve code:
+@Transactional
+public Order createOrder(CreateOrderRequest request) {
+
+    Order order = orderRepository.save(
+        new Order(request.customerId(), request.productId())
+    );
+
+    inventoryClient.reserve(
+        order.getProductId(),
+        order.getQuantity()
+    );
+
+    return order;
+}
+Looks reasonable.
+But look closely.
+The transaction says:
+BEGIN
+  insert order
+  call Inventory Service
+COMMIT
+This is problematic.
+________________________________________
+6. Problem: network call inside DB transaction
+Suppose:
+BEGIN
+insert order
+
+call Inventory
+     ↓
+     network delay
+     ↓
+     2 seconds
+     
+COMMIT
+Your database transaction is held open for 2 seconds.
+Now suppose Inventory takes:
+10 seconds
+Your Order DB transaction stays open for 10 seconds.
+Under load:
+1000 requests
+×
+long-running DB transactions
+You can get:
+connection pool exhaustion
+lock contention
+long transactions
+increased latency
+deadlocks
+So generally:
+Don't treat a remote service call as if it were a local database operation inside your DB transaction.
+This is one of the first architectural changes Saga forces us to make.
+________________________________________
+7. Move the network call outside
+We might try:
+@Transactional
+public Order createOrder(...) {
+
+    Order order = orderRepository.save(...);
+
+    return order;
+}
+Then:
+inventoryClient.reserve(order);
+Now:
+DB transaction
+     ↓
+COMMIT
+     ↓
+remote call
+Much better.
+But we've created a new problem.
+________________________________________
+8. The dual-write problem
+Suppose:
+DB:
+Order created ✓
+Then we need to tell Inventory:
+Reserve inventory
+Maybe we publish an event:
+OrderCreated
+Naïve code:
+@Transactional
+public void createOrder(...) {
+
+    orderRepository.save(order);
+
+    kafkaTemplate.send("order-created", order);
+}
+Looks fine.
+But two separate systems are involved:
+Order DB
+Kafka
+There is no single local transaction covering both in the ordinary setup.
+So:
+Case A
+DB COMMIT ✓
+Kafka SEND ✗
+Now:
+Order exists
+Inventory never learns about it
+Case B
+Kafka SEND ✓
+DB COMMIT ✗
+Now:
+Inventory thinks order exists
+Order DB says it doesn't
+This is the dual-write problem.
+And this problem is extremely important for Saga.
+________________________________________
+9. This is where Outbox enters
+We need to make:
+DB change
++
+"message must be sent"
+part of the same local transaction.
+Instead of directly sending Kafka inside the transaction:
+DB
++
+Kafka
+we write to:
+DB
+├── orders
+└── outbox
+Both are in the same database.
+________________________________________
+10. Outbox pattern
+Order Service:
+BEGIN
+
+INSERT INTO orders
+    (...)
+
+INSERT INTO outbox
+    (
+      event_type,
+      aggregate_id,
+      payload
+    )
+
+COMMIT
+Now both happen atomically.
+Either:
+orders ✓
+outbox ✓
+or:
+orders ✗
+outbox ✗
+The important thing is:
+We don't need Kafka to participate in the database transaction.
+The database only needs to atomically store:
+business state
++
+intent to publish
+________________________________________
+11. What is inside the outbox?
+Conceptually:
+outbox
+────────────────────────────────────────────
+id       event_type       aggregate_id
+101      OrderCreated     ORD-123
+Maybe:
+payload
+{
+    "orderId": "ORD-123",
+    "customerId": "C-10",
+    "productId": "P-55",
+    "quantity": 2
+}
+And metadata:
+status
+created_at
+published_at
+attempts
+Although exact schema varies.
+________________________________________
+12. Now we need a publisher
+A separate process/thread polls the outbox:
+Outbox DB
+   ↓
+publisher
+   ↓
+Kafka
+For example:
+while (true) {
+    List<OutboxEvent> events = outboxRepository.findUnpublished();
+
+    for (OutboxEvent event : events) {
+        kafka.publish(event);
+    }
+}
+Now the flow is:
+HTTP request
+     ↓
+Order Service
+     ↓
+DB transaction
+ ┌──────────────────┐
+ │ create order     │
+ │ create outbox    │
+ └──────────────────┘
+     ↓ COMMIT
+     ↓
+Outbox publisher
+     ↓
+Kafka
+This is much more reliable.
+________________________________________
+13. But now another failure appears
+Suppose:
+publisher
+    ↓
+Kafka publish ✓
+Then before marking:
+outbox.status = PUBLISHED
+the publisher crashes.
+On restart:
+outbox says:
+UNPUBLISHED
+So it publishes again.
+Now Kafka has:
+OrderCreated
+OrderCreated
+Duplicate delivery.
+Is that a bug?
+Not necessarily.
+This leads us to an important principle:
+Reliable distributed messaging often means at-least-once delivery, so consumers must be idempotent.
+We'll spend significant time on this.
+________________________________________
+14. At-least-once delivery
+Outbox typically gives us something like:
+event will be retried
+until successfully published
+But we may not know whether the previous publish succeeded before the publisher crashed.
+Therefore:
+event may be delivered:
+1 time
+2 times
+3 times
+...
+So consumers must safely handle duplicates.
+________________________________________
+15. Inventory consumer
+Suppose Inventory receives:
+{
+  "eventId": "E123",
+  "orderId": "O123",
+  "productId": "P55",
+  "quantity": 2
+}
+It performs:
+BEGIN;
+
+UPDATE inventory
+SET available = available - 2
+WHERE product_id = 'P55'
+  AND available >= 2;
+
+INSERT INTO processed_events(event_id)
+VALUES ('E123');
+
+COMMIT;
+But there's an important condition:
+event E123
+must only affect inventory once.
+So we need idempotency.
+________________________________________
+16. Idempotency
+An operation is idempotent if executing it multiple times produces the same effective result as executing it once.
+For example:
+SET status = 'CANCELLED'
+is naturally idempotent.
+Executing:
+CANCEL
+CANCEL
+CANCEL
+still results in:
+CANCELLED
+But:
+balance -= 100
+is not idempotent.
+Executing twice gives:
+-200
+instead of:
+-100
+So payment and inventory operations require special care.
+________________________________________
+17. Idempotency key
+A common pattern:
+Saga ID
++
+Step ID
+For example:
+sagaId = S123
+step = RESERVE_INVENTORY
+Create a unique key:
+S123:RESERVE_INVENTORY
+Database:
+CREATE UNIQUE INDEX
+ON processed_steps(saga_id, step_name);
+Then:
+first delivery:
+S123 + RESERVE_INVENTORY
+→ process
+
+second delivery:
+S123 + RESERVE_INVENTORY
+→ duplicate
+→ don't process again
+Now the consumer is safe against redelivery.
+________________________________________
+18. Local transaction + idempotency together
+This is an important pattern.
+Inventory receives:
+ReserveInventory(S123)
+Inside one local transaction:
+BEGIN
+
+if already_processed(S123, "RESERVE"):
+    return success;
+
+reserve inventory;
+
+record processed step;
+
+COMMIT
+So:
+inventory mutation
++
+idempotency record
+happen atomically.
+This prevents:
+inventory updated
+but processed marker missing
+or:
+processed marker exists
+but inventory update didn't happen
+assuming both are in the same local database transaction.
+________________________________________
+19. Now let's build the complete flow
+Order request:
+POST /orders
+Order Service:
+BEGIN
+
+create Order(status = PENDING)
+
+insert OutboxEvent(
+    type = OrderCreated
+)
+
+COMMIT
+Then:
+Outbox
+   ↓
+Kafka
+   ↓
+Inventory Service
+Inventory:
+BEGIN
+
+reserve inventory
+
+record processed event
+
+insert OutboxEvent(
+    type = InventoryReserved
+)
+
+COMMIT
+Then:
+Inventory Outbox
+      ↓
+Kafka
+      ↓
+Payment Service
+Payment:
+BEGIN
+
+charge/record payment
+
+record processed event
+
+insert OutboxEvent(
+    type = PaymentSucceeded
+)
+
+COMMIT
+And so on.
+This is the distributed workflow.
+________________________________________
+20. Notice what we did NOT do
+We did not do:
+BEGIN global transaction
+
+Order DB
+Inventory DB
+Payment DB
+Shipping DB
+
+COMMIT global transaction
+Instead:
+Local TX
+   ↓
+message
+   ↓
+Local TX
+   ↓
+message
+   ↓
+Local TX
+   ↓
+message
+This is the fundamental Saga architecture.
+________________________________________
+21. The distributed workflow is asynchronous
+The workflow can now look like:
+OrderCreated
+     ↓
+InventoryReserved
+     ↓
+PaymentSucceeded
+     ↓
+ShipmentCreated
+There doesn't need to be one Java thread sitting there waiting for all operations.
+This is extremely important at scale.
+Imagine:
+100,000 orders
+You don't want:
+100,000 threads
+waiting for
+Inventory
+Payment
+Shipping
+Instead, services react to durable messages.
+________________________________________
+22. But what if you need synchronous APIs?
+Your external API might still be:
+POST /orders
+and return:
+{
+    "orderId": "O123",
+    "status": "PENDING"
+}
+Then the workflow continues asynchronously.
+Later:
+PENDING
+   ↓
+INVENTORY_RESERVED
+   ↓
+PAYMENT_CONFIRMED
+   ↓
+COMPLETED
+The client can:
+GET /orders/O123
+or receive an update.
+This is a very common consequence of Saga:
+The API often exposes workflow states rather than pretending the entire business operation completed atomically.
+________________________________________
+23. Why PENDING is not a hack
+Some developers initially think:
+POST /orders
+→ 200 OK
+must mean:
+Everything completed.
+Not necessarily.
+With distributed workflows, a valid API can say:
+{
+  "orderId": "O123",
+  "status": "PROCESSING"
+}
+The system has acknowledged:
+"Your request was accepted and the workflow has started."
+That is fundamentally different from:
+"Every downstream operation succeeded."
+________________________________________
+24. Workflow state vs business state
+You may have:
+orders
+────────────────────────────
+id       status
+O123     PAYMENT_PENDING
+This state tells you:
+Where is the Saga?
+But you may also have domain data:
+payment
+────────────────────────────
+order_id
+amount
+status
+and:
+inventory_reservation
+────────────────────────────
+order_id
+product_id
+status
+So don't necessarily put the entire Saga state into one giant table.
+Separate:
+business state
+from:
+workflow metadata
+when that separation makes the design clearer.
+________________________________________
+25. The most important failure: crash after commit
+Let's study one very realistic failure.
+Inventory receives:
+ReserveInventory(S123)
+It executes:
+BEGIN
+
+UPDATE inventory ...
+
+INSERT processed_event ...
+
+INSERT outbox InventoryReserved
+
+COMMIT
+Then:
+CRASH
+before sending any response.
+Order Service sees:
+timeout
+What happened?
+We know from the durable database state:
+inventory reserved ✓
+outbox exists ✓
+When Inventory restarts:
+outbox publisher
+   ↓
+InventoryReserved
+gets published.
+Therefore the Saga can continue.
+This is exactly why:
+Durability matters more than process memory.
+________________________________________
+26. What if the incoming message is duplicated?
+Inventory receives:
+ReserveInventory(S123)
+again.
+Database:
+processed_steps
+S123 | RESERVE
+already exists.
+So:
+do not reserve again
+and return a successful/duplicate outcome.
+This is why:
+durable state
++
+idempotency
+work together.
+________________________________________
+27. What if the event arrives out of order?
+Suppose Payment receives:
+PaymentRequested
+before it somehow receives:
+OrderCreated
+This can happen depending on architecture.
+A robust consumer should not assume:
+messages always arrive in perfect business order
+You may need:
+ordering keys
+state checks
+version numbers
+dependency handling
+This becomes more important with choreography, which we'll explore in Lesson 3.
+________________________________________
+28. The database is still your transactional boundary
+This is perhaps the most important design rule of today's lesson.
+Suppose Inventory needs to do:
+reserve inventory
++
+record event processed
++
+create next event
+Put those operations in one local transaction:
+BEGIN
+
+reserve inventory
+record processed event
+insert outbox event
+
+COMMIT
+Then:
+COMMIT
+means:
+inventory state
++
+workflow progress
++
+outgoing event intent
+are atomically persisted.
+This gives you a reliable transition.
+________________________________________
+29. Think of every Saga step as a state transition
+Instead of thinking:
+"call service"
+think:
+OLD STATE
+    ↓
+LOCAL TRANSACTION
+    ↓
+NEW STATE
+    +
+NEXT MESSAGE
+Example:
+Inventory:
+
+AVAILABLE
+    ↓
+ReserveInventory
+    ↓
+RESERVED
+    +
+InventoryReserved event
+Payment:
+PENDING
+    ↓
+ChargePayment
+    ↓
+PAID
+    +
+PaymentSucceeded event
+This mental model is much more powerful.
+________________________________________
+30. A Saga step has three components
+I recommend mentally modeling every step as:
+                    Saga Step
+                       │
+          ┌────────────┼────────────┐
+          ↓            ↓            ↓
+       Command      Local TX     Outcome
+          │            │            │
+          │            ↓            │
+          │       DB mutation       │
+          │       + outbox          │
+          │                         │
+          └─────────────────────────┘
+For example:
+Command:
+ReserveInventory(S123)
+
+Local transaction:
+inventory.available -= 2
+processed_steps += S123
+outbox += InventoryReserved
+
+Outcome:
+InventoryReserved
+That structure will make Lessons 3–6 much easier.
+________________________________________
+31. Where does the Saga ID come from?
+A distributed workflow needs an identity.
+For example:
+sagaId = S-12345
+Every message carries it:
+{
+  "sagaId": "S-12345",
+  "orderId": "O-900",
+  "eventId": "E-456"
+}
+Then you can trace:
+S-12345
+   │
+   ├── OrderCreated
+   ├── InventoryReserved
+   ├── PaymentSucceeded
+   ├── ShipmentFailed
+   ├── InventoryReleased
+   └── OrderCancelled
+This is invaluable in production debugging.
+________________________________________
+32. Saga ID vs Event ID
+Don't confuse them.
+Saga ID
+Identifies the business workflow:
+S123
+Event ID
+Identifies one specific message:
+E987
+Step ID
+Identifies a logical operation:
+RESERVE_INVENTORY
+So you might have:
+sagaId = S123
+eventId = E987
+step = RESERVE_INVENTORY
+These solve different problems.
+________________________________________
+33. Why event ID matters
+Suppose Kafka delivers:
+E987
+three times.
+Consumer can say:
+Have I already processed E987?
+That's message-level idempotency.
+Saga ID answers:
+Which workflow does this message belong to?
+Step ID answers:
+Which logical operation are we performing?
+Production systems often need all three concepts.
+________________________________________
+34. A Java-style model
+You might conceptually have:
+record SagaMessage(
+    UUID sagaId,
+    UUID eventId,
+    String type,
+    String aggregateId,
+    long version,
+    Instant occurredAt,
+    JsonNode payload
+) {}
+And a local processing table:
+processed_messages
+----------------------------
+event_id
+processed_at
+plus:
+outbox
+----------------------------
+event_id
+saga_id
+type
+aggregate_id
+payload
+published_at
+plus business tables:
+orders
+inventory
+payments
+The exact schema isn't sacred.
+The important architectural relationships are.
+________________________________________
+35. The full architecture
+Now let's draw it.
+                         API
+                          │
+                          ↓
+                    Order Service
+                          │
+                ┌─────────┴─────────┐
+                │   LOCAL TX        │
+                │                   │
+                │ create order      │
+                │ create outbox     │
+                └─────────┬─────────┘
+                          │
+                       COMMIT
+                          │
+                          ↓
+                       Outbox
+                          │
+                          ↓
+                        Kafka
+                          │
+                          ↓
+                  Inventory Service
+                          │
+                ┌─────────┴─────────┐
+                │   LOCAL TX        │
+                │                   │
+                │ reserve inventory │
+                │ idempotency       │
+                │ create outbox     │
+                └─────────┬─────────┘
+                          │
+                       COMMIT
+                          │
+                          ↓
+                       Outbox
+                          │
+This is already a real distributed workflow.
+________________________________________
+36. Where does orchestration fit?
+At this point, you might ask:
+"Who decides that after InventoryReserved, we should charge payment?"
+There are two possibilities.
+Choreography
+Inventory emits:
+InventoryReserved
+Payment subscribes and reacts.
+Then Payment emits:
+PaymentSucceeded
+Shipping reacts.
+No central coordinator.
+Orchestration
+A Saga Orchestrator receives:
+InventoryReserved
+and explicitly says:
+ChargePayment
+Then:
+PaymentSucceeded
+and says:
+CreateShipment
+We'll deeply compare these in Lessons 3 and 4.
+________________________________________
+37. A subtle but important distinction: command vs event
+This will matter next lesson.
+Command
+Means:
+"Please do this."
+Example:
+ReserveInventory
+It has a target:
+Inventory Service
+Event
+Means:
+"This already happened."
+Example:
+InventoryReserved
+It has occurred.
+This distinction helps explain choreography vs orchestration.
+________________________________________
+38. The workflow is not the same as the transaction
+This is probably today's most important conceptual separation.
+We have:
+Transaction:
+    create order
+and:
+Workflow:
+    create order
+       ↓
+    reserve inventory
+       ↓
+    charge payment
+       ↓
+    create shipment
+The workflow spans:
+many transactions
+not:
+one transaction spanning everything
+So:
+Saga is a distributed workflow composed of locally atomic transactions.
+Memorize the concept, not the sentence.
+________________________________________
+39. What happens when something fails?
+Suppose:
+OrderCreated ✓
+InventoryReserved ✓
+PaymentFailed ✗
+Payment emits:
+PaymentFailed
+Now the workflow must decide:
+ReleaseInventory
+CancelOrder
+Who decides?
+Choreography → services react to events
+Orchestration → orchestrator decides
+And how do we actually undo inventory?
+ReleaseInventory
+That's compensation.
+So now you can see how the remaining lessons connect:
+Lesson 2
+Local TX + workflow
+       ↓
+Lesson 3
+Who communicates? → Choreography
+       ↓
+Lesson 4
+Who controls? → Orchestration
+       ↓
+Lesson 5
+How do we undo? → Compensation
+       ↓
+Lesson 6
+What if everything fails? → Recovery
+________________________________________
+40. The complete mental model
+At this point, visualize Saga as:
+                 SAGA
+                  │
+                  ↓
+            Distributed
+              workflow
+                  │
+        ┌─────────┼─────────┐
+        ↓         ↓         ↓
+      Step 1    Step 2    Step 3
+        │         │         │
+      Local     Local     Local
+       TX        TX        TX
+        │         │         │
+      COMMIT    COMMIT    COMMIT
+        │         │         │
+        └──── messages ─────┘
+                  │
+                  ↓
+             failure?
+                  │
+                  ↓
+            compensation
+And underneath every reliable step:
+Local DB transaction
+      +
+Idempotency
+      +
+Outbox
+      +
+Durable message
+That's the foundation.
+________________________________________
+41. What I want you to internalize
+Don't memorize:
+"Saga uses local transactions and messages."
+Instead reason like this:
+Question 1
+Why local transactions?
+Because each service owns its database and needs atomic state changes.
+Question 2
+Why not keep the DB transaction open while calling another service?
+Because remote calls are slow/unreliable and holding DB resources across them is dangerous.
+Question 3
+Why outbox?
+Because:
+DB commit
++
+message publish
+are two different systems and create a dual-write problem.
+Question 4
+Why idempotency?
+Because distributed delivery is commonly at-least-once, so duplicates happen.
+Question 5
+Why Saga ID?
+Because we need to correlate many local transactions into one business workflow.
+Question 6
+Why durable workflow state?
+Because the process can crash at any point and must resume/recover.
+________________________________________
+42. The key failure timeline
+Keep this one in your head:
+Request
+   ↓
+BEGIN
+   ↓
+Update DB
+   ↓
+Write Outbox
+   ↓
+COMMIT
+   ↓
+       ← JVM crashes here
+   ↓
+Restart
+   ↓
+Outbox publisher sees event
+   ↓
+Publish
+   ↓
+Consumer receives
+   ↓
+BEGIN
+   ↓
+Check idempotency
+   ↓
+Update local DB
+   ↓
+Write next Outbox event
+   ↓
+COMMIT
+That is the kind of timeline you should be able to draw during a system-design interview.
+
+Saga — Lesson 3: Choreography
+Now we reach the first real Saga architecture.
+We already established:
+Lesson 1:
+Global transaction is difficult
+
+Lesson 2:
+Break it into local transactions
++
+messages
++
+durable state
++
+idempotency
+Now the question is:
+Who decides which service should act next?
+With choreography, there is no central coordinator.
+Each service:
+1.	performs its local transaction, 
+2.	publishes an event, 
+3.	other services listen and react. 
+Think of it like dancers following the music rather than one person shouting every movement.
+________________________________________
+1. Start without choreography
+Our workflow is:
+Order
+  ↓
+Inventory
+  ↓
+Payment
+  ↓
+Shipping
+A naïve centralized design would be:
+             Saga Orchestrator
+              /      |      \
+             ↓       ↓       ↓
+          Order   Inventory Payment
+                              ↓
+                           Shipping
+The orchestrator explicitly says:
+Create order
+Reserve inventory
+Charge payment
+Create shipment
+That's orchestration.
+We'll study it in Lesson 4.
+Choreography removes that central brain.
+________________________________________
+2. Choreography architecture
+Instead:
+Order Service
+     │
+     │ OrderCreated
+     ↓
+   Broker
+     │
+     ↓
+Inventory Service
+     │
+     │ InventoryReserved
+     ↓
+   Broker
+     │
+     ↓
+Payment Service
+     │
+     │ PaymentSucceeded
+     ↓
+   Broker
+     │
+     ↓
+Shipping Service
+No service says:
+"Inventory, now call Payment."
+Instead:
+InventoryReserved
+is published.
+Payment happens to be interested in that event.
+________________________________________
+3. The key idea
+Choreography means:
+Services react to events rather than being centrally instructed through a workflow controller.
+So:
+Event → interested service reacts
+rather than:
+Controller → command → service
+That's the fundamental distinction.
+________________________________________
+4. Let's build the complete order Saga
+We'll use:
+Order Service
+Inventory Service
+Payment Service
+Shipping Service
+Workflow:
+Create Order
+    ↓
+Reserve Inventory
+    ↓
+Charge Payment
+    ↓
+Create Shipment
+Now let's implement it entirely through events.
+________________________________________
+5. Step 1 — Create order
+Customer:
+POST /orders
+Order Service performs a local transaction:
+BEGIN
+
+INSERT order
+    status = PENDING
+
+INSERT outbox
+    event = OrderCreated
+
+COMMIT
+Then outbox publishes:
+{
+  "eventId": "E1",
+  "sagaId": "S100",
+  "type": "OrderCreated",
+  "orderId": "O500"
+}
+Broker:
+OrderCreated
+No orchestrator is involved.
+________________________________________
+6. Step 2 — Inventory reacts
+Inventory Service subscribes to:
+OrderCreated
+It receives:
+E1
+S100
+Order O500
+Product P10
+Quantity 2
+It performs:
+BEGIN
+
+check idempotency
+
+reserve 2 units
+
+record E1 processed
+
+insert outbox:
+    InventoryReserved
+
+COMMIT
+Then publishes:
+{
+  "eventId": "E2",
+  "sagaId": "S100",
+  "type": "InventoryReserved",
+  "orderId": "O500"
+}
+________________________________________
+7. Step 3 — Payment reacts
+Payment Service subscribes to:
+InventoryReserved
+It receives:
+E2
+S100
+O500
+Then:
+BEGIN
+
+check idempotency
+
+create/charge payment
+
+record E2 processed
+
+insert outbox:
+    PaymentSucceeded
+
+COMMIT
+Then:
+PaymentSucceeded
+is published.
+________________________________________
+8. Step 4 — Shipping reacts
+Shipping Service subscribes to:
+PaymentSucceeded
+It performs:
+BEGIN
+
+check idempotency
+
+create shipment
+
+record E3 processed
+
+insert outbox:
+    ShipmentCreated
+
+COMMIT
+Then:
+ShipmentCreated
+is published.
+________________________________________
+9. Final state
+Order Service might subscribe to:
+ShipmentCreated
+and execute:
+UPDATE orders
+SET status = 'COMPLETED'
+WHERE id = 'O500';
+Now:
+Order      = COMPLETED
+Inventory  = RESERVED
+Payment    = PAID
+Shipment   = CREATED
+The entire Saga completed.
+________________________________________
+10. Notice something profound
+There is no code like:
+inventoryService.reserve();
+
+paymentService.charge();
+
+shippingService.ship();
+Instead, the architecture itself forms the workflow:
+OrderCreated
+      ↓
+InventoryReserved
+      ↓
+PaymentSucceeded
+      ↓
+ShipmentCreated
+The events become the connective tissue of the distributed system.
+________________________________________
+11. Why is this called choreography?
+Think about a dance.
+There isn't necessarily a manager saying:
+Step 1: move left
+Step 2: move right
+Step 3: turn
+Each participant knows:
+"When X happens,
+I perform Y."
+Similarly:
+Inventory
+WHEN OrderCreated
+→ reserve inventory
+Payment
+WHEN InventoryReserved
+→ charge payment
+Shipping
+WHEN PaymentSucceeded
+→ create shipment
+Each service owns its reaction.
+________________________________________
+12. The code becomes event-driven
+Conceptually:
+@EventHandler
+public void on(OrderCreated event) {
+
+    reserveInventory(event);
+}
+Payment:
+@EventHandler
+public void on(InventoryReserved event) {
+
+    chargePayment(event);
+}
+Shipping:
+@EventHandler
+public void on(PaymentSucceeded event) {
+
+    createShipment(event);
+}
+There is no:
+SagaOrchestrator.execute(...)
+The workflow emerges from event subscriptions.
+________________________________________
+13. Why would anyone want this?
+Because it has some beautiful properties.
+Low central coupling
+Order doesn't need to know:
+Payment Service
+Shipping Service
+It just publishes:
+OrderCreated
+Inventory reacts.
+Then Inventory publishes:
+InventoryReserved
+Payment reacts.
+Each service only needs to understand the events relevant to it.
+________________________________________
+14. Service autonomy
+Suppose Payment changes internally from:
+Payment Service v1
+to:
+Payment Service v2
+As long as it continues to understand:
+InventoryReserved
+other services don't necessarily care.
+This supports independent:
+deployment
+scaling
+implementation
+technology
+ownership
+which is one of the major motivations behind microservices.
+________________________________________
+15. Choreography is naturally asynchronous
+This is another advantage.
+Order doesn't have to wait synchronously:
+Order
+ ↓ HTTP
+Inventory
+ ↓ HTTP
+Payment
+ ↓ HTTP
+Shipping
+Instead:
+Order
+ ↓
+Event
+ ↓
+Broker
+ ↓
+Inventory
+ ↓
+Event
+ ↓
+Broker
+ ↓
+Payment
+This can absorb temporary load spikes better.
+For example:
+100,000 orders
+don't necessarily mean:
+100,000 synchronous call chains
+The broker can buffer work.
+________________________________________
+16. But now let's introduce failure
+Suppose:
+OrderCreated
+      ↓
+InventoryReserved
+      ↓
+PaymentFailed
+Payment publishes:
+PaymentFailed
+Who handles it?
+Inventory needs to release the reservation.
+Order needs to cancel the order.
+So:
+PaymentFailed
+      │
+      ├────────→ Inventory
+      │             ↓
+      │       ReleaseInventory
+      │
+      └────────→ Order
+                    ↓
+               CancelOrder
+Still no central coordinator.
+Each service reacts.
+________________________________________
+17. Compensation through choreography
+Payment:
+BEGIN
+
+payment.status = FAILED
+
+outbox += PaymentFailed
+
+COMMIT
+Inventory receives:
+PaymentFailed
+and:
+BEGIN
+
+release reservation
+
+outbox += InventoryReleased
+
+COMMIT
+Order receives:
+PaymentFailed
+and:
+BEGIN
+
+order.status = CANCELLED
+
+COMMIT
+The compensation flow is also event-driven.
+________________________________________
+18. Now the architecture starts getting interesting
+Success path:
+OrderCreated
+    ↓
+InventoryReserved
+    ↓
+PaymentSucceeded
+    ↓
+ShipmentCreated
+Failure path:
+OrderCreated
+    ↓
+InventoryReserved
+    ↓
+PaymentFailed
+    ↓
+   ├── InventoryReleased
+   └── OrderCancelled
+Already we're no longer looking at a simple chain.
+We're building a distributed state machine.
+________________________________________
+19. Add another failure
+Suppose:
+PaymentFailed
+and Inventory tries:
+ReleaseInventory
+but release fails.
+What now?
+Maybe:
+InventoryReleaseFailed
+Then what?
+retry?
+manual intervention?
+dead-letter queue?
+reconciliation?
+The event graph grows.
+________________________________________
+20. This is the first major weakness of choreography
+As the number of services increases:
+3 services
+may be manageable.
+But imagine:
+Order
+Inventory
+Payment
+Shipping
+Fraud
+Loyalty
+Notification
+Tax
+Pricing
+Warehouse
+Delivery
+Now events can look like:
+OrderCreated
+      ↓
+InventoryReserved
+      ↓
+FraudCheckRequested
+      ↓
+FraudCheckPassed
+      ↓
+PaymentRequested
+      ↓
+PaymentSucceeded
+      ↓
+LoyaltyPointsAdded
+      ↓
+ShipmentCreated
+      ↓
+WarehouseNotified
+      ↓
+DeliveryScheduled
+and failure paths:
+PaymentFailed
+FraudFailed
+InventoryReservationFailed
+ShipmentFailed
+DeliveryFailed
+with compensations for each.
+The workflow becomes difficult to understand globally.
+________________________________________
+21. The "distributed spaghetti" problem
+This is the biggest conceptual danger of choreography.
+Imagine trying to answer:
+"What happens after an order is created?"
+You have to inspect:
+Order Service
+Inventory Service
+Payment Service
+Fraud Service
+Shipping Service
+Loyalty Service
+...
+and search for:
+@EventHandler(OrderCreated)
+Then:
+@EventHandler(InventoryReserved)
+Then:
+@EventHandler(PaymentSucceeded)
+The workflow isn't represented in one place.
+It's distributed across the codebase.
+________________________________________
+22. The dependency graph grows
+Suppose:
+A → B
+B → C
+C → D
+Simple.
+But now:
+A → B
+A → C
+B → D
+C → D
+C → E
+D → F
+E → F
+The number of interactions grows rapidly.
+The services remain individually simple, but understanding the system-level behavior becomes harder.
+This is a major trade-off.
+________________________________________
+23. Event coupling is still coupling
+People sometimes say:
+"Events mean services are decoupled."
+Not completely.
+Suppose Payment expects:
+{
+  "orderId": "...",
+  "amount": 100
+}
+and Inventory changes the meaning of:
+InventoryReserved
+Payment can break.
+So choreography removes direct synchronous coupling, but introduces event/schema/semantic coupling.
+This is an important distinction.
+Synchronous coupling:
+A directly calls B
+
+Event coupling:
+A publishes something that B depends upon
+The latter is often better, but it isn't zero coupling.
+________________________________________
+24. Temporal coupling
+There's another subtle form.
+Payment may assume:
+InventoryReserved
+always comes before:
+OrderCancelled
+But distributed systems can produce:
+OrderCancelled
+before Payment processes the previous event.
+Now Payment needs to understand:
+What if the order is already cancelled?
+This is temporal coupling.
+The service isn't only coupled to event schemas.
+It's coupled to assumptions about when events occur.
+________________________________________
+25. Choreography therefore requires strong event contracts
+If you use choreography seriously, events become APIs.
+For example:
+{
+  "eventId": "E123",
+  "eventType": "InventoryReserved",
+  "eventVersion": 2,
+  "sagaId": "S100",
+  "occurredAt": "2026-08-16T06:00:00Z",
+  "orderId": "O500",
+  "reservationId": "R77"
+}
+Consumers should not depend on accidental internal fields.
+You need:
+schema versioning
+backward compatibility
+contract ownership
+event documentation
+________________________________________
+26. Why event versioning matters
+Suppose v1:
+{
+  "orderId": "O1",
+  "amount": 100
+}
+Later v2:
+{
+  "orderId": "O1",
+  "currency": "USD",
+  "amount": 100,
+  "tax": 10
+}
+If old consumers are still running, you don't want:
+v2 event
+↓
+old consumer
+↓
+CRASH
+So event evolution needs to be designed.
+This is particularly important because events can remain in brokers/logs for a long time.
+________________________________________
+27. Another issue: duplicate events
+We already discussed this in Lesson 2.
+Choreography makes it especially important because a single event can trigger business actions.
+Suppose:
+InventoryReserved
+is delivered twice.
+Payment might:
+charge $100
+charge $100
+unless the Payment Service is idempotent.
+Therefore:
+Choreography
++
+at-least-once delivery
+requires:
+idempotent consumers
+as a foundational property.
+________________________________________
+28. Another issue: lost events
+Suppose:
+OrderCreated
+is published incorrectly or the consumer fails permanently.
+Then:
+Inventory
+never reserves stock.
+The order may remain:
+PENDING
+forever.
+That's why production choreography needs:
+durable broker
+retry
+consumer offsets
+dead-letter queues
+monitoring
+reconciliation
+The happy path is easy.
+Recovery is the real engineering.
+________________________________________
+29. What does retry mean in choreography?
+Suppose Inventory receives:
+OrderCreated
+but DB is temporarily unavailable.
+It should not immediately declare the Saga failed.
+Instead:
+OrderCreated
+    ↓
+Inventory
+    ↓
+DB unavailable
+    ↓
+retry
+    ↓
+retry
+    ↓
+success
+This sounds simple, but retries can create duplicates.
+Therefore:
+retry
++
+idempotency
+must be designed together.
+________________________________________
+30. Poison messages
+Imagine an event is malformed:
+OrderCreated
+but:
+quantity = "banana"
+Every retry fails.
+You get:
+retry
+retry
+retry
+retry
+retry
+...
+The message becomes a poison message.
+Production systems typically need:
+retry policy
+   ↓
+max attempts
+   ↓
+dead-letter queue
+Then humans/automation can investigate.
+________________________________________
+31. Dead-letter queue
+Conceptually:
+Kafka topic
+     ↓
+Inventory consumer
+     ↓
+failure
+     ↓
+retry 1
+retry 2
+retry 3
+     ↓
+DLQ
+The DLQ allows the main workflow to continue processing other messages instead of getting permanently stuck behind one bad message.
+But:
+DLQ is not a recovery strategy by itself.
+Someone or some automated process must eventually decide what to do with that event.
+________________________________________
+32. Ordering becomes important
+Suppose these events exist:
+InventoryReserved
+InventoryReleased
+If they are processed in the wrong order:
+InventoryReleased
+      ↓
+InventoryReserved
+you could end up with:
+RESERVED
+when you expected:
+AVAILABLE
+So choreography may need ordering guarantees.
+Possible strategies include:
+partition by aggregate ID
+For example:
+Kafka partition key = orderId
+Then events for the same order can be kept in a defined partition order.
+But remember:
+Ordering guarantees are usually local to a partition/key, not magically global across the entire distributed system.
+________________________________________
+33. One order, one event stream
+A useful mental model:
+Order O500
+     │
+     ├── E1 OrderCreated
+     ├── E2 InventoryReserved
+     ├── E3 PaymentSucceeded
+     ├── E4 ShipmentCreated
+     └── E5 OrderCompleted
+If all these events use:
+key = O500
+they can be routed consistently.
+This helps maintain ordering for that aggregate.
+________________________________________
+34. But don't confuse event ordering with business correctness
+Even if events are perfectly ordered:
+E1
+E2
+E3
+you can still have:
+PaymentSucceeded
+and then:
+ShippingFailed
+Ordering doesn't prevent failure.
+It only tells you:
+"These events were observed in this order."
+You still need:
+compensation
+retries
+recovery
+________________________________________
+35. Choreography and observability
+Here's another major production challenge.
+With orchestration, you can inspect:
+Saga S100
+current step = PAYMENT
+With choreography, there may be no central workflow state.
+You need to reconstruct the workflow from:
+events
+logs
+traces
+service state
+Therefore every event should ideally carry correlation information:
+sagaId
+orderId
+eventId
+causationId
+correlationId
+________________________________________
+36. Causation ID
+This is a useful concept.
+Suppose:
+OrderCreated
+causes:
+InventoryReserved
+Then:
+InventoryReserved.causationId
+=
+OrderCreated.eventId
+You can construct:
+E1 OrderCreated
+   ↓
+E2 InventoryReserved
+   ↓
+E3 PaymentSucceeded
+   ↓
+E4 ShipmentCreated
+Now production debugging becomes much easier.
+You can ask:
+"Why was E3 produced?"
+Answer:
+Because E2 caused it.
+________________________________________
+37. Choreography's biggest strength
+Let's summarize the positive side.
+1. No central coordinator
+no orchestrator bottleneck
+2. Loose direct coupling
+Services don't need synchronous knowledge of each other's APIs.
+3. Natural asynchronous behavior
+Broker decouples timing.
+4. Service autonomy
+Each service owns:
+local state
+local transaction
+local reaction
+5. Easy to add a reaction
+Suppose you want analytics:
+PaymentSucceeded
+      ↓
+Analytics Service
+You don't necessarily modify Payment.
+It simply subscribes to the existing event.
+That's powerful.
+________________________________________
+38. But choreography's biggest weakness
+The system's business workflow becomes implicit.
+Instead of:
+Saga:
+A → B → C → D
+you have:
+A emits X
+B reacts to X and emits Y
+C reacts to Y and emits Z
+D reacts to Z
+distributed across codebases.
+As complexity grows:
+understanding workflow
++
+debugging
++
+testing
++
+reasoning about failures
+becomes increasingly difficult.
+________________________________________
+39. A useful rule of thumb
+Choreography works especially well when:
+workflow is simple
+few participants
+events have independent consumers
+reactions are relatively independent
+For example:
+OrderCreated
+   ├── Analytics
+   ├── Notification
+   └── Search indexing
+These are excellent event-driven use cases.
+Because the consumers don't necessarily form one tightly coupled business workflow.
+________________________________________
+40. Where choreography becomes uncomfortable
+Suppose the business says:
+1. Reserve inventory
+2. If successful:
+       check fraud
+3. If fraud passes:
+       charge payment
+4. If payment succeeds:
+       create shipment
+5. If shipment fails:
+       refund payment
+       release inventory
+6. If refund fails:
+       retry for 24 hours
+7. After 24 hours:
+       manual review
+Now ask:
+"Where is this workflow defined?"
+In pure choreography:
+everywhere
+That's the problem.
+The workflow logic is spread across services.
+________________________________________
+41. Testing becomes harder
+Imagine an integration test for:
+PaymentFailed
+You need to verify:
+Inventory releases
+Order cancels
+Notification sent
+Metrics emitted
+Now you have to reason about:
+multiple services
+multiple topics
+multiple asynchronous operations
+retry timing
+duplicates
+ordering
+This is possible, but considerably more complex.
+________________________________________
+42. Business logic becomes hidden inside subscriptions
+This is another subtle problem.
+Suppose Payment contains:
+@EventHandler
+public void on(InventoryReserved event) {
+    chargePayment();
+}
+The business workflow:
+Inventory reserved
+→ payment charged
+is encoded indirectly.
+A developer looking only at Order Service may not know that.
+So choreography can make dependencies implicit.
+That can be good for loose coupling, but bad for system comprehensibility.
+________________________________________
+43. Choreography is not "no coordination"
+This is a common misconception.
+There is still coordination.
+It is simply:
+distributed coordination
+rather than:
+central coordination
+The events coordinate the services.
+So:
+Orchestration:
+central coordination
+
+Choreography:
+distributed coordination
+Both are coordination mechanisms.
+________________________________________
+44. Choreography vs orchestration
+Here's the conceptual comparison we'll deepen in Lesson 4:
+	Choreography	Orchestration
+Coordinator	None central	Central orchestrator
+Communication	Events	Commands + events
+Workflow location	Distributed	Explicit
+Coupling	Event/semantic	Orchestrator/service contracts
+Simple workflow	Excellent	Fine
+Complex workflow	Can become messy	Usually easier
+Debugging	Harder	Easier
+Central bottleneck	No	Potentially
+Service autonomy	High	High, if designed well
+Workflow visibility	Implicit	Explicit
+________________________________________
+45. A subtle architecture distinction
+Don't think:
+Choreography = events
+Orchestration = synchronous HTTP
+That's wrong.
+Orchestration can absolutely use events.
+For example:
+Orchestrator
+    ↓ command
+Inventory
+
+Inventory
+    ↓ event
+Orchestrator
+
+Orchestrator
+    ↓ command
+Payment
+So the real difference is:
+Who owns the decision about what happens next?
+Choreography:
+Each service decides based on events.
+Orchestration:
+Orchestrator decides the next step.
+That's the key distinction.
+________________________________________
+46. The choreography failure tree
+Let's make the complexity visible.
+OrderCreated
+     │
+     ↓
+InventoryReserved
+     │
+     ↓
+Payment
+   /   \
+  /     \
+SUCCESS  FAILURE
+  |         |
+  ↓         ↓
+Shipment   PaymentFailed
+            /      \
+           /        \
+          ↓          ↓
+   ReleaseInventory  CancelOrder
+          |
+          ↓
+   ReleaseFailed?
+       /       \
+      /         \
+    retry      manual
+Now imagine 10 services.
+You can see why the architecture becomes hard to reason about.
+________________________________________
+47. The most important production principle
+If you choose choreography, don't think:
+"We'll just publish some Kafka events."
+You need to explicitly design:
+event contracts
+idempotency
+ordering
+retry
+DLQ
+timeouts
+correlation
+observability
+reconciliation
+versioning
+The architecture may look simple:
+A → event → B
+but the production behavior is not simple.
+________________________________________
+48. How I would evaluate choreography in a design interview
+Suppose interviewer says:
+"Design order processing using Saga."
+A good reasoning path is:
+Step 1
+Identify independent services:
+Order
+Inventory
+Payment
+Shipping
+Step 2
+Ask:
+Is the workflow simple and event-driven?
+If yes, choreography may be appropriate.
+Step 3
+Define events:
+OrderCreated
+InventoryReserved
+InventoryReservationFailed
+PaymentSucceeded
+PaymentFailed
+ShipmentCreated
+ShipmentFailed
+Step 4
+Every consumer is idempotent.
+Step 5
+Each service uses:
+local DB transaction
++
+outbox
+Step 6
+Define compensation.
+Step 7
+Define recovery:
+retry
+DLQ
+reconciliation
+manual intervention
+Step 8
+Define observability:
+sagaId
+correlationId
+causationId
+That's a much stronger answer than:
+"We'll use Kafka."
+________________________________________
+49. The deeper lesson
+Choreography solves one problem:
+How can independent services progress through a workflow without a central coordinator?
+Its answer:
+Events
+But the solution introduces a new problem:
+How do we understand and control a workflow whose logic is distributed across many services?
+That's the fundamental trade-off.
+________________________________________
+50. The mental model
+Keep this picture:
+                CHOREOGRAPHY
+
+             Event Broker
+                  │
+        ┌─────────┼─────────┐
+        │         │         │
+        ↓         ↓         ↓
+      Order   Inventory   Payment
+        │         │         │
+        └──events─┴──events─┘
+                  │
+                  ↓
+               Shipping
+No conductor.
+Each service says:
+"When I observe X,
+I perform Y."
+The entire workflow emerges from those reactions.
+________________________________________
+51. Final takeaway
+The most important sentence from this lesson:
+Choreography turns the Saga into a distributed event-driven state machine where each service reacts to events and emits new events, without a central component deciding the next step.
+And the trade-off:
+                    Choreography
+                         │
+              ┌──────────┴──────────┐
+              ↓                     ↓
+        less central             more
+        coordination          distributed
+                              complexity
+For a small workflow:
+OrderCreated
+    ↓
+InventoryReserved
+    ↓
+PaymentSucceeded
+beautiful.
+For a complex workflow:
+10+ services
+20+ events
+many compensations
+many failure paths
+you can end up with distributed spaghetti.
+
+Saga — Lesson 4: Orchestration
+Now let's take the same order workflow from Lesson 3, but change one fundamental thing:
+Instead of services deciding what happens next, a central Saga Orchestrator owns the workflow decision.
+This is the second major way to implement a Saga.
+________________________________________
+1. First, remember choreography
+We had:
+OrderCreated
+     ↓
+Inventory Service
+     ↓
+InventoryReserved
+     ↓
+Payment Service
+     ↓
+PaymentSucceeded
+     ↓
+Shipping Service
+The workflow was distributed across services.
+Payment effectively said:
+"When InventoryReserved happens,
+I know I should charge payment."
+Now we're going to move that decision into one place.
+________________________________________
+2. Orchestration
+The architecture becomes:
+                     ┌──────────────────┐
+                     │  Saga            │
+                     │  Orchestrator    │
+                     └────────┬─────────┘
+                              │
+                ┌─────────────┼─────────────┐
+                ↓             ↓             ↓
+             Order       Inventory       Payment
+                                             │
+                                             ↓
+                                          Shipping
+The Orchestrator says:
+Create Order
+     ↓
+Reserve Inventory
+     ↓
+Charge Payment
+     ↓
+Create Shipment
+It explicitly controls the workflow.
+________________________________________
+3. The fundamental question
+Don't define orchestration as:
+"A service that calls other services."
+That's too shallow.
+The real definition is:
+The orchestrator owns the Saga's workflow state and decides which step should happen next.
+That's the architectural difference.
+________________________________________
+4. Think of it as a state machine
+Suppose Saga S100 starts.
+Its state might be:
+CREATED
+Then:
+CREATED
+   ↓
+INVENTORY_PENDING
+   ↓
+INVENTORY_RESERVED
+   ↓
+PAYMENT_PENDING
+   ↓
+PAYMENT_SUCCEEDED
+   ↓
+SHIPPING_PENDING
+   ↓
+COMPLETED
+The Orchestrator manages these transitions.
+So internally, you're effectively building:
+Saga State Machine
+________________________________________
+5. Why do we need a state machine?
+Because distributed systems can stop anywhere.
+Imagine:
+InventoryReserved
+       ↓
+Orchestrator
+       ↓
+Payment command
+       ↓
+JVM crashes
+When it restarts, it needs to know:
+"What was I doing?"
+If the answer lives only in memory:
+currentStep = PAYMENT;
+you've lost it.
+So Saga state must be durable.
+________________________________________
+6. Saga state storage
+You might have:
+saga_instance
+────────────────────────────────
+saga_id
+order_id
+state
+current_step
+version
+created_at
+updated_at
+Example:
+S100
+O500
+PAYMENT_PENDING
+CHARGE_PAYMENT
+7
+Now if the orchestrator crashes:
+JVM dies
+    ↓
+restart
+    ↓
+read S100
+    ↓
+PAYMENT_PENDING
+    ↓
+continue
+This is the foundation of reliable orchestration.
+________________________________________
+7. The complete workflow
+Let's walk through it carefully.
+Customer:
+POST /orders
+Orchestrator creates:
+Saga S100
+state = STARTED
+Then:
+S100
+ ↓
+CREATE_ORDER
+It sends:
+CreateOrder
+to Order Service.
+________________________________________
+8. Command vs event becomes extremely important
+Orchestration typically uses commands to tell services what to do.
+For example:
+CreateOrder
+ReserveInventory
+ChargePayment
+CreateShipment
+These mean:
+"Please perform this action."
+Services then send back outcomes/events:
+OrderCreated
+InventoryReserved
+PaymentSucceeded
+ShipmentCreated
+which mean:
+"This happened."
+So:
+Orchestrator
+     │
+     │ COMMAND
+     ↓
+Service
+     │
+     │ EVENT / RESULT
+     ↓
+Orchestrator
+This request/response workflow can be asynchronous.
+________________________________________
+9. Orchestrator starts
+Initial state:
+S100
+STARTED
+Orchestrator sends:
+CreateOrder
+Message:
+{
+  "sagaId": "S100",
+  "orderId": "O500",
+  "type": "CreateOrder"
+}
+Order Service receives it.
+________________________________________
+10. Order Service still uses a local transaction
+This is important.
+Orchestration does not remove local transactions.
+Order:
+BEGIN
+
+INSERT order
+
+INSERT outbox:
+    OrderCreated
+
+COMMIT
+Then:
+OrderCreated
+is sent back.
+________________________________________
+11. Orchestrator receives OrderCreated
+Now:
+S100
+STARTED
+becomes:
+S100
+ORDER_CREATED
+Then it decides:
+Next step = RESERVE_INVENTORY
+and sends:
+ReserveInventory
+to Inventory.
+Notice the difference from choreography.
+Choreography
+Inventory decides:
+OrderCreated
+→ reserve inventory
+Orchestration
+Orchestrator decides:
+OrderCreated
+→ I will now command Inventory
+________________________________________
+12. Inventory executes locally
+Inventory:
+BEGIN
+
+reserve stock
+
+record processed command
+
+insert outbox:
+    InventoryReserved
+
+COMMIT
+Then:
+InventoryReserved
+goes to the orchestrator.
+________________________________________
+13. Orchestrator advances
+State:
+INVENTORY_RESERVED
+Next:
+CHARGE_PAYMENT
+Command:
+ChargePayment
+Payment Service performs its own local transaction.
+Then:
+PaymentSucceeded
+comes back.
+________________________________________
+14. Next step
+Orchestrator:
+PAYMENT_SUCCEEDED
+then:
+CREATE_SHIPMENT
+Command:
+CreateShipment
+Shipping responds:
+ShipmentCreated
+Finally:
+S100
+COMPLETED
+________________________________________
+15. Entire flow
+The architecture now looks like:
+                         ┌────────────────────┐
+                         │ Saga Orchestrator  │
+                         │                    │
+                         │ S100               │
+                         │ currentStep=...    │
+                         └─────────┬──────────┘
+                                   │
+                              CreateOrder
+                                   ↓
+                              Order Service
+                                   │
+                            OrderCreated
+                                   ↑
+                                   │
+                         ┌─────────┴──────────┐
+                         │                    │
+                   ReserveInventory      ChargePayment
+                         ↓                    ↓
+                    Inventory             Payment
+                         │                    │
+                InventoryReserved      PaymentSucceeded
+                         └─────────┬──────────┘
+                                   ↓
+                             CreateShipment
+                                   ↓
+                              Shipping
+                                   │
+                           ShipmentCreated
+                                   ↓
+                                DONE
+The orchestrator is the conductor.
+________________________________________
+16. Why is this better for complex workflows?
+Remember choreography's problem:
+Who knows what happens after PaymentFailed?
+In orchestration:
+Orchestrator
+     ↓
+PaymentFailed
+     ↓
+execute compensation plan
+The workflow is explicit.
+For example:
+if PaymentFailed:
+    ReleaseInventory
+    CancelOrder
+The business workflow can be represented in one place.
+________________________________________
+17. Failure becomes much easier to reason about
+Suppose:
+OrderCreated ✓
+InventoryReserved ✓
+PaymentFailed ✗
+Orchestrator receives:
+PaymentFailed
+It knows:
+inventory was already reserved
+because Saga state says:
+INVENTORY_RESERVED
+So it executes:
+ReleaseInventory
+Then:
+CancelOrder
+This is much more explicit than relying on multiple services independently reacting to PaymentFailed.
+________________________________________
+18. Compensation graph
+The orchestrator can maintain something conceptually like:
+Forward:
+
+CreateOrder
+     ↓
+ReserveInventory
+     ↓
+ChargePayment
+     ↓
+CreateShipment
+Compensation:
+CreateShipment
+     ↓
+CancelShipment
+
+ChargePayment
+     ↓
+RefundPayment
+
+ReserveInventory
+     ↓
+ReleaseInventory
+
+CreateOrder
+     ↓
+CancelOrder
+If failure happens at step 3:
+CreateOrder ✓
+ReserveInventory ✓
+ChargePayment ✗
+we don't compensate the payment step because it didn't succeed.
+We compensate completed previous steps:
+ReleaseInventory
+CancelOrder
+________________________________________
+19. But compensation isn't simply "reverse the code"
+This is crucial.
+Suppose:
+ChargePayment
+succeeded.
+Compensation:
+RefundPayment
+is not:
+DELETE payment
+The business record must remain.
+You might have:
+Payment
+status = REFUNDED
+rather than deleting it.
+Similarly:
+Order
+status = CANCELLED
+rather than:
+DELETE FROM orders;
+Saga compensation is usually a new business action, not database rollback.
+________________________________________
+20. Orchestrator needs durable state
+Let's return to the hardest production question.
+Suppose:
+Orchestrator
+   ↓
+ChargePayment
+   ↓
+Payment succeeds
+   ↓
+PaymentSucceeded arrives
+   ↓
+Orchestrator crashes
+When it restarts:
+What should it do?
+Answer:
+Read Saga state
+If state was durably updated:
+S100
+PAYMENT_SUCCEEDED
+it knows:
+Next = CREATE_SHIPMENT
+________________________________________
+21. State transition must be durable
+Suppose event arrives:
+PaymentSucceeded
+Orchestrator should not simply do:
+currentStep = SHIPPING;
+in memory.
+It needs something like:
+BEGIN
+
+validate current state
+
+UPDATE saga
+SET state = SHIPPING_PENDING
+
+INSERT command/outbox
+    CreateShipment
+
+COMMIT
+Now:
+Saga state
++
+intent to send next command
+are durable.
+This is essentially the same transactional outbox idea we studied in Lesson 2, but now applied to the orchestrator itself.
+________________________________________
+22. The orchestrator has the same dual-write problem
+Suppose it receives:
+PaymentSucceeded
+and wants to:
+1. update Saga state
+2. send CreateShipment
+Naïve:
+UPDATE saga SET state = SHIPPING_PENDING;
+
+send(CreateShipment);
+What if:
+UPDATE ✓
+send ✗
+Then:
+Saga says:
+SHIPPING_PENDING
+
+but Shipping never received the command.
+Therefore:
+BEGIN
+
+update saga state
+
+insert outbox command
+
+COMMIT
+Then:
+Outbox Publisher
+      ↓
+CreateShipment
+Again:
+Durable state + outbox is the foundation of reliable orchestration.
+________________________________________
+23. Orchestrator architecture
+A production-oriented orchestrator may look like:
+                 ┌──────────────────────────┐
+                 │     Saga Orchestrator    │
+                 │                          │
+Event ──────────→│ State Machine             │
+                 │                          │
+                 │ Saga State               │
+                 │ Transition Logic         │
+                 │ Retry Logic              │
+                 │ Timeout Logic            │
+                 │ Compensation Logic       │
+                 └───────────┬──────────────┘
+                             │
+                           Outbox
+                             │
+                             ↓
+                           Broker
+                             │
+              ┌──────────────┼──────────────┐
+              ↓              ↓              ↓
+          Inventory       Payment        Shipping
+That's a serious architecture.
+________________________________________
+24. Is the orchestrator a single server?
+Not necessarily.
+This is an important misconception.
+You might deploy:
+orchestrator-1
+orchestrator-2
+orchestrator-3
+behind a load balancer.
+They all access durable Saga state.
+             ┌──────────────┐
+             │ Load Balancer│
+             └──────┬───────┘
+                    │
+          ┌─────────┼─────────┐
+          ↓         ↓         ↓
+       Orch-1    Orch-2    Orch-3
+          │         │         │
+          └─────────┼─────────┘
+                    ↓
+               Saga DB
+Now you don't have a single point of failure.
+________________________________________
+25. But concurrent processing becomes dangerous
+Suppose:
+Orchestrator 1
+and:
+Orchestrator 2
+both receive an event for:
+S100
+at almost the same time.
+Both might try:
+PAYMENT_SUCCEEDED
+→ CREATE_SHIPMENT
+You could accidentally send:
+CreateShipment
+CreateShipment
+So the Saga state transition itself needs concurrency control.
+________________________________________
+26. Optimistic locking
+One common solution:
+saga
+──────────────────────
+saga_id
+state
+version
+Current:
+S100
+PAYMENT_SUCCEEDED
+version = 7
+Orchestrator executes:
+UPDATE saga
+SET state = 'SHIPPING_PENDING',
+    version = 8
+WHERE saga_id = 'S100'
+  AND version = 7;
+If:
+rows_updated = 1
+you won.
+If:
+rows_updated = 0
+someone else already changed the Saga.
+Then you reload state.
+This is optimistic concurrency control.
+________________________________________
+27. Pessimistic locking
+Another option:
+SELECT *
+FROM saga
+WHERE saga_id = 'S100'
+FOR UPDATE;
+Then only one transaction can modify that Saga at a time.
+Trade-off:
+Optimistic:
+better concurrency
+retry on conflict
+
+Pessimistic:
+simpler reasoning
+but locks can become expensive
+Which one you choose depends on workload and implementation.
+________________________________________
+28. Idempotency still matters
+Even with a carefully designed orchestrator, commands can be duplicated.
+For example:
+CreateShipment
+might be sent twice because:
+orchestrator timed out
+even though Shipping actually succeeded.
+So Shipping must handle:
+CreateShipment(S100)
+CreateShipment(S100)
+safely.
+For example:
+unique(saga_id, step)
+or:
+unique(command_id)
+________________________________________
+29. Timeout is not the same as failure
+This is one of the most important distributed-system concepts.
+Orchestrator sends:
+ChargePayment
+Then waits.
+After 5 seconds:
+TIMEOUT
+Does that mean payment failed?
+No.
+Payment may have:
+received command
+charged card
+committed transaction
+but response/event may be delayed.
+So:
+timeout ≠ failure
+This is why compensation and reconciliation are difficult.
+________________________________________
+30. The classic timeout race
+Timeline:
+t0  Orchestrator → ChargePayment
+
+t1  Payment receives command
+
+t2  Payment charges customer
+
+t3  Payment commits
+
+t4  network delay
+
+t5  Orchestrator timeout
+
+t6  Orchestrator thinks:
+    "Payment failed"
+
+t7  Orchestrator sends:
+    RefundPayment
+Then payment event arrives:
+PaymentSucceeded
+Now what?
+You need explicit state-machine rules.
+Potential result:
+Payment
+PAID → REFUNDED
+which may be correct.
+The key lesson:
+Distributed systems cannot reliably infer remote state from timeout alone.
+________________________________________
+31. This is why reconciliation exists
+Suppose Saga says:
+PAYMENT_UNKNOWN
+Instead of blindly assuming failure, the orchestrator may query:
+Payment Service:
+What happened to command S100?
+Payment can respond:
+S100 = PAID
+or:
+S100 = NOT_FOUND
+Then the workflow can continue.
+This is reconciliation.
+We'll go much deeper into this in Lesson 6.
+________________________________________
+32. Orchestrator can have explicit state transitions
+For example:
+STARTED
+   ↓
+ORDER_PENDING
+   ↓
+ORDER_CREATED
+   ↓
+INVENTORY_PENDING
+   ↓
+INVENTORY_RESERVED
+   ↓
+PAYMENT_PENDING
+   ↓
+PAYMENT_SUCCEEDED
+   ↓
+SHIPPING_PENDING
+   ↓
+COMPLETED
+Failure states:
+INVENTORY_FAILED
+PAYMENT_FAILED
+SHIPPING_FAILED
+COMPENSATING
+COMPENSATED
+MANUAL_REVIEW
+This makes the workflow observable.
+You can query:
+SELECT state
+FROM saga_instance
+WHERE saga_id = 'S100';
+and immediately know:
+PAYMENT_PENDING
+That's a major advantage over pure choreography.
+________________________________________
+33. But don't make one giant state enum
+A naïve implementation may create:
+enum SagaState {
+    STARTED,
+    ORDER_PENDING,
+    ORDER_CREATED,
+    INVENTORY_PENDING,
+    INVENTORY_RESERVED,
+    INVENTORY_FAILED,
+    PAYMENT_PENDING,
+    PAYMENT_SUCCEEDED,
+    PAYMENT_FAILED,
+    ...
+}
+With 20 services, you could end up with hundreds of states.
+That's a smell.
+Better designs may represent:
+current step
+step status
+completed steps
+compensation state
+failure reason
+or use a proper workflow/state-machine representation.
+The exact model depends on complexity.
+________________________________________
+34. Orchestrator should coordinate, not own business data
+This is a very important boundary.
+Bad architecture:
+Orchestrator DB
+    ↓
+contains:
+orders
+inventory
+payments
+shipping
+customer data
+Now the orchestrator becomes the central database.
+That's terrible.
+Instead:
+Order Service → Order DB
+Inventory → Inventory DB
+Payment → Payment DB
+Shipping → Shipping DB
+
+Orchestrator → Saga/workflow state
+The orchestrator should generally know:
+what step we're on
+what happened
+what should happen next
+not own every service's domain state.
+________________________________________
+35. Otherwise you create a God Service
+Imagine:
+Saga Orchestrator
+     │
+     ├── knows inventory rules
+     ├── knows payment rules
+     ├── knows shipping rules
+     ├── knows fraud rules
+     ├── knows pricing rules
+     └── knows customer rules
+Now every business rule ends up there.
+You've recreated a monolith.
+The orchestrator should own:
+workflow coordination
+not:
+domain ownership
+________________________________________
+36. A good separation
+Think:
+Orchestrator:
+"Inventory must be reserved before payment."
+
+Inventory:
+"Given this request, here is whether I can reserve it."
+
+Payment:
+"Given this request, here is whether payment succeeds."
+
+Shipping:
+"Given this request, here is whether I can create shipment."
+The orchestrator controls sequence.
+Services control domain logic.
+That's a healthy boundary.
+________________________________________
+37. Orchestrator as a finite state machine
+You can model:
+State:
+INVENTORY_PENDING
+
+Event:
+InventoryReserved
+
+Transition:
+INVENTORY_PENDING
+        ↓
+INVENTORY_RESERVED
+
+Action:
+send ChargePayment
+Another:
+State:
+PAYMENT_PENDING
+
+Event:
+PaymentFailed
+
+Transition:
+PAYMENT_PENDING
+        ↓
+COMPENSATING
+
+Actions:
+ReleaseInventory
+CancelOrder
+This is essentially:
+State
++
+Event
+→
+New State
++
+Actions
+That's the mathematical heart of orchestration.
+________________________________________
+38. Java-style conceptual code
+You might have:
+public void handle(SagaEvent event) {
+
+    Saga saga = sagaRepository.find(event.sagaId());
+
+    switch (saga.state()) {
+
+        case INVENTORY_PENDING -> {
+            if (event instanceof InventoryReserved) {
+                transitionToPayment(saga);
+            }
+
+            if (event instanceof InventoryFailed) {
+                compensateOrder(saga);
+            }
+        }
+
+        case PAYMENT_PENDING -> {
+            if (event instanceof PaymentSucceeded) {
+                transitionToShipping(saga);
+            }
+
+            if (event instanceof PaymentFailed) {
+                compensateInventory(saga);
+            }
+        }
+    }
+}
+This is simplified, but conceptually that's what orchestration does.
+________________________________________
+39. State transition + outbox
+A safer implementation:
+@Transactional
+public void handlePaymentSucceeded(PaymentSucceeded event) {
+
+    Saga saga = sagaRepository.lock(event.sagaId());
+
+    saga.moveTo(SHIPPING_PENDING);
+
+    outboxRepository.save(
+        Command.createShipment(
+            saga.id(),
+            saga.orderId()
+        )
+    );
+}
+Then commit:
+Saga state updated
++
+CreateShipment command recorded
+atomically.
+A publisher later sends the command.
+________________________________________
+40. Why asynchronous orchestration is usually preferable
+You could make the orchestrator call:
+Inventory HTTP
+Payment HTTP
+Shipping HTTP
+synchronously.
+But then:
+Orchestrator
+    ↓ HTTP
+Inventory
+    ↓
+HTTP response
+    ↓
+Payment
+    ↓
+HTTP response
+The orchestrator becomes tightly coupled to:
+timeouts
+network availability
+connection pools
+service latency
+Instead, asynchronous commands/events can provide:
+Orchestrator
+    ↓
+Command
+    ↓
+Broker
+then later:
+Service
+    ↓
+Event
+    ↓
+Orchestrator
+This is generally more resilient for long-running workflows.
+________________________________________
+41. But synchronous orchestration isn't automatically wrong
+Suppose:
+Inventory
+responds in:
+10 ms
+and the workflow must synchronously validate something.
+A synchronous call may be perfectly reasonable.
+The important thing isn't:
+sync = bad
+async = good
+The important question is:
+What failure semantics and coupling does the workflow require?
+________________________________________
+42. Long-running Saga
+Imagine an insurance claim:
+Submit claim
+     ↓
+Fraud investigation
+     ↓
+Human review
+     ↓
+External assessment
+     ↓
+Approval
+     ↓
+Payment
+This could take:
+days
+You obviously don't keep:
+HTTP request open for 3 days
+The orchestrator persists:
+Saga state = WAITING_FOR_REVIEW
+and later resumes when an event arrives.
+This is where durable workflow engines become especially useful.
+________________________________________
+43. Timer-based transitions
+Suppose:
+PaymentPending
+must timeout after:
+15 minutes
+The orchestrator can persist:
+deadline = 2026-08-16T06:30:00Z
+Then a scheduler wakes it:
+deadline reached
+    ↓
+check actual payment state
+    ↓
+continue / compensate
+Again:
+Don't treat a timer in application memory as durable workflow state.
+If JVM crashes:
+scheduler.schedule(...)
+may disappear.
+The deadline should be recoverable from persistent state.
+________________________________________
+44. Orchestration and retries
+Suppose:
+ReserveInventory
+fails due to:
+DB timeout
+The orchestrator may retry:
+attempt 1
+attempt 2
+attempt 3
+with exponential backoff:
+1s
+2s
+4s
+8s
+But you must distinguish:
+transient failure
+from:
+business failure
+For example:
+DB unavailable
+→ retry
+
+Insufficient stock
+→ don't retry forever
+→ business failure
+That's a crucial production distinction.
+________________________________________
+45. Error taxonomy
+A good orchestrator should understand at least:
+Transient technical error
+Permanent technical error
+Business rejection
+Timeout
+Unknown outcome
+Examples:
+Transient
+connection timeout
+temporary DB unavailable
+→ retry.
+Business rejection
+insufficient inventory
+card declined
+→ usually compensate / stop.
+Unknown outcome
+payment request timed out
+→ reconcile before deciding.
+This is much more sophisticated than:
+if exception -> retry
+________________________________________
+46. Orchestration makes business workflow explicit
+Suppose product asks:
+"At what stage can we cancel an order?"
+You can inspect:
+Saga state machine
+and answer:
+ORDER_CREATED → yes
+INVENTORY_RESERVED → yes, release inventory
+PAYMENT_SUCCEEDED → yes, refund payment
+SHIPPED → different business process
+This explicitness is one of orchestration's greatest strengths.
+________________________________________
+47. Testing becomes easier conceptually
+You can test the state machine:
+Given:
+PAYMENT_PENDING
+
+When:
+PaymentFailed
+
+Then:
+state = COMPENSATING
+command = ReleaseInventory
+Then:
+Given:
+INVENTORY_RESERVED
+
+When:
+PaymentSucceeded
+
+Then:
+state = SHIPPING_PENDING
+command = CreateShipment
+You're testing workflow logic directly.
+With choreography, much of this behavior is spread across independent event handlers.
+________________________________________
+48. But orchestration introduces coupling to the orchestrator
+This is the trade-off.
+Services now need to understand commands such as:
+ReserveInventory
+ChargePayment
+CreateShipment
+The orchestrator must know:
+Inventory API
+Payment API
+Shipping API
+So:
+Choreography:
+less central coupling
+more distributed complexity
+
+Orchestration:
+more central workflow coupling
+less distributed workflow complexity
+Neither is universally superior.
+________________________________________
+49. Orchestrator can become a bottleneck
+Suppose:
+10 million Sagas
+and every event must pass through:
+one orchestrator
+You could create:
+CPU bottleneck
+DB bottleneck
+hot partitions
+But this isn't an argument against orchestration itself.
+You scale it horizontally:
+Orchestrator instances
+      ↓
+partitioned Saga state
+The real concern is whether the workflow state store can scale.
+________________________________________
+50. Partitioning by Saga ID
+A useful strategy:
+hash(sagaId) % N
+determines which worker owns the Saga.
+Example:
+S100 → partition 3
+S101 → partition 7
+S102 → partition 3
+Then:
+partition 3
+    ↓
+worker responsible for S100/S102
+This can reduce concurrency conflicts.
+The exact mechanism depends on your broker/database/workflow platform.
+________________________________________
+51. The orchestrator is effectively a durable process
+This is a powerful way to think about it.
+Normal application code:
+processOrder();
+runs in memory.
+A Saga orchestrator is more like:
+processOrder()
+    ↓
+persist state
+    ↓
+wait
+    ↓
+resume later
+    ↓
+persist state
+    ↓
+wait
+    ↓
+resume
+It is a durable process.
+The JVM can die.
+The machine can restart.
+The workflow continues because the state is externalized.
+________________________________________
+52. This leads to workflow engines
+Once workflows become complicated, you might build this yourself:
+Saga state
++
+timers
++
+retries
++
+events
++
+commands
++
+durability
++
+recovery
+But eventually you may realize:
+"We're building a workflow engine."
+Exactly.
+There are systems designed specifically for durable workflows.
+The important architectural insight is not the specific product; it's understanding why such systems exist.
+They automate the machinery around:
+durable execution
+retry
+timers
+state
+recovery
+while your application provides the business workflow.
+________________________________________
+53. But don't reach for a workflow engine automatically
+For:
+Order
+ → Inventory
+ → Payment
+a simple Saga implementation may be enough.
+For:
+100+ workflow states
+days-long execution
+human approval
+timers
+complex retry policies
+many compensations
+a dedicated workflow engine becomes much more attractive.
+Architecture should follow complexity.
+________________________________________
+54. Choreography vs orchestration — the real decision
+Don't ask:
+"Which Saga pattern is better?"
+Ask:
+"Where should workflow knowledge live?"
+Choreography
+Workflow knowledge:
+distributed across services
+Orchestration
+Workflow knowledge:
+centralized in orchestrator
+That's the fundamental architectural choice.
+________________________________________
+55. When I would choose choreography
+Good fit:
+simple workflows
+few steps
+loosely related reactions
+event-driven business processes
+notifications
+analytics
+search indexing
+For example:
+OrderCreated
+   ├── Analytics
+   ├── Email
+   └── Search indexing
+These consumers don't necessarily need one central workflow.
+________________________________________
+56. When I would choose orchestration
+Good fit:
+complex business workflow
+many steps
+many failure branches
+explicit compensation
+timeouts
+long-running processes
+human interaction
+strict business sequence
+For example:
+Loan application
+    ↓
+Identity verification
+    ↓
+Credit check
+    ↓
+Fraud check
+    ↓
+Underwriting
+    ↓
+Approval
+    ↓
+Disbursement
+You probably want the workflow to be explicit.
+________________________________________
+57. One subtle point: orchestration doesn't mean the orchestrator is the source of truth for domain state
+Suppose:
+Orchestrator says:
+PAYMENT_SUCCEEDED
+but Payment DB says:
+REFUNDED
+The Payment Service owns payment truth.
+The orchestrator owns:
+workflow state
+This distinction matters enormously.
+________________________________________
+58. Source of truth
+A healthy design:
+Order state
+    → Order Service
+
+Inventory state
+    → Inventory Service
+
+Payment state
+    → Payment Service
+
+Shipping state
+    → Shipping Service
+
+Saga workflow state
+    → Saga Orchestrator
+Each domain has an owner.
+The orchestrator coordinates them.
+________________________________________
+59. The deepest mental model
+Think of orchestration as:
+                SAGA STATE MACHINE
+
+                     ┌───────────┐
+                     │   START   │
+                     └─────┬─────┘
+                           │
+                    CreateOrder
+                           │
+                           ↓
+                    ORDER_CREATED
+                           │
+                 ReserveInventory
+                           │
+                           ↓
+                 INVENTORY_RESERVED
+                     /           \
+                    /             \
+             Payment             failure
+                ↓                   ↓
+        PAYMENT_SUCCEEDED       COMPENSATE
+                │
+         CreateShipment
+                │
+                ↓
+            COMPLETED
+The orchestrator owns this graph.
+________________________________________
+60. The critical production invariant
+For every Saga, you want to be able to answer:
+What is its current state?
+What steps have completed?
+What step is next?
+What commands are outstanding?
+What failed?
+What compensation is running?
+Can I safely retry?
+If your architecture cannot answer these questions reliably, your Saga implementation isn't production-ready.
+________________________________________
+61. Lesson 4 — summary
+Concept	Purpose
+Orchestrator	Owns workflow decisions
+Saga state	Tracks durable workflow progress
+State machine	Defines valid transitions
+Command	Tells a service to perform an action
+Event/result	Tells orchestrator what happened
+Outbox	Makes state transition + next command durable
+Idempotency	Protects against duplicate commands
+Optimistic locking	Prevents concurrent Saga updates
+Timeout	Detects lack of response, not necessarily failure
+Compensation	Executes business undo actions
+Reconciliation	Determines unknown remote outcomes
+Durable timers	Allows long-running workflows to survive crashes
+The core idea:
+Orchestration moves workflow knowledge into a durable state machine that explicitly decides what happens next, while each participating service still owns its own data and local transaction.
+________________________________________
+62. Choreography vs orchestration — final mental picture
+Choreography
+Order
+  │
+  └─ OrderCreated ──→ Inventory
+                         │
+                  InventoryReserved
+                         │
+                         ↓
+                      Payment
+                         │
+                  PaymentSucceeded
+                         │
+                         ↓
+                      Shipping
+The workflow emerges from reactions.
+Orchestration
+                    Orchestrator
+                   /      |      \
+                  ↓       ↓       ↓
+             Inventory Payment Shipping
+                  ↑       ↑       ↑
+                  └── results/events ──┘
+The workflow is explicitly represented and controlled.
+________________________________________
+The question you should now be able to answer
+If an interviewer asks:
+"Why would you choose Saga orchestration instead of choreography?"
+Don't say:
+"Orchestration is easier."
+Say:
+"When the workflow has many steps, complex failure paths, compensation, retries, timeouts, or long-running state, I prefer orchestration because the workflow becomes explicit and durably stateful instead of being scattered across event handlers. The trade-off is that the orchestrator becomes a central dependency, so I'd keep domain ownership inside the individual services and make the orchestrator horizontally scalable and durable."
+That's the system-design answer.
+
+Saga — Lesson 5: Compensation
+This is probably the most important Saga lesson, because many people understand Saga as:
+"A distributed transaction with rollback."
+That is not correct.
+A Saga does not give you rollback in the database sense.
+Instead, it gives you:
+A sequence of local transactions where failures are handled by new business operations called compensating transactions.
+That distinction is fundamental.
+________________________________________
+1. Start with the problem
+Suppose we have:
+Order
+  ↓
+Inventory
+  ↓
+Payment
+  ↓
+Shipping
+Each step commits independently.
+For example:
+Order DB
+COMMIT ✓
+
+Inventory DB
+COMMIT ✓
+
+Payment DB
+COMMIT ✓
+
+Shipping DB
+FAIL ✗
+Now we have:
+Order       = CREATED
+Inventory   = RESERVED
+Payment     = PAID
+Shipping    = FAILED
+There is no global transaction we can simply:
+ROLLBACK;
+because those databases have already committed.
+So what can we do?
+________________________________________
+2. Compensation
+We execute business operations that reverse the business effect of previous successful operations.
+For example:
+Payment
+   ↓
+PAID
+Compensation:
+RefundPayment
+   ↓
+REFUNDED
+Inventory:
+RESERVED
+   ↓
+ReleaseInventory
+   ↓
+AVAILABLE
+Order:
+CREATED
+   ↓
+CancelOrder
+   ↓
+CANCELLED
+So:
+Forward transaction
+        ↓
+Business effect
+        ↓
+Compensating transaction
+        ↓
+Business reversal
+________________________________________
+3. Compensation is NOT rollback
+This distinction deserves its own section.
+Database rollback
+Imagine:
+BEGIN
+
+UPDATE account
+SET balance = balance - 100;
+
+ROLLBACK;
+The database returns to the previous state.
+Conceptually:
+Before
+  ↓
+transaction
+  ↓
+ROLLBACK
+  ↓
+Before
+Saga compensation
+Instead:
+Payment
+  ↓
+PAID
+  ↓
+RefundPayment
+  ↓
+REFUNDED
+The system does not return to exactly the old state.
+It moves to a new valid business state.
+Before:
+NOT_PAID
+
+Forward:
+PAID
+
+Compensation:
+REFUNDED
+Notice:
+NOT_PAID ≠ REFUNDED
+That's the heart of Saga compensation.
+________________________________________
+4. Why can't we simply reverse the database operation?
+Suppose:
+INSERT payment;
+You might think:
+DELETE payment;
+But that's usually wrong.
+Because the payment actually happened.
+You need an audit trail:
+PaymentCreated
+PaymentCaptured
+RefundInitiated
+RefundCompleted
+The correct business state is:
+REFUNDED
+not:
+payment row mysteriously disappeared
+________________________________________
+5. Think in business transitions
+Instead of:
+INSERT
+UPDATE
+DELETE
+think:
+ReserveInventory
+ReleaseInventory
+
+CapturePayment
+RefundPayment
+
+CreateShipment
+CancelShipment
+
+CreateOrder
+CancelOrder
+These are domain operations.
+That's what compensation should model.
+________________________________________
+6. Our example Saga
+Let's define:
+S1: CreateOrder
+S2: ReserveInventory
+S3: CapturePayment
+S4: CreateShipment
+Forward:
+S1 → S2 → S3 → S4
+Compensation:
+S3 → RefundPayment
+S2 → ReleaseInventory
+S1 → CancelOrder
+Notice something important:
+Compensation normally proceeds in the reverse dependency order.
+________________________________________
+7. Why reverse order?
+Suppose:
+InventoryReserved
+      ↓
+PaymentCaptured
+      ↓
+ShipmentCreated
+Now Shipping fails.
+We should generally compensate:
+CancelShipment
+      ↓
+RefundPayment
+      ↓
+ReleaseInventory
+      ↓
+CancelOrder
+Why?
+Because later actions often depend on earlier actions.
+If we release inventory while a shipment still exists, we may create an inconsistent business situation.
+So the usual mental model is:
+Forward:
+A → B → C → D
+
+Compensate:
+D⁻¹ → C⁻¹ → B⁻¹ → A⁻¹
+But this is a design principle, not a mathematical law. Real business dependencies may require a different compensation order.
+________________________________________
+8. Compensation is based on completed steps
+Suppose:
+CreateOrder       ✓
+ReserveInventory  ✓
+CapturePayment    ✗
+CreateShipment    not attempted
+What should we compensate?
+Not:
+RefundPayment
+because payment never succeeded.
+Instead:
+ReleaseInventory
+CancelOrder
+So the orchestrator needs to know:
+Which forward actions actually completed?
+This is another reason durable Saga state matters.
+________________________________________
+9. The Saga state
+For example:
+Saga S100
+
+Order:
+    CREATED ✓
+
+Inventory:
+    RESERVED ✓
+
+Payment:
+    FAILED ✗
+
+Shipping:
+    NOT_STARTED
+Therefore compensation plan:
+ReleaseInventory
+CancelOrder
+This is much safer than simply saying:
+"Something failed, reverse everything."
+________________________________________
+10. Compensation is itself a transaction
+This is a subtle but extremely important point.
+People often imagine:
+Payment failed
+    ↓
+Refund
+    ↓
+Done
+But what if:
+RefundPayment
+    ↓
+FAIL
+Now what?
+The compensation itself is distributed work.
+Therefore:
+A compensating action can fail, retry, timeout, or produce an unknown outcome just like a forward action.
+________________________________________
+11. Compensation failure
+Suppose:
+OrderCreated        ✓
+InventoryReserved   ✓
+PaymentCaptured     ✓
+ShippingCreated     ✗
+We begin compensation:
+CancelShipment
+RefundPayment
+ReleaseInventory
+CancelOrder
+Now:
+RefundPayment
+    ↓
+FAIL
+State:
+Payment = PAID
+Inventory = RESERVED
+Order = CREATED
+Now your Saga is not finished.
+It might enter:
+COMPENSATING
+and retry:
+RefundPayment
+   ↓
+retry
+   ↓
+retry
+   ↓
+success
+Only then continue.
+________________________________________
+12. Compensation has its own state machine
+This is where Saga becomes much deeper.
+Forward state:
+PAYMENT_SUCCEEDED
+Then failure:
+SHIPPING_FAILED
+Transition:
+COMPENSATING
+Then:
+REFUND_PENDING
+Then:
+PAYMENT_REFUNDED
+Then:
+INVENTORY_RELEASE_PENDING
+Then:
+INVENTORY_RELEASED
+Then:
+ORDER_CANCEL_PENDING
+Then:
+ORDER_CANCELLED
+Finally:
+COMPENSATED
+So a production Saga isn't merely:
+success / failure
+It is a durable state machine with recovery paths.
+________________________________________
+13. Compensation can be partial
+This is one of the nastiest cases.
+Suppose:
+Order        CREATED
+Inventory    RESERVED
+Payment      PAID
+Shipping     CREATED
+Shipping fails later.
+We successfully:
+RefundPayment ✓
+ReleaseInventory ✓
+but:
+CancelOrder ✗
+Now:
+Order        CREATED
+Inventory    RELEASED
+Payment      REFUNDED
+Shipping     FAILED
+That's a partially compensated Saga.
+You cannot simply pretend everything is fine.
+The system needs to represent this state.
+For example:
+COMPENSATION_FAILED
+with:
+failedStep = CANCEL_ORDER
+________________________________________
+14. Why manual intervention may be necessary
+Some failures cannot be automatically repaired.
+Suppose:
+Payment refund
+fails because an external payment provider is unavailable for several hours.
+You can:
+retry
+retry
+retry
+But eventually you might reach:
+MANUAL_REVIEW
+This isn't necessarily bad architecture.
+In real distributed systems:
+Some business failures cannot be automatically resolved.
+A good system makes those failures visible and recoverable.
+A bad system hides them.
+________________________________________
+15. Compensation is not guaranteed to restore the original state
+This is perhaps the deepest Saga concept.
+Imagine:
+Book flight
+succeeds.
+Then:
+Hotel booking
+fails.
+You cancel the flight.
+But perhaps the airline charges:
+$50 cancellation fee
+So:
+Original:
+$500 + no booking
+
+Forward:
+$500 flight booked
+
+Compensation:
+$50 fee + $450 refund
+You did not return to the exact original state.
+You achieved the best valid business outcome.
+Therefore:
+Compensation means business recovery, not physical reversal.
+________________________________________
+16. Another example: sending an email
+Suppose Saga step:
+SendWelcomeEmail
+succeeds.
+Later:
+Payment
+fails.
+What's the compensation?
+UndoSendWelcomeEmail
+doesn't exist.
+You cannot unsend an email reliably.
+So what do you do?
+Maybe:
+SendCancellationEmail
+That's compensation at the business level.
+Not:
+"erase the email"
+________________________________________
+17. Another example: physical shipment
+Suppose:
+CreateShipment
+succeeds.
+Warehouse hands package to courier.
+Then payment fails.
+You cannot simply:
+DELETE shipment
+because the physical world has changed.
+You may need:
+Cancel shipment
+or:
+Request return
+or:
+Stop delivery
+or:
+Refund customer
+depending on how far the process progressed.
+This is why Saga is fundamentally a business-process pattern, not just a database technique.
+________________________________________
+18. Digital state vs physical reality
+This distinction is incredibly important.
+For digital data:
+Payment = PAID
+you might be able to execute:
+RefundPayment
+For physical reality:
+Package already delivered
+you cannot magically roll it back.
+You need a new process:
+ReturnRequested
+    ↓
+PackageReturned
+    ↓
+RefundIssued
+So:
+database rollback
+is often impossible in the real world.
+Saga gives us a way to model these processes.
+________________________________________
+19. Compensation must be idempotent
+This is mandatory.
+Suppose:
+RefundPayment
+is sent.
+Payment service processes it successfully.
+But response is lost.
+Orchestrator retries:
+RefundPayment
+RefundPayment
+Without idempotency:
+$100 refund
+$100 refund
+Customer gets:
+$200
+That's catastrophic.
+________________________________________
+20. Idempotent compensation
+Use a unique operation:
+sagaId = S100
+step = REFUND_PAYMENT
+with a unique key:
+(S100, REFUND_PAYMENT)
+Then:
+first request:
+execute refund
+
+second request:
+already completed
+return success
+So:
+retry
++
+idempotency
+=
+safe recovery
+This applies to both:
+forward operations
+and:
+compensating operations
+________________________________________
+21. Compensation should usually be monotonic
+Think about states:
+PAID
+   ↓
+REFUND_PENDING
+   ↓
+REFUNDED
+You generally don't want:
+REFUNDED
+   ↓
+PAID
+   ↓
+REFUNDED
+without explicit business semantics.
+A good state machine makes transitions controlled and monotonic where possible.
+For example:
+RESERVED
+   ↓
+RELEASED
+not:
+RELEASED
+   ↓
+RESERVED
+unless another explicit reservation operation occurs.
+________________________________________
+22. The compensation transaction should have its own ID
+Don't rely only on:
+orderId
+Use something like:
+sagaId
+compensationId
+step
+Example:
+{
+  "sagaId": "S100",
+  "compensationId": "C200",
+  "type": "RefundPayment",
+  "orderId": "O500"
+}
+Now you can trace:
+Saga S100
+  ↓
+Forward step: CapturePayment
+  ↓
+Failure: ShippingFailed
+  ↓
+Compensation C200
+  ↓
+RefundPayment
+This becomes invaluable during production debugging.
+________________________________________
+23. Compensation and the outbox
+Suppose orchestrator decides:
+RefundPayment
+It needs to:
+1. update Saga state
+2. publish compensation command
+Again, don't do:
+UPDATE saga;
+sendMessage();
+because of dual-write failure.
+Instead:
+BEGIN
+
+UPDATE saga
+SET state = REFUND_PENDING
+
+INSERT outbox:
+    RefundPayment
+
+COMMIT
+Then:
+Outbox
+   ↓
+Broker
+   ↓
+Payment Service
+Same reliability pattern.
+________________________________________
+24. Compensation and inbox/idempotency
+Payment receives:
+RefundPayment(C200)
+It can maintain:
+processed_commands
+──────────────────────
+command_id
+processed_at
+Then:
+C200 → process
+C200 → duplicate → return previous result
+This creates:
+Orchestrator
+    ↓
+Outbox
+    ↓
+Broker
+    ↓
+Payment
+    ↓
+Idempotency
+A very common production pattern.
+________________________________________
+25. Forward and compensation paths
+Let's draw the complete workflow.
+                    FORWARD
+                       │
+                       ↓
+                 CreateOrder
+                       │
+                       ↓
+              ReserveInventory
+                       │
+                       ↓
+                CapturePayment
+                       │
+                       ↓
+                CreateShipment
+                       │
+                    SUCCESS
+                       │
+                       ↓
+                   COMPLETED
+Failure at Shipping:
+CreateShipment
+      ✗
+      │
+      ↓
+  COMPENSATING
+      │
+      ↓
+ RefundPayment
+      │
+      ↓
+ReleaseInventory
+      │
+      ↓
+  CancelOrder
+      │
+      ↓
+  COMPENSATED
+That's the basic Saga model.
+________________________________________
+26. But what if compensation itself fails?
+Now:
+CreateShipment ✗
+       ↓
+RefundPayment ✗
+The Saga remains:
+COMPENSATING
+The system can:
+retry
+Maybe:
+1 min
+5 min
+15 min
+1 hour
+Eventually:
+MANUAL_REVIEW
+or:
+COMPENSATION_FAILED
+The key is:
+Never silently abandon the Saga.
+________________________________________
+27. Why "retry forever" is dangerous
+Suppose:
+RefundPayment
+is permanently invalid because:
+payment account closed
+Retrying forever wastes resources.
+You need retry classification.
+Transient:
+    retry
+
+Permanent:
+    compensate differently / fail
+
+Unknown:
+    reconcile
+This is why error semantics matter.
+________________________________________
+28. Compensation ordering isn't always reverse order
+Earlier we said:
+A → B → C
+usually compensates:
+C → B → A
+But consider:
+ReserveInventory
+ChargePayment
+SendNotification
+If payment fails, perhaps you don't need to compensate the notification immediately because notification may have already gone out.
+Instead you might:
+SendCancellationNotification
+So compensation is determined by business semantics and dependencies, not merely mechanical reversal.
+________________________________________
+29. A better way to design compensation
+For every forward operation, ask:
+Question 1
+What business effect does it create?
+Example:
+ReserveInventory
+→ stock becomes unavailable
+Question 2
+What action restores an acceptable business state?
+ReleaseInventory
+Question 3
+Can that action fail?
+Yes.
+Question 4
+Can it be retried safely?
+It must be idempotent.
+Question 5
+What if it can never succeed?
+manual recovery
+alternative compensation
+reconciliation
+This is how you should design Sagas.
+________________________________________
+30. Compensation matrix
+A very useful design artifact is:
+Forward step	Success state	Compensation	Can fail?	Idempotent?
+CreateOrder	CREATED	CancelOrder	Yes	Must be
+ReserveInventory	RESERVED	ReleaseInventory	Yes	Must be
+CapturePayment	PAID	RefundPayment	Yes	Must be
+CreateShipment	CREATED	CancelShipment / Return	Yes	Must be
+Before implementing a Saga, build this table.
+It exposes missing recovery paths early.
+________________________________________
+31. The dangerous case: no compensation exists
+Imagine:
+TransferMoney
+succeeds.
+Then another operation fails.
+Can you compensate?
+Maybe:
+ReverseTransfer
+exists.
+Fine.
+But consider:
+SendMoneyToExternalBank
+and the external system doesn't support reversal.
+Then you cannot simply say:
+compensation = impossible
+and move on.
+You need a business strategy:
+manual investigation
+reconciliation
+customer support
+financial adjustment
+This is why Saga design is deeply connected to business rules.
+________________________________________
+32. Compensation vs retry
+These are different.
+Suppose:
+ReserveInventory
+fails because DB is temporarily unavailable.
+Don't compensate.
+Retry:
+ReserveInventory
+   ↓
+retry
+   ↓
+success
+But:
+InventoryReserved
+✓
+PaymentDeclined
+✗
+Now compensation may be appropriate:
+ReleaseInventory
+So:
+technical transient failure
+→ retry
+
+business failure after previous success
+→ compensate
+This distinction is critical.
+________________________________________
+33. Compensation vs timeout
+Suppose:
+ChargePayment
+times out.
+Don't immediately:
+RefundPayment
+because payment might have succeeded.
+First:
+check payment status
+Maybe:
+UNKNOWN
+   ↓
+reconcile
+   ↓
+PAID
+Then:
+RefundPayment
+if the business workflow requires cancellation.
+Again:
+timeout ≠ failure
+________________________________________
+34. Compensation and external systems
+This is where production Saga gets ugly.
+Suppose:
+Payment Service
+calls:
+External Payment Provider
+The Saga only controls its own service.
+Timeline:
+Saga
+ ↓
+Payment Service
+ ↓
+External Provider
+ ↓
+charge succeeds
+ ↓
+network timeout
+Payment Service may not know whether the provider charged the card.
+Now compensation cannot safely assume:
+charge failed
+It must reconcile against the external provider.
+This creates multiple layers of uncertainty.
+________________________________________
+35. Reconciliation is often more important than compensation
+Imagine:
+Payment status = UNKNOWN
+You don't immediately want:
+Refund
+You first ask:
+Provider:
+What happened to transaction T100?
+Response:
+CAPTURED
+Then:
+refund T100
+This is a powerful production pattern:
+UNKNOWN
+  ↓
+RECONCILE
+  ↓
+KNOWN STATE
+  ↓
+CONTINUE / COMPENSATE
+________________________________________
+36. Compensation may itself create events
+Payment:
+RefundPayment
+Then:
+PaymentRefunded
+Inventory:
+ReleaseInventory
+Then:
+InventoryReleased
+Orchestrator waits for these outcomes:
+RefundPayment
+    ↓
+PaymentRefunded
+    ↓
+ReleaseInventory
+    ↓
+InventoryReleased
+So compensation can itself be a Saga-like workflow.
+________________________________________
+37. Nested compensation
+You can conceptually get:
+Forward:
+A
+ ↓
+B
+ ↓
+C
+Failure:
+C fails
+ ↓
+compensate B
+ ↓
+compensation B fails
+Now you need a recovery process for the compensation.
+This is why large Sagas can become complex.
+You are effectively managing:
+forward workflow
++
+recovery workflow
++
+recovery-of-recovery
+The solution isn't to magically eliminate failure.
+It's to make states explicit and recoverable.
+________________________________________
+38. The goal isn't "perfect rollback"
+This is an important mindset shift.
+A Saga doesn't promise:
+System after failure
+=
+System before transaction
+Instead, the goal is:
+System eventually reaches
+a valid business state
+For example:
+Original:
+Order not created
+
+After failed Saga:
+Order cancelled
+Payment refunded
+Inventory released
+That's a valid business outcome.
+________________________________________
+39. The three broad outcomes
+A production Saga can end in:
+Success
+COMPLETED
+Successfully compensated
+COMPENSATED
+Requires intervention
+MANUAL_REVIEW
+That third state is not necessarily a failure of engineering.
+It acknowledges that distributed systems interact with unreliable external systems and sometimes require humans.
+________________________________________
+40. What should the customer see?
+Suppose compensation is still running.
+Don't necessarily expose:
+500 Internal Server Error
+Instead, business state could be:
+Order:
+CANCELLATION_IN_PROGRESS
+Then later:
+CANCELLED
+This is another important lesson:
+Saga state often needs to be asynchronous from the user's request lifecycle.
+The API request may return:
+202 Accepted
+while the Saga continues.
+________________________________________
+41. User-facing state vs internal state
+You may have:
+Internal Saga:
+COMPENSATING_PAYMENT
+but customer-facing order:
+CANCELLATION_IN_PROGRESS
+Don't expose every internal workflow state as your public API.
+Keep domain state meaningful to the consumer.
+________________________________________
+42. A production Saga table
+You might maintain:
+saga_instance
+──────────────────────────────────
+saga_id
+order_id
+state
+current_step
+failure_reason
+retry_count
+created_at
+updated_at
+And possibly:
+saga_step
+──────────────────────────────────
+saga_id
+step
+status
+attempts
+started_at
+completed_at
+Example:
+S100
+────────────────────────────
+ORDER       COMPLETED
+INVENTORY   COMPLETED
+PAYMENT     COMPLETED
+SHIPPING    FAILED
+REFUND      COMPLETED
+RELEASE     COMPLETED
+CANCEL      COMPLETED
+Now operations teams can understand exactly what happened.
+________________________________________
+43. Compensation observability
+For every compensation, log/trace:
+sagaId
+orderId
+step
+compensationId
+attempt
+status
+failureReason
+Example:
+S100
+REFUND_PAYMENT
+attempt=3
+status=FAILED
+reason=provider_timeout
+Then alerting can detect:
+compensation failures > threshold
+This is much better than discovering weeks later that some customers weren't refunded.
+________________________________________
+44. Metrics that matter
+For production Saga compensation, I'd track:
+sagas_started
+sagas_completed
+sagas_compensated
+sagas_manual_review
+
+compensation_attempts
+compensation_failures
+compensation_duration
+
+unknown_payment_states
+reconciliation_success
+reconciliation_failure
+And especially:
+number of Sagas stuck in COMPENSATING
+That can be an extremely valuable operational metric.
+________________________________________
+45. The most dangerous implementation
+Avoid:
+try {
+    createOrder();
+    reserveInventory();
+    chargePayment();
+    ship();
+} catch (Exception e) {
+    rollbackEverything();
+}
+This is pretending distributed services behave like one local transaction.
+They don't.
+Instead:
+Local transaction
+      ↓
+Durable state
+      ↓
+Next command/event
+      ↓
+Failure
+      ↓
+Compensation workflow
+That's Saga.
+________________________________________
+46. The complete production mental model
+Put everything together:
+                    FORWARD PATH
+
+             ┌─────────────────────┐
+             │     Orchestrator    │
+             └──────────┬──────────┘
+                        │
+                        ↓
+                  CreateOrder
+                        │
+                        ↓
+               ReserveInventory
+                        │
+                        ↓
+                 CapturePayment
+                        │
+                        ↓
+                 CreateShipment
+                        │
+                       FAIL
+                        │
+                        ↓
+                 COMPENSATING
+                        │
+             ┌──────────┼──────────┐
+             ↓          ↓          ↓
+        CancelShip   RefundPay   ReleaseStock
+             │          │          │
+             └──────────┼──────────┘
+                        ↓
+                   CancelOrder
+                        │
+                        ↓
+                   COMPENSATED
+Every arrow can potentially have:
+retry
+timeout
+duplicate
+crash
+unknown outcome
+That's why compensation isn't a simple undo().
+________________________________________
+47. A very important interview question
+"Can Saga guarantee consistency?"
+The correct answer is nuanced.
+Saga can provide:
+eventual business consistency through coordinated local transactions and compensation.
+It does not provide:
+instant global atomic consistency
+There may be a period where:
+Payment = PAID
+Order = CANCELLATION_IN_PROGRESS
+Inventory = RESERVED
+before compensation finishes.
+So Saga trades:
+strong atomic consistency
+for:
+availability
++
+independent services
++
+eventual convergence
+depending on the design.
+________________________________________
+48. Another interview question
+"Why not just use distributed transactions?"
+Because in many modern architectures:
+service A
+service B
+service C
+may have:
+different databases
+different owners
+different deployment cycles
+external APIs
+message brokers
+long-running workflows
+A single ACID transaction across all of them is either impractical or unavailable.
+Saga instead says:
+Let each service commit locally.
+If the overall business process fails,
+execute business-level compensation.
+________________________________________
+49. The deepest lesson
+Here's the sentence I want you to remember:
+A compensating transaction does not restore the database to its previous state; it performs a new business operation that moves the system toward an acceptable state after a previously committed operation.
+That one sentence separates someone who understands Saga from someone who has only memorized the pattern.
+________________________________________
+50. Compensation design checklist
+Whenever you design a Saga step, ask:
+1. What does this operation change?
+2. When is it considered successful?
+3. What event/result proves success?
+4. What can fail?
+5. Which failures are retryable?
+6. What is the compensating operation?
+7. Can compensation itself fail?
+8. Is compensation idempotent?
+9. What if the result is UNKNOWN?
+10. How do we reconcile?
+11. What if compensation is impossible?
+12. When do we require manual intervention?
+If you can answer these, you're designing a real Saga rather than drawing arrows.
+
+Saga — Lesson 6: Failure, Recovery & Production Design
+This is the lesson where Saga stops being a diagram like:
+Order → Inventory → Payment → Shipping
+and becomes something you could actually design and operate in production.
+The key realization is:
+In a distributed system, failure is not an exceptional event. Failure is one of the normal states your workflow must be designed to survive.
+We'll build the production model from first principles.
+________________________________________
+1. Start with the naive Saga
+Suppose we have:
+Order Service
+Inventory Service
+Payment Service
+Shipping Service
+And an orchestrator:
+                 Saga Orchestrator
+                        │
+          ┌─────────────┼─────────────┐
+          ↓             ↓             ↓
+       Order        Inventory      Payment
+                                      │
+                                      ↓
+                                  Shipping
+Naively, you might implement:
+createOrder();
+
+reserveInventory();
+
+chargePayment();
+
+createShipment();
+And if something fails:
+compensate();
+But production immediately asks:
+•	What if the orchestrator crashes? 
+•	What if the message is delivered twice? 
+•	What if the service processes the message but crashes before responding? 
+•	What if the response is lost? 
+•	What if Kafka is down? 
+•	What if payment succeeds but the orchestrator doesn't know? 
+•	What if compensation fails? 
+•	What if two orchestrators execute the same Saga? 
+•	What if the database commits but publishing the event fails? 
+•	What if the Saga remains stuck for three days? 
+This is today's lesson.
+________________________________________
+2. The fundamental production problem
+A distributed workflow consists of multiple pieces:
+        Orchestrator
+             │
+        Saga Database
+             │
+          Broker
+             │
+      ┌──────┼──────┐
+      ↓      ↓      ↓
+   Order Inventory Payment
+Every boundary introduces failure.
+For example:
+Orchestrator
+     ↓
+Broker
+Could fail.
+Broker
+     ↓
+Payment
+Could fail.
+Payment
+     ↓
+Payment DB
+Could fail.
+Payment DB
+     ↓
+External Provider
+Could fail.
+Therefore:
+Saga design is primarily about making partial progress durable and recoverable.
+________________________________________
+3. First major principle: Never depend on memory
+Bad:
+class SagaProcessor {
+
+    SagaState state;
+
+}
+Suppose:
+Saga starts
+   ↓
+Reserve inventory
+   ↓
+JVM crashes
+After restart:
+SagaState = ???
+The process has forgotten where it was.
+So production Saga state must be durable:
+                Saga Orchestrator
+                       │
+                       ↓
+                  Saga DB
+                       │
+                       ↓
+                 durable state
+For example:
+saga_id
+order_id
+state
+current_step
+created_at
+updated_at
+version
+failure_reason
+________________________________________
+4. Saga is a durable state machine
+This is the correct mental model.
+Not:
+method calls
+but:
+              Saga State Machine
+
+                   START
+                     │
+                     ↓
+              ORDER_CREATED
+                     │
+                     ↓
+             INVENTORY_RESERVED
+                     │
+                     ↓
+              PAYMENT_CAPTURED
+                     │
+                     ↓
+             SHIPPING_CREATED
+                     │
+                     ↓
+                 COMPLETED
+Failure:
+PAYMENT_CAPTURED
+       │
+       ↓
+SHIPPING_FAILED
+       │
+       ↓
+COMPENSATING
+       │
+       ↓
+REFUNDING
+       │
+       ↓
+INVENTORY_RELEASE
+       │
+       ↓
+ORDER_CANCEL
+       │
+       ↓
+COMPENSATED
+The state machine is stored durably.
+________________________________________
+5. Why durability matters
+Imagine:
+Saga S100
+currentStep = PAYMENT
+The orchestrator sends:
+CapturePayment
+Payment succeeds.
+Then:
+Orchestrator crashes
+When it restarts, it reads:
+Saga S100
+currentStep = PAYMENT
+Now it knows:
+"I was processing payment."
+But there's a problem.
+It doesn't necessarily know whether payment succeeded.
+That leads to our next major concept.
+________________________________________
+6. UNKNOWN is a real state
+Suppose:
+Orchestrator
+    ↓
+CapturePayment
+    ↓
+Payment Service
+    ↓
+Payment Provider
+    ↓
+SUCCESS
+But the response is lost:
+Payment Provider
+      ↓
+SUCCESS
+      X
+network failure
+      X
+Orchestrator
+The orchestrator sees:
+TIMEOUT
+Does that mean:
+PAYMENT_FAILED
+No.
+It could be:
+PAYMENT_SUCCEEDED
+Therefore:
+SUCCESS
+FAILURE
+UNKNOWN
+are different states.
+This is one of the most important production lessons.
+________________________________________
+7. Why UNKNOWN is dangerous
+Imagine the orchestrator says:
+Payment timed out.
+and immediately retries:
+CapturePayment
+First request:
+Provider:
+$100 charged
+Response lost.
+Second request:
+Provider:
+$100 charged again
+Customer gets charged:
+$200
+That's why payment operations need idempotency.
+________________________________________
+8. Idempotency becomes mandatory
+Every important Saga command should have a stable operation ID.
+For example:
+sagaId = S100
+stepId = PAYMENT_CAPTURE
+operationId = S100-PAYMENT_CAPTURE
+The Payment Service receives:
+{
+  "operationId": "S100-PAYMENT_CAPTURE",
+  "orderId": "O500",
+  "amount": 100
+}
+Payment stores:
+operation_id
+status
+result
+First request:
+S100-PAYMENT_CAPTURE
+       ↓
+execute
+       ↓
+PAID
+Second request:
+S100-PAYMENT_CAPTURE
+       ↓
+already processed
+       ↓
+return previous result
+Thus:
+at-least-once delivery
++
+idempotent processing
+=
+safe retry
+This is one of the core distributed-system patterns.
+________________________________________
+9. Why at-least-once delivery is common
+Suppose a consumer receives:
+CapturePayment
+It processes it:
+DB COMMIT ✓
+Then crashes before acknowledging the broker:
+DB COMMIT ✓
+ACK ✗
+CRASH
+The broker thinks:
+message not acknowledged
+So it delivers again:
+CapturePayment
+This means your consumer may receive:
+A
+A
+A
+This isn't necessarily a broker bug.
+It's a consequence of trying to guarantee delivery despite crashes.
+Therefore consumers should be designed for:
+At-least-once delivery + idempotent processing.
+________________________________________
+10. The database + message problem
+Now we encounter one of the most important distributed-system problems.
+Payment Service receives:
+CapturePayment
+It does:
+BEGIN
+
+UPDATE payment
+SET status = 'PAID';
+
+COMMIT;
+Then:
+publish(new PaymentCaptured());
+What if:
+DB COMMIT ✓
+publish ✗
+Now:
+Payment DB = PAID
+but:
+Orchestrator = unaware
+This is the dual-write problem.
+________________________________________
+11. The Outbox Pattern
+The standard solution is:
+Payment DB
+   │
+   ├── payment
+   │
+   └── outbox
+Inside one local DB transaction:
+BEGIN;
+
+UPDATE payment
+SET status = 'PAID';
+
+INSERT INTO outbox (
+    event_id,
+    type,
+    payload
+)
+VALUES (
+    'E100',
+    'PaymentCaptured',
+    '...'
+);
+
+COMMIT;
+Now either both happen:
+payment update ✓
+outbox insert ✓
+or neither happens.
+A separate publisher reads:
+outbox
+   ↓
+Kafka
+So:
+DB transaction
+      ↓
+Outbox
+      ↓
+Message broker
+This is much safer.
+________________________________________
+12. Why Outbox doesn't eliminate duplicates
+Suppose publisher does:
+read outbox
+   ↓
+publish to Kafka ✓
+   ↓
+crash before marking outbox SENT
+After restart:
+publish again
+So consumers may see:
+PaymentCaptured
+PaymentCaptured
+Again:
+Outbox solves atomic DB + event creation, not global exactly-once execution.
+That's why consumers still need idempotency.
+________________________________________
+13. Inbox / deduplication
+On the consumer side:
+Kafka
+  ↓
+Payment Service
+  ↓
+Inbox / processed_messages
+Example:
+processed_message
+────────────────────────
+message_id
+processed_at
+result
+When:
+message_id = E100
+arrives:
+if already processed:
+    return previous result
+
+else:
+    process
+A common transaction:
+BEGIN;
+
+INSERT INTO processed_messages(message_id)
+VALUES ('E100');
+
+UPDATE inventory
+SET reserved = reserved + 1;
+
+COMMIT;
+If E100 arrives again, the unique constraint prevents duplicate processing.
+________________________________________
+14. Now we have the core reliability chain
+A production Saga often looks like:
+                Saga Orchestrator
+                       │
+                       ↓
+                   Saga DB
+                       │
+                    Outbox
+                       │
+                       ↓
+                    Kafka
+                       │
+             ┌─────────┼─────────┐
+             ↓         ↓         ↓
+          Order    Inventory   Payment
+             │         │         │
+           Inbox     Inbox     Inbox
+             │         │         │
+             ↓         ↓         ↓
+            DB        DB        DB
+This architecture is powerful because every important boundary has durability.
+________________________________________
+15. What happens when the orchestrator crashes?
+Suppose:
+Saga S100
+
+PAYMENT_CAPTURE_PENDING
+Orchestrator sends:
+CapturePayment
+Then crashes.
+When it restarts:
+load S100
+It sees:
+PAYMENT_CAPTURE_PENDING
+But doesn't know whether payment completed.
+It must not blindly assume failure.
+Possible strategies:
+Strategy A — Idempotent retry
+CapturePayment(S100-PAYMENT)
+Payment returns:
+already completed
+Strategy B — Query status
+GET payment status
+Strategy C — Reconciliation
+Ask the external payment provider.
+So recovery becomes:
+UNKNOWN
+   ↓
+retry safely / query / reconcile
+   ↓
+known state
+________________________________________
+16. What happens when the consumer crashes?
+Example:
+Payment Service
+    ↓
+process command
+    ↓
+DB COMMIT
+    ↓
+CRASH
+    ↓
+ACK never sent
+Broker redelivers.
+Consumer:
+messageId = E100
+checks inbox:
+E100 already processed
+and doesn't charge again.
+That's the point of idempotency.
+________________________________________
+17. What happens when Kafka is down?
+Suppose Payment Service successfully commits:
+payment = PAID
+outbox = PaymentCaptured
+Kafka is unavailable.
+That's okay.
+The outbox remains:
+status = PENDING
+Publisher retries later:
+Kafka DOWN
+   ↓
+retry
+   ↓
+retry
+   ↓
+Kafka UP
+   ↓
+publish
+The important thing is:
+The business transaction isn't lost just because the broker is temporarily unavailable.
+________________________________________
+18. What happens if the orchestrator's broker publishing fails?
+Suppose:
+Saga DB:
+state = INVENTORY_PENDING
+You need to publish:
+ReserveInventory
+Use the orchestrator's own outbox:
+BEGIN
+
+UPDATE saga
+SET state = 'INVENTORY_PENDING';
+
+INSERT INTO saga_outbox
+VALUES (
+    'S100-RESERVE',
+    'ReserveInventory',
+    ...
+);
+
+COMMIT;
+Publisher:
+Saga Outbox
+      ↓
+Kafka
+      ↓
+Inventory
+Now the orchestrator can crash safely.
+________________________________________
+19. Optimistic locking for the Saga itself
+Now consider two workers:
+Worker A ──→ Saga S100
+Worker B ──→ Saga S100
+Both load:
+state = PAYMENT_PENDING
+version = 10
+Both think:
+"I should process this Saga."
+We don't want both.
+Use optimistic locking:
+UPDATE saga
+SET state = 'PAYMENT_PROCESSING',
+    version = version + 1
+WHERE saga_id = 'S100'
+  AND version = 10;
+One succeeds:
+rows_updated = 1
+The other:
+rows_updated = 0
+It knows another worker already changed the Saga.
+This is a very common way to prevent concurrent Saga execution.
+________________________________________
+20. Distributed locking vs optimistic concurrency
+You could use a distributed lock:
+lock(S100)
+But locks introduce their own problems:
+•	lock expiration 
+•	deadlocks 
+•	ownership 
+•	network partitions 
+•	recovery complexity 
+For many Saga workflows, optimistic concurrency is simpler:
+version = 10
+then:
+UPDATE ... WHERE version = 10
+The database becomes the concurrency authority.
+________________________________________
+21. Saga timeout
+Imagine:
+S100
+stays:
+PAYMENT_PENDING
+for:
+6 hours
+Something is probably wrong.
+You need a timeout mechanism.
+For example:
+created_at = 10:00
+deadline   = 10:15
+A scheduler scans:
+WHERE state NOT IN (...)
+AND deadline < NOW()
+Then:
+S100
+PAYMENT_PENDING
+   ↓
+TIMEOUT
+   ↓
+RECOVERY
+The Saga doesn't remain forgotten forever.
+________________________________________
+22. Recovery worker
+Production systems often have a recovery process:
+                 ┌───────────────┐
+                 │ Recovery Job  │
+                 └───────┬───────┘
+                         ↓
+                    Saga Database
+                         ↓
+              find stuck Sagas
+                         ↓
+                   recover them
+It searches for:
+PENDING too long
+PROCESSING too long
+COMPENSATING too long
+UNKNOWN too long
+Then determines what action to take.
+________________________________________
+23. But don't blindly retry every stuck Saga
+Suppose:
+PAYMENT_PENDING
+for 30 minutes.
+Could be:
+temporary network failure
+or:
+payment provider actually processed it
+or:
+consumer crashed
+or:
+business validation failed
+Recovery must use state-specific logic.
+For example:
+PAYMENT_PENDING
+    ↓
+query payment status
+rather than:
+send payment again
+________________________________________
+24. Retry strategy
+Never use:
+while (true) {
+    retry();
+}
+Instead use bounded exponential backoff.
+Example:
+attempt 1 → 1 sec
+attempt 2 → 2 sec
+attempt 3 → 4 sec
+attempt 4 → 8 sec
+attempt 5 → 16 sec
+Usually add jitter:
+delay = exponentialBackoff + randomJitter
+Why jitter?
+Suppose 10,000 Sagas fail at the same moment.
+Without jitter:
+10,000 requests
+       ↓
+all retry at 10 sec
+       ↓
+dependency overloaded
+       ↓
+all fail
+       ↓
+retry again
+You create a retry storm.
+Jitter spreads the load.
+________________________________________
+25. Retry classification
+Not every error deserves a retry.
+Retryable
+timeout
+connection reset
+503
+temporary broker failure
+temporary DB overload
+Probably non-retryable
+insufficient funds
+invalid address
+product unavailable
+payment method rejected
+business validation failure
+Unknown
+payment timeout after request was sent
+Unknown often requires:
+status query / reconciliation
+This distinction is extremely important.
+________________________________________
+26. Circuit breaker
+Suppose Payment Provider is completely down.
+Without protection:
+10,000 Sagas
+    ↓
+payment request
+    ↓
+timeout
+    ↓
+retry
+    ↓
+timeout
+    ↓
+retry
+You amplify the outage.
+A circuit breaker can move:
+CLOSED
+  ↓
+too many failures
+  ↓
+OPEN
+Then:
+don't call provider
+After a recovery interval:
+OPEN
+ ↓
+HALF_OPEN
+ ↓
+test request
+ ↓
+success
+ ↓
+CLOSED
+The Saga remains pending/recoverable rather than hammering the dependency.
+________________________________________
+27. Dead-letter queue
+Suppose a message repeatedly fails:
+ReserveInventory
+ ↓
+fail
+ ↓
+retry
+ ↓
+fail
+ ↓
+retry
+ ↓
+fail
+Eventually:
+DLQ
+But a DLQ isn't:
+"Throw the problem away."
+It means:
+"Separate poison messages from the normal processing path so the system can continue while preserving the failed work for investigation/recovery."
+Operational tooling should let you inspect and replay them safely.
+________________________________________
+28. Poison message example
+Suppose:
+{
+  "orderId": "O100",
+  "quantity": -50
+}
+The consumer rejects it permanently.
+If you retry forever:
+Kafka
+ ↓
+Consumer
+ ↓
+FAIL
+ ↓
+Kafka
+ ↓
+Consumer
+ ↓
+FAIL
+One bad message can block progress.
+DLQ isolates it:
+Normal Topic
+      │
+      ↓
+Consumer
+      │
+   permanent failure
+      │
+      ↓
+     DLQ
+Then operators fix the underlying data/business problem.
+________________________________________
+29. Compensation failure in production
+Suppose:
+Shipping failed
+and:
+RefundPayment
+fails.
+Saga state:
+COMPENSATING
+with:
+compensationStep = REFUND_PAYMENT
+attempts = 5
+Do not lose it.
+Recovery worker sees:
+COMPENSATING for 2 hours
+and can:
+retry
+or:
+escalate
+or:
+manual recovery
+depending on policy.
+________________________________________
+30. Manual recovery is a feature
+A production system should provide an operator with something like:
+Saga ID: S100
+Order: O500
+
+State:
+COMPENSATION_FAILED
+
+Forward:
+✓ Order Created
+✓ Inventory Reserved
+✓ Payment Captured
+✗ Shipping Created
+
+Compensation:
+✓ Inventory Released
+✗ Payment Refund
+
+Reason:
+Payment Provider Timeout
+
+Attempts:
+7
+Then the operator can:
+Retry Refund
+or:
+Reconcile Payment
+or:
+Mark Manually Resolved
+with audit logging.
+This is vastly better than:
+"Check the logs."
+________________________________________
+31. Reconciliation jobs
+Some systems need periodic reconciliation independent of the Saga.
+For example:
+Our DB:
+Payment = REFUND_PENDING
+External provider:
+Refund = COMPLETED
+The Saga may have missed the response.
+A reconciliation job compares:
+Internal state
+       ↕
+External source of truth
+and repairs discrepancies.
+This is especially important for:
+•	payments 
+•	banking 
+•	shipping 
+•	inventory 
+•	external APIs 
+________________________________________
+32. Saga vs reconciliation
+Think of them as complementary.
+Saga:
+actively coordinates workflow
+Reconciliation:
+periodically verifies reality
+Because:
+Distributed systems can lose messages, responses, connectivity, and knowledge of what actually happened.
+Reconciliation repairs the knowledge gap.
+________________________________________
+33. Exactly-once is usually the wrong goal
+You may hear:
+"We'll make the Saga exactly once."
+Be careful.
+Across:
+DB
+Kafka
+services
+external APIs
+true end-to-end exactly-once execution is extremely difficult.
+A more practical design is:
+at-least-once delivery
++
+idempotent operations
++
+durable state
++
+deduplication
++
+reconciliation
+This is often more robust.
+________________________________________
+34. End-to-end production architecture
+Let's put everything together.
+                         Client
+                           │
+                           ↓
+                     Order Service
+                           │
+                           ↓
+                   Saga Orchestrator
+                           │
+                  ┌────────┴────────┐
+                  │                 │
+                  ↓                 ↓
+               Saga DB          Saga Outbox
+                                    │
+                                    ↓
+                                  Kafka
+                                    │
+                 ┌──────────────────┼─────────────────┐
+                 ↓                  ↓                 ↓
+              Inventory          Payment           Shipping
+                 │                  │                 │
+              Inbox              Inbox             Inbox
+                 │                  │                 │
+                 ↓                  ↓                 ↓
+              Local DB           Local DB          Local DB
+                 │                  │                 │
+              Outbox             Outbox             Outbox
+                 │                  │                 │
+                 └──────────────────┼─────────────────┘
+                                    ↓
+                                  Kafka
+                                    │
+                                    ↓
+                            Saga Orchestrator
+And around this:
+        ┌──────────────────────────────┐
+        │ Monitoring / Alerting        │
+        ├──────────────────────────────┤
+        │ Recovery Worker              │
+        │ Reconciliation Jobs          │
+        │ DLQ                          │
+        │ Retry / Backoff              │
+        │ Circuit Breakers             │
+        │ Audit Trail                  │
+        └──────────────────────────────┘
+Now we're talking about a production architecture.
+________________________________________
+35. Let's trace one complete failure
+This is the most useful exercise.
+Order:
+O100
+Saga:
+S100
+Step 1
+CreateOrder
+Local transaction:
+Order = CREATED
+Outbox = OrderCreated
+Commit.
+________________________________________
+Step 2
+Orchestrator receives:
+OrderCreated
+Updates:
+Saga:
+INVENTORY_PENDING
+and writes:
+ReserveInventory
+to its outbox.
+________________________________________
+Step 3
+Inventory consumes:
+ReserveInventory(S100)
+Local transaction:
+Inventory = RESERVED
+Inbox = processed
+Outbox = InventoryReserved
+Commit.
+________________________________________
+Step 4
+Orchestrator:
+PAYMENT_PENDING
+publishes:
+CapturePayment(S100)
+________________________________________
+Step 5
+Payment receives it.
+External provider:
+$100 charged
+But network response:
+TIMEOUT
+Payment state:
+UNKNOWN
+________________________________________
+36. What NOT to do
+Don't do:
+timeout
+  ↓
+charge again
+Don't do:
+timeout
+  ↓
+assume failed
+  ↓
+release inventory
+Because the payment might have succeeded.
+Instead:
+UNKNOWN
+  ↓
+reconcile/query provider
+________________________________________
+37. Reconciliation
+Payment asks provider:
+transaction = T100
+Provider says:
+CAPTURED
+Payment records:
+PAID
+and publishes:
+PaymentCaptured
+Now Saga knows:
+PAYMENT_CAPTURED
+________________________________________
+38. Shipping fails
+Orchestrator sends:
+CreateShipment
+Shipping responds:
+SHIPMENT_FAILED
+Saga:
+COMPENSATING
+Because:
+Inventory = RESERVED
+Payment = PAID
+we need:
+RefundPayment
+ReleaseInventory
+CancelOrder
+________________________________________
+39. Refund fails
+Payment receives:
+RefundPayment(S100)
+External provider times out.
+State:
+REFUND_UNKNOWN
+Recovery worker later queries provider:
+REFUND_COMPLETED
+Payment records:
+REFUNDED
+emits:
+PaymentRefunded
+________________________________________
+40. Inventory release
+Inventory receives:
+ReleaseInventory(S100)
+It commits:
+Inventory = AVAILABLE
+emits:
+InventoryReleased
+________________________________________
+41. Order cancellation
+Orchestrator now executes:
+CancelOrder
+Order:
+CREATED
+   ↓
+CANCELLED
+Saga:
+COMPENSATED
+Final state:
+Order       = CANCELLED
+Inventory   = AVAILABLE
+Payment     = REFUNDED
+Shipping    = FAILED
+Saga        = COMPENSATED
+That is a successful Saga recovery.
+________________________________________
+42. Notice how many things happened
+There was:
+network timeout
+unknown payment state
+reconciliation
+shipping failure
+compensation
+refund timeout
+reconciliation again
+retry
+multiple messages
+multiple local transactions
+Yet the system eventually converged to:
+valid business state
+That's what production Saga is really about.
+________________________________________
+43. Java implementation shape
+A simplified orchestrator might look conceptually like:
+switch (saga.state()) {
+
+    case STARTED ->
+        reserveInventory(saga);
+
+    case INVENTORY_RESERVED ->
+        capturePayment(saga);
+
+    case PAYMENT_CAPTURED ->
+        createShipment(saga);
+
+    case SHIPPING_FAILED ->
+        beginCompensation(saga);
+
+    case COMPENSATING ->
+        continueCompensation(saga);
+
+    case COMPLETED, COMPENSATED ->
+        doNothing();
+}
+But the important part is:
+Don't make this state machine live only inside the Java call stack.
+Persist the state.
+For example:
+Saga saga = sagaRepository.find(sagaId);
+
+if (saga.canTransitionTo(nextState)) {
+    saga.transitionTo(nextState);
+    sagaRepository.save(saga);
+}
+And use versioning:
+UPDATE saga
+SET state = ?, version = version + 1
+WHERE saga_id = ?
+  AND version = ?;
+________________________________________
+44. Commands vs events
+Keep this distinction clear.
+Command
+ReserveInventory
+Means:
+"Please do this."
+Event
+InventoryReserved
+Means:
+"This happened."
+Saga orchestration often looks like:
+Command
+   ↓
+Service
+   ↓
+Event
+   ↓
+Orchestrator
+   ↓
+Command
+Example:
+ReserveInventory
+       ↓
+Inventory Service
+       ↓
+InventoryReserved
+       ↓
+Orchestrator
+       ↓
+CapturePayment
+This makes the workflow explicit.
+________________________________________
+45. State transition should be guarded
+Suppose Saga is:
+PAYMENT_CAPTURED
+and receives:
+InventoryReserved
+late.
+The orchestrator shouldn't blindly process it.
+It should validate:
+current state
++
+incoming event
+Example:
+PAYMENT_CAPTURED
++ InventoryReserved
+= invalid transition
+or possibly:
+duplicate/late event
+= ignore safely
+This prevents old messages from corrupting workflow state.
+________________________________________
+46. Versioned events
+Another production consideration.
+Today:
+{
+  "eventType": "PaymentCaptured",
+  "amount": 100
+}
+Tomorrow you add:
+{
+  "eventType": "PaymentCaptured",
+  "amount": 100,
+  "currency": "USD",
+  "paymentMethod": "CARD"
+}
+Consumers may run different versions.
+Therefore event schemas need compatibility strategy.
+For example:
+PaymentCaptured.v1
+PaymentCaptured.v2
+or schema evolution rules.
+Saga workflows often live for seconds, minutes, or hours, so deploys can happen while a Saga is in progress.
+________________________________________
+47. Long-running Saga
+Some Sagas may last:
+milliseconds
+Others:
+hours
+days
+weeks
+Example:
+Loan application
+might involve:
+Application
+ ↓
+Credit check
+ ↓
+Document verification
+ ↓
+Fraud review
+ ↓
+Approval
+ ↓
+Disbursement
+You cannot keep a Java thread waiting for this.
+Bad:
+Thread.sleep(...)
+Correct:
+persist workflow state
+   ↓
+return
+   ↓
+event arrives later
+   ↓
+resume Saga
+This is why Saga is fundamentally a durable workflow.
+________________________________________
+48. Saga is not a thread
+This is worth remembering.
+Bad mental model:
+Saga = one Java method running for 3 hours
+Correct mental model:
+Saga = durable state + messages + transitions
+The orchestrator process can die.
+The JVM can restart.
+The node can disappear.
+The Saga survives because its state is externalized.
+________________________________________
+49. Production checklist
+When designing a Saga, I would expect you to ask:
+State
+✓ Is Saga state durable?
+✓ Is it versioned?
+✓ Can concurrent workers modify it?
+Messaging
+✓ What delivery guarantee?
+✓ Can messages duplicate?
+✓ Can messages arrive late?
+✓ Can they arrive out of order?
+Idempotency
+✓ Is every command idempotent?
+✓ Is compensation idempotent?
+✓ Is there an operation ID?
+Atomicity
+✓ DB + event?
+✓ Using Outbox?
+✓ Consumer deduplication?
+Failure
+✓ Timeout?
+✓ Retry?
+✓ Unknown outcome?
+✓ Reconciliation?
+✓ Compensation failure?
+Operations
+✓ DLQ?
+✓ Metrics?
+✓ Tracing?
+✓ Alerts?
+✓ Recovery worker?
+✓ Manual intervention?
+Business
+✓ What is the compensating action?
+✓ Can compensation actually reverse the effect?
+✓ What if reversal is impossible?
