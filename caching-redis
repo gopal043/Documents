@@ -20562,3 +20562,3730 @@ There you'll have to decide where Redis belongs, where it absolutely should not 
 
 
 
+Cache Invalidation — Lesson 1
+Why invalidation is fundamentally difficult
+The key idea I want you to leave with is:
+Caching creates copies of data. Invalidation is the problem of making those copies stop being trusted when the original data changes.
+That sounds simple.
+It isn't.
+________________________________________
+1. First: why did we introduce a cache?
+Suppose we have:
+Application
+    |
+    v
+Database
+Every request for a user:
+User user = userRepository.findById(userId);
+If the database takes 5 ms, and we have:
+10,000 requests/sec
+we're asking the database to repeatedly answer questions whose answers may not change very often.
+So we introduce Redis:
+                 ┌──────────────┐
+                 │    Redis     │
+                 └──────┬───────┘
+                        ↑
+                        │
+Application ────────────┤
+                        │
+                        ↓
+                 ┌──────────────┐
+                 │   Database   │
+                 └──────────────┘
+Now:
+User user = redis.get("user:123");
+
+if (user == null) {
+    user = database.findUser(123);
+    redis.set("user:123", user);
+}
+The moment you do this, you've created a new reality:
+Database:
+user:123 -> name = "John"
+
+Redis:
+user:123 -> name = "John"
+There are now two copies.
+And that is where invalidation begins.
+________________________________________
+2. The fundamental problem: one truth, multiple copies
+Imagine:
+DB
+user:123
+name = "John"
+Redis:
+user:123
+name = "John"
+Then someone changes the user:
+UPDATE users
+SET name = 'Mike'
+WHERE id = 123;
+Database now says:
+name = Mike
+But Redis still says:
+name = John
+We have:
+        DB                Redis
+        │                   │
+        │                   │
+     Mike                 John
+Which one should the application believe?
+That's the fundamental problem.
+Without cache:
+              DB
+               ↑
+        single source of truth
+With cache:
+                 ┌── Cache copy
+                 │
+Application ─────┤
+                 │
+                 └── DB truth
+You've gained performance.
+But you've created consistency work.
+________________________________________
+3. So what exactly does "invalidation" mean?
+A common beginner interpretation is:
+"Invalidation means deleting something from Redis."
+That's only one implementation.
+Conceptually:
+Invalidation means determining that a cached value is no longer safe to use.
+There are several ways to accomplish that.
+Strategy A — Delete
+DB:
+user:123 = Mike
+
+Redis:
+delete user:123
+Next read:
+Redis MISS
+     ↓
+DB
+     ↓
+Mike
+     ↓
+Redis
+Strategy B — Update cache
+Instead of deleting:
+DB:
+user:123 = Mike
+
+Redis:
+user:123 = Mike
+Strategy C — Mark/version it invalid
+For example:
+Redis:
+user:123
+value = John
+version = 5
+
+DB:
+user:123
+version = 6
+value = Mike
+Application can determine:
+cache version != current version
+and refuse to use it.
+So:
+Invalidation ≠ deletion.
+Deletion is merely one invalidation mechanism.
+________________________________________
+4. Why is invalidation fundamentally difficult?
+Let's start with the simplest possible system.
+Client
+   |
+   v
+Application
+   |
+   +------> Redis
+   |
+   +------> DB
+Suppose we use:
+User getUser(long id) {
+    User cached = redis.get("user:" + id);
+
+    if (cached != null) {
+        return cached;
+    }
+
+    User user = db.find(id);
+
+    redis.set("user:" + id, user);
+
+    return user;
+}
+And:
+void updateUser(User user) {
+    db.update(user);
+
+    redis.delete("user:" + user.id());
+}
+Looks perfect.
+But now ask the university-level question:
+What happens if multiple operations happen concurrently?
+That's where the real problem appears.
+________________________________________
+5. The classic race condition
+Suppose Redis currently contains:
+user:123 = John
+Two application threads execute concurrently.
+Thread A — READ
+GET user:123
+Thread B — UPDATE
+UPDATE DB user:123 = Mike
+DELETE Redis user:123
+Timeline:
+Time →
+
+A: GET Redis
+              ↓
+              gets "John"
+
+B: UPDATE DB
+              ↓
+              DB = "Mike"
+
+B: DELETE Redis
+              ↓
+              Redis = empty
+
+A: returns "John"
+We returned stale data.
+That alone isn't necessarily surprising.
+But now consider a nastier race.
+________________________________________
+6. The dangerous race: stale value gets written back
+Initial state:
+DB:
+John
+
+Redis:
+John
+Thread A wants to read.
+Thread B updates the user.
+Imagine A has already obtained the old value from DB because Redis missed.
+Timeline:
+             Thread A                  Thread B
+
+              DB read
+              John
+
+                                      DB update
+                                      Mike
+
+                                      Redis delete
+
+              Redis set
+              John
+Now:
+DB:
+Mike
+
+Redis:
+John   ← stale!
+This is much worse.
+The cache was invalidated correctly.
+Then the stale reader repopulated the cache with obsolete data.
+This is one of the most important cache-invalidation race conditions to understand.
+________________________________________
+7. Notice what actually happened
+The problem isn't Redis.
+The problem isn't even Java.
+The problem is:
+We have concurrent operations acting on different copies of the same logical data.
+We have:
+                logical User #123
+                       |
+             ┌─────────┴─────────┐
+             ↓                   ↓
+          Database             Cache
+          version N             version ?
+Once copies exist, you need some mechanism to answer:
+"Is this copy still valid?"
+And that question is surprisingly hard.
+________________________________________
+8. Why can't we just update the cache whenever DB changes?
+You might say:
+void updateUser(User user) {
+    db.update(user);
+    redis.set("user:" + user.id(), user);
+}
+Better?
+Sometimes.
+But now there are two writes:
+DB write
+Redis write
+What if:
+DB write succeeds
+Redis write fails
+Result:
+DB:
+Mike
+
+Redis:
+John
+Again stale.
+What if the opposite ordering?
+redis.set(...);
+db.update(...);
+Now:
+Redis:
+Mike
+
+DB:
+John
+If another request reads the cache, it sees:
+Mike
+even though the database still says:
+John
+Now the cache is ahead of the database.
+That's another consistency problem.
+________________________________________
+9. "Okay, then use a transaction."
+This is where distributed systems starts becoming interesting.
+You might think:
+BEGIN TRANSACTION
+
+DB UPDATE
+Redis UPDATE
+
+COMMIT
+But Redis and your database are usually different systems.
+For example:
+MySQL
+Redis
+They don't magically participate in the same local transaction.
+You can build distributed transaction protocols such as 2PC, but now you've introduced:
+•	coordination 
+•	blocking 
+•	failure handling 
+•	recovery 
+•	latency 
+•	operational complexity 
+And most high-scale systems don't want their cache update coupled that tightly to the database.
+This leads to a fundamental architectural principle:
+A cache is usually treated as a derived copy, not another source of truth.
+That distinction is extremely important.
+________________________________________
+10. The database is the source of truth
+Think of the system like this:
+              SOURCE OF TRUTH
+                     │
+                     ▼
+                  Database
+                     │
+             derived representation
+                     │
+                     ▼
+                   Redis
+Redis isn't authoritative.
+It is essentially saying:
+"I have a copy that I believe is probably still valid."
+That word believe is the entire cache-consistency problem.
+________________________________________
+11. Cache invalidation is really a knowledge problem
+Here's the deeper way to think about it.
+Suppose the database changes:
+DB:
+price = 100
+      ↓
+price = 120
+Who knows that Redis contains:
+price = 100
+Potentially:
+Application A
+Application B
+Application C
+Redis
+CDN
+local JVM caches
+search index
+API gateway
+The database knows:
+price = 120
+But the database doesn't automatically know:
+"There are 37 copies of this value somewhere in the world."
+That's the core difficulty.
+________________________________________
+12. The cache itself doesn't know when the database changes
+This is crucial.
+Redis doesn't magically observe:
+UPDATE product
+SET price = 120;
+Redis sees nothing.
+From Redis's perspective:
+price = 100
+is perfectly valid.
+Therefore somebody has to communicate:
+"Hey Redis, user:123 changed."
+That communication can come from:
+Application code
+Application
+    |
+    +--> DB UPDATE
+    |
+    +--> Redis DELETE
+Event/message
+DB
+ |
+ | change
+ v
+Event
+ |
+ v
+Kafka
+ |
+ v
+Cache invalidation consumer
+ |
+ v
+Redis DELETE
+CDC
+Database
+   |
+   v
+Change Data Capture
+   |
+   v
+Kafka
+   |
+   v
+Cache consumers
+Different architectures solve the same underlying problem:
+How do all copies learn that the source has changed?
+________________________________________
+13. Now add multiple application instances
+Your 6+ years Java background will immediately recognize the next problem.
+Suppose:
+                  Load Balancer
+                       |
+        ┌──────────────┼──────────────┐
+        ↓              ↓              ↓
+     App #1          App #2         App #3
+        |              |              |
+        └──────────────┼──────────────┘
+                       ↓
+                     Redis
+                       |
+                       ↓
+                      DB
+Suppose App #1 has a local cache:
+App #1 JVM cache:
+user:123 = John
+App #2:
+user:123 = John
+App #3:
+user:123 = John
+And Redis:
+user:123 = John
+Database changes:
+John → Mike
+How many things need invalidation?
+App #1 local cache
+App #2 local cache
+App #3 local cache
+Redis
+Now invalidation is distributed.
+This is why "just delete the Redis key" is often an incomplete answer in system design interviews.
+________________________________________
+14. A cache hierarchy makes this even harder
+Real systems might have:
+                 Client
+                   |
+                Browser
+                   |
+                CDN Cache
+                   |
+             API Gateway Cache
+                   |
+              Application
+                   |
+             Local JVM Cache
+                   |
+                 Redis
+                   |
+               Database
+Suppose:
+DB:
+price = $120
+But:
+CDN:
+$100
+
+JVM:
+$100
+
+Redis:
+$100
+You delete Redis.
+Doesn't matter.
+The JVM might still return:
+$100
+You invalidate JVM.
+Doesn't matter.
+CDN might still return:
+$100
+This leads to a very useful mental model:
+Every cache layer creates another place where stale state can exist.
+________________________________________
+15. Why "invalidate everything immediately" isn't trivial
+Imagine you have:
+10,000 application instances
+and a product changes.
+You could theoretically broadcast:
+INVALIDATE product:123
+to everybody.
+But now you have another distributed-system problem:
+Did every node receive the invalidation?
+Suppose:
+App #1 ✓
+App #2 ✓
+App #3 ✓
+App #4 ✗
+App #5 ✓
+...
+App #4 continues serving stale data.
+What if App #4 was temporarily disconnected?
+What if it crashed?
+What if the message was lost?
+What if it received the event twice?
+What if events arrive out of order?
+Now cache invalidation becomes an event delivery + ordering + failure recovery problem.
+________________________________________
+16. This is why invalidation and messaging are closely related
+Eventually you'll encounter architectures like:
+                 DB
+                  |
+                  | change
+                  ↓
+                Event
+                  |
+                  ↓
+                Kafka
+          ┌───────┼────────┐
+          ↓       ↓        ↓
+       Cache A  Cache B  Search
+For example:
+UserUpdated {
+    userId: 123,
+    version: 42
+}
+Consumers receive it and invalidate/update their copies.
+But then you immediately have new questions:
+What if event is duplicated?
+What if event is lost?
+What if event arrives late?
+What if version 41 arrives after version 42?
+What if consumer crashes?
+What if DB committed but event wasn't published?
+We'll eventually get to these.
+________________________________________
+17. The most important distinction: stale vs incorrect
+Suppose the DB says:
+balance = $100
+Cache says:
+balance = $90
+Is the cache incorrect?
+Relative to the current DB state: yes.
+But the deeper question is:
+For how long are we willing to tolerate this?
+For a product description:
+stale for 30 seconds
+might be acceptable.
+For a bank balance:
+stale for 30 seconds
+might be unacceptable.
+So cache invalidation isn't only a technical problem.
+It is a business consistency requirement.
+________________________________________
+18. This gives us the concept of consistency requirements
+Imagine three pieces of data.
+Product description
+DB:
+"iPhone 17 Pro"
+
+Cache:
+"iPhone 17 Pro"
+If it takes 10 seconds for an update to propagate, probably fine.
+Inventory
+DB:
+stock = 0
+
+Cache:
+stock = 1
+Now someone may purchase a product that doesn't exist.
+Much more serious.
+Bank balance
+DB:
+$1,000
+
+Cache:
+$2,000
+Potentially catastrophic.
+Therefore:
+The correct caching strategy depends on the consistency requirement of the data.
+Don't start with:
+"Should I use Redis?"
+Start with:
+"How stale can this data safely be?"
+That's the system-design mindset.
+________________________________________
+19. A very useful equation
+Think of cached data as:
+Cache value = Snapshot of DB at some earlier point in time
+If:
+DB(t0) = A
+and cache was populated at:
+t0
+then:
+Cache = A
+At:
+t1
+DB changes:
+DB(t1) = B
+but cache remains:
+Cache = A
+Therefore:
+Cache age = t1 - t0
+The longer the cache lives without validation, the greater the potential staleness window.
+This leads naturally to TTL.
+And that's exactly why our next lesson is TTL vs explicit invalidation.
+________________________________________
+20. But TTL doesn't solve the fundamental problem
+This is an important preview.
+Suppose:
+TTL = 1 hour
+DB changes:
+10:00 → price = $120
+Cache was created:
+09:30 → price = $100
+It expires:
+10:30
+So from:
+10:00 → 10:30
+the cache can return:
+$100
+even though DB says:
+$120
+TTL says:
+"Eventually this copy cannot be trusted."
+Explicit invalidation says:
+"I know this copy became invalid because something changed."
+Those are fundamentally different ideas.
+________________________________________
+21. The deep reason invalidation is hard
+Let's compress everything into one diagram.
+Without cache:
+                  ┌─────────┐
+Request ─────────>│   DB    │
+                  └─────────┘
+
+One copy.
+With cache:
+                         ┌─────────┐
+                    ┌───>│  Redis  │
+                    │    └─────────┘
+                    │
+Request ─────────> Application
+                    │
+                    │    ┌─────────┐
+                    └───>│   DB    │
+                         └─────────┘
+You've transformed:
+one state
+into:
+multiple replicas of state
+And now every mutation creates a synchronization question:
+DB changed
+   |
+   +--> Who knows?
+   |
+   +--> Which caches know?
+   |
+   +--> When do they know?
+   |
+   +--> What if notification fails?
+   |
+   +--> What if notification is duplicated?
+   |
+   +--> What if notification is delayed?
+   |
+   +--> What if an old reader writes stale data back?
+   |
+   +--> What if another node still has a local copy?
+That is cache invalidation.
+________________________________________
+22. One mental model I want you to keep
+Don't think:
+Cache invalidation = deleting Redis keys.
+Think:
+Cache invalidation = maintaining the trustworthiness of derived copies of mutable state.
+That mental model scales much better.
+Then every design question becomes easier.
+For example:
+Local cache
+DB → JVM cache
+Question:
+How does JVM cache learn DB changed?
+Redis
+DB → Redis
+Question:
+How does Redis learn DB changed?
+Distributed cache
+DB → Redis Cluster → many applications
+Question:
+How do all consumers converge?
+CDN
+DB → API → CDN → users
+Question:
+How do old responses stop being served?
+Same problem.
+Different layers.
+________________________________________
+23. Java example: the deceptively simple implementation
+You might initially write:
+public User getUser(long id) {
+    String key = "user:" + id;
+
+    User cached = redis.get(key);
+
+    if (cached != null) {
+        return cached;
+    }
+
+    User user = userRepository.findById(id);
+
+    redis.set(key, user);
+
+    return user;
+}
+
+public void updateUser(User user) {
+    userRepository.update(user);
+    redis.delete("user:" + user.id());
+}
+For a simple single-instance application, this may be perfectly reasonable.
+But system design asks:
+What assumptions make this correct enough?
+You're implicitly assuming things like:
+1. Redis is available.
+2. DB update succeeds before invalidation.
+3. There aren't problematic concurrent reads.
+4. There isn't another local cache.
+5. Redis invalidation succeeds.
+6. Stale reads are acceptable for some period.
+7. Cache population races are harmless.
+As soon as those assumptions stop being true, the architecture needs more machinery.
+Good system design is largely about discovering these hidden assumptions.
+________________________________________
+24. The four questions we'll keep asking
+For every cache architecture, ask:
+1. Who owns the truth?
+Usually:
+Database
+2. Who owns the copy?
+Redis / JVM / CDN
+3. How does the copy learn about changes?
+TTL
+explicit delete
+update-after-write
+events
+CDC
+versioning
+4. What happens when synchronization fails?
+This is the question that separates basic knowledge from strong system design.
+For example:
+DB update ✓
+cache invalidation ✗
+Do we:
+retry?
+accept stale data?
+fail the request?
+publish an event?
+use TTL as backup?
+There is no universal answer.
+It depends on the consistency requirement.
+________________________________________
+25. Your mental progression
+Since you're learning this like a university course, I would structure the entire topic as:
+                 CACHE INVALIDATION
+                        │
+          ┌─────────────┴──────────────┐
+          │                            │
+      WHY difficult                HOW solve
+          │                            │
+          ↓                            ↓
+   Multiple copies              TTL / explicit
+   concurrent writes            invalidation
+   failed communication                │
+   stale reads                         ↓
+   distributed nodes             distributed
+   race conditions               invalidation
+                                        │
+                                        ↓
+                                race conditions
+                                        │
+                                        ↓
+                                consistency models
+And we'll build each layer from the previous one.
+________________________________________
+Lesson 1 takeaway
+If you remember only five things, remember these:
+1.	Caching creates copies of authoritative data. 
+2.	Copies can become stale when the source changes. 
+3.	Invalidation is fundamentally a synchronization problem. 
+4.	Concurrency makes invalidation harder because stale readers can race with writers and even repopulate stale data. 
+5.	There is no universally "correct" invalidation strategy; correctness depends on how much staleness the business can tolerate. 
+And the deepest principle:
+The moment you cache mutable data, you have introduced a distributed consistency problem—even if Redis and your database are running on the same machine.
+
+Cache Invalidation — Lesson 2
+TTL vs Explicit Invalidation
+Now that we understand why invalidation exists, let's answer the next architectural question:
+How does a cache decide that its copy should no longer be trusted?
+There are two fundamental mechanisms:
+                    Cache invalidation
+                           |
+              ┌────────────┴────────────┐
+              ↓                         ↓
+             TTL                Explicit invalidation
+       "Wait until time"          "I know it changed"
+The important insight is:
+TTL is based on time. Explicit invalidation is based on knowledge of a state change.
+That difference explains almost everything.
+________________________________________
+1. Start from the problem
+Suppose:
+DB:
+product:123
+price = ₹100
+Cache:
+Redis:
+product:123
+price = ₹100
+Then somebody executes:
+UPDATE product
+SET price = 120
+WHERE id = 123;
+Now:
+DB      = ₹120
+Redis   = ₹100
+Redis doesn't know that its value became stale.
+We need some rule saying:
+"Stop trusting this cached value."
+There are two major ways.
+________________________________________
+2. TTL: "Trust it for N seconds"
+Suppose we do:
+redis.set(
+    "product:123",
+    product,
+    Duration.ofMinutes(5)
+);
+Conceptually Redis stores:
+key       = product:123
+value     = ₹100
+created   = 10:00
+expires   = 10:05
+Until 10:05:
+cache = trusted
+At 10:05:
+cache = expired
+The database doesn't need to notify Redis.
+Redis simply says:
+"I don't know whether this value is still correct, so after five minutes I refuse to trust it."
+That's a very powerful idea.
+________________________________________
+3. TTL is actually a bounded-staleness mechanism
+This is more precise than saying:
+"TTL automatically keeps cache fresh."
+It doesn't.
+Suppose:
+10:00
+DB = ₹100
+Cache = ₹100
+TTL = 5 min
+At:
+10:01
+DB changes:
+DB = ₹120
+Cache:
+Cache = ₹100
+From:
+10:01 → 10:05
+the cache can return stale data.
+So TTL does not guarantee freshness.
+Instead:
+TTL puts an upper bound on how long a cached value can remain without being refreshed, assuming the cache isn't repopulated with stale data through some other race.
+Timeline:
+10:00                 10:01                    10:05
+  |                     |                        |
+  | cache created       | DB changed             | TTL expires
+  |                     |                        |
+  ↓                     ↓                        ↓
+Cache = ₹100         DB = ₹120              Cache removed
+Maximum potential stale window in this example:
+4 minutes
+________________________________________
+4. Why would anyone accept stale data?
+Because freshness costs resources.
+Imagine:
+Product catalog:
+10 million products
+And product descriptions change rarely.
+If every read must go to the database to guarantee freshness:
+10,000 reads/sec
+        ↓
+Database
+But perhaps:
+99.9% of products
+change very rarely
+So we can say:
+"I'm willing to serve a product description that is up to 10 minutes old."
+Then:
+Request
+   ↓
+Redis
+   ↓
+99% served without DB
+We traded:
+perfect freshness
+for:
+higher performance + lower DB load
+That trade-off is the essence of caching.
+________________________________________
+5. What determines TTL?
+Here's where system design starts.
+Suppose different data has different business requirements.
+Data	Acceptable staleness	Possible TTL
+Product description	10 min	10 min
+User profile	5 min	5 min
+Exchange rate	10 sec	10 sec
+Inventory	1 sec	1 sec
+Authentication/session state	Depends	Depends
+These aren't technical constants.
+They're business decisions translated into system parameters.
+Ask:
+"How bad is it if this value is stale for X seconds?"
+That question determines whether TTL is appropriate.
+________________________________________
+6. Explicit invalidation
+Now consider another approach.
+Instead of:
+"Wait five minutes."
+we say:
+"The moment the data changes, remove the cached copy."
+For example:
+public void updateProduct(Product product) {
+
+    productRepository.update(product);
+
+    redis.delete("product:" + product.id());
+}
+Timeline:
+10:00
+DB = ₹100
+Redis = ₹100
+
+10:01
+DB UPDATE → ₹120
+
+10:01 + tiny delay
+Redis DELETE
+
+10:01+
+Redis = MISS
+
+Next request:
+    ↓
+DB = ₹120
+    ↓
+Redis = ₹120
+This can provide much stronger freshness than TTL.
+________________________________________
+7. TTL vs explicit invalidation: the fundamental difference
+Think of them like this.
+TTL
+Cache:
+"I don't know when the data changes."
+
+Therefore:
+
+"I'll stop trusting this after 5 minutes."
+Explicit invalidation
+Application:
+"I know the data changed."
+
+Therefore:
+
+"Delete/update the cache now."
+So:
+TTL                = uncertainty handled with time
+Explicit invalidation = uncertainty reduced through notification
+This is a much better mental model than memorizing definitions.
+________________________________________
+8. Why TTL is so attractive
+TTL has one huge advantage:
+It doesn't require you to successfully detect every mutation.
+Imagine this:
+DB
+ |
+ | changes
+ v
+ ?
+ |
+ v
+Redis
+With explicit invalidation, somebody must tell Redis:
+"product:123 changed"
+With TTL:
+Nobody needs to tell Redis.
+Eventually:
+TTL expires
+and the stale copy disappears.
+This makes TTL extremely useful as a safety mechanism.
+________________________________________
+9. TTL is a safety net
+Suppose your intended architecture is:
+DB update
+   ↓
+Redis invalidation
+But something goes wrong:
+DB update ✓
+Redis invalidation ✗
+Without TTL:
+Redis could remain stale indefinitely.
+With:
+TTL = 10 minutes
+you've bounded the damage:
+stale
+  ↓
+at most roughly 10 minutes
+  ↓
+expires
+So an excellent production pattern is often:
+Explicit invalidation
+        +
+       TTL
+Not necessarily:
+Explicit invalidation
+       OR
+       TTL
+That's an important system-design insight.
+________________________________________
+10. Why not simply use a very short TTL?
+You might ask:
+"Why not just set TTL to 1 second and forget explicit invalidation?"
+Good question.
+Because TTL creates a trade-off.
+Suppose:
+TTL = 1 second
+Your cache may be very fresh.
+But now:
+100 requests/sec
+If a key is frequently accessed, you'll cause many more cache misses.
+For example:
+10:00:00
+cache populated
+
+10:00:01
+expires
+
+10:00:01.01
+request → DB
+
+10:00:02
+expires
+
+10:00:02.01
+request → DB
+You've lost much of the caching benefit.
+So:
+Short TTL
+   ↓
+fresher
+   ↓
+more DB load
+   ↓
+lower cache efficiency
+While:
+Long TTL
+   ↓
+better cache efficiency
+   ↓
+greater stale-data risk
+________________________________________
+11. Think of TTL as a dial
+You can visualize:
+Freshness
+   ↑
+   │   short TTL
+   │      ●
+   │
+   │
+   │
+   │                ● long TTL
+   └────────────────────────→
+       DB load / cache efficiency
+There isn't one correct TTL.
+You're balancing:
+freshness
+   ↕
+performance
+   ↕
+database load
+________________________________________
+12. Explicit invalidation seems perfect—but isn't
+At first glance:
+db.update();
+redis.delete();
+looks much better.
+But remember Lesson 1.
+Distributed systems fail.
+What if:
+DB UPDATE succeeds
+Redis DELETE fails
+Now:
+DB = new
+Redis = old
+If there's no TTL:
+stale forever
+This is one reason production systems often combine:
+explicit invalidation
++
+TTL
+TTL acts as a backstop.
+________________________________________
+13. But there's another problem: ordering
+Consider:
+Thread A = READ
+Thread B = UPDATE
+Initial:
+DB = John
+Redis = John
+Thread A:
+Redis GET → miss
+Then:
+Thread B:
+DB UPDATE → Mike
+Redis DELETE
+Then Thread A:
+DB GET → John
+Redis SET → John
+Depending on exactly when the DB read occurs, you can get:
+DB = Mike
+Redis = John
+Again.
+TTL doesn't automatically solve that race.
+This is important:
+TTL limits the lifetime of stale data; it does not make concurrent operations consistent.
+We'll go much deeper into this in Lesson 4.
+________________________________________
+14. Explicit invalidation has another hidden cost
+Suppose you have:
+Application
+    |
+    ├── DB
+    └── Redis
+Easy.
+Now:
+                  DB
+                  |
+       ┌──────────┼──────────┐
+       ↓          ↓          ↓
+     Redis      JVM cache   CDN
+Your mutation may need:
+invalidate Redis
+invalidate JVM
+invalidate CDN
+Now your write path becomes:
+DB update
+   ↓
+Redis invalidation
+   ↓
+JVM invalidation
+   ↓
+CDN invalidation
+Every additional cache layer increases invalidation complexity.
+This is one reason architects are cautious about adding caching layers.
+________________________________________
+15. Explicit invalidation can be "delete" or "update"
+There are two common forms.
+Delete-on-write
+DB UPDATE
+   ↓
+DELETE cache
+Next read:
+MISS
+ ↓
+DB
+ ↓
+SET cache
+Update-on-write
+DB UPDATE
+   ↓
+SET new value in cache
+Example:
+db.update(product);
+redis.set("product:" + id, product);
+The advantage is that the next request doesn't have to hit the database.
+But it creates a stronger requirement:
+The value you're writing to the cache must correspond to the committed database state.
+Delete-on-write is often simpler because the cache is treated purely as a disposable derived copy.
+________________________________________
+16. Why delete-on-write is conceptually beautiful
+Suppose:
+DB = source of truth
+Redis = derived copy
+After mutation:
+DB = new state
+Redis = nothing
+This is actually a very clean state.
+You're saying:
+"I don't know what the correct cache representation should be, so I'll remove it. The next reader can derive it from the source of truth."
+That's often safer than trying to synchronize two systems perfectly.
+So:
+UPDATE DB
+DELETE CACHE
+has a nice property:
+DB authoritative
+Cache disposable
+________________________________________
+17. But what if deletion fails?
+Now we see why TTL is valuable.
+DB UPDATE ✓
+CACHE DELETE ✗
+If:
+TTL = 5 minutes
+then:
+stale cache
+     ↓
+eventually expires
+     ↓
+fresh DB read
+So you can think of the mechanisms as:
+Explicit invalidation
+    ↓
+fast correctness
+
+TTL
+    ↓
+failure containment
+Together:
+Explicit invalidation + TTL
+often gives a practical balance.
+________________________________________
+18. A very common architecture
+A typical cache-aside design might look like:
+public Product getProduct(long id) {
+
+    String key = "product:" + id;
+
+    Product cached = redis.get(key);
+
+    if (cached != null) {
+        return cached;
+    }
+
+    Product product = database.find(id);
+
+    redis.set(
+        key,
+        product,
+        Duration.ofMinutes(10)
+    );
+
+    return product;
+}
+And:
+public void updateProduct(Product product) {
+
+    database.update(product);
+
+    redis.delete("product:" + product.id());
+}
+Notice both exist:
+READ:
+    cache + TTL
+
+WRITE:
+    explicit invalidation
+This gives:
+Normal path:
+DB changes
+   ↓
+explicit delete
+   ↓
+fresh cache on next read
+
+Failure path:
+delete fails
+   ↓
+TTL eventually expires
+That's a very useful real-world pattern.
+________________________________________
+19. But now let's ask a harder question
+What does "eventually" mean?
+Suppose:
+TTL = 1 hour
+and invalidation fails.
+You now have:
+Potentially stale data for 1 hour.
+Is that acceptable?
+For:
+blog article
+probably.
+For:
+stock availability
+maybe not.
+For:
+account balance
+probably unacceptable.
+Therefore:
+TTL is not a consistency guarantee by itself. It's a bounded-staleness policy.
+________________________________________
+20. TTL has another interesting property: it handles silent mutations
+Imagine some legacy service directly updates the DB:
+Legacy service
+      |
+      ↓
+     DB
+Your application doesn't know.
+So explicit invalidation can't happen:
+DB change
+   X
+Redis doesn't know
+But TTL still eventually protects you.
+This is a major reason TTL is useful in messy real-world systems.
+It gives you a fallback when you don't have complete mutation visibility.
+________________________________________
+21. But TTL can create a thundering herd
+Suppose:
+1 million requests
+all use:
+product:123
+And the key expires at:
+12:00:00
+At exactly that moment:
+                  Redis MISS
+                     ↑
+      ┌──────────────┼──────────────┐
+      ↓              ↓              ↓
+    App #1         App #2         App #3
+      ↓              ↓              ↓
+                  Database
+Many instances discover the miss simultaneously.
+They all hit the DB.
+That's the cache stampede / thundering herd problem.
+So TTL introduces another system-design concern:
+Expiration is not free.
+We'll eventually discuss:
+•	jittered TTL 
+•	request coalescing 
+•	distributed locks 
+•	stale-while-revalidate 
+•	background refresh 
+But don't mix those into invalidation yet.
+________________________________________
+22. TTL expiration itself can be lazy
+There's another subtle Redis-level detail.
+A TTL doesn't necessarily mean:
+At exactly 10:05:00
+Redis scans every key and deletes it.
+That would be expensive at scale.
+Systems such as Redis use mechanisms involving expiration tracking and active/lazy expiration rather than continuously scanning every key.
+Conceptually, however, the important contract is:
+After expiration:
+key should no longer be treated as valid.
+The implementation details matter for understanding memory behavior and performance, but not for the fundamental invalidation model.
+________________________________________
+23. Let's compare the two philosophically
+TTL asks:
+"How long am I willing to trust this copy without knowing whether it changed?"
+Explicit invalidation asks:
+"Can I detect the mutation and tell the cache immediately?"
+That's the fundamental difference.
+________________________________________
+24. Failure analysis
+Let's compare failure scenarios.
+Scenario A
+DB update succeeds
+explicit invalidation succeeds
+Result:
+Fresh
+Great.
+Scenario B
+DB update succeeds
+explicit invalidation fails
+TTL exists
+Result:
+Eventually fresh
+Good enough for many systems.
+Scenario C
+DB update succeeds
+explicit invalidation fails
+NO TTL
+Result:
+Potentially stale forever
+Dangerous.
+Scenario D
+DB update fails
+explicit cache update happens
+Result:
+Cache may be newer than DB
+Also dangerous.
+This is why ordering matters enormously.
+________________________________________
+25. The ordering problem
+Consider:
+Cache update
+    ↓
+DB update
+If cache succeeds:
+Redis = Mike
+but DB fails:
+DB = John
+Now cache is wrong in the opposite direction.
+Instead, with:
+DB update
+    ↓
+Cache invalidation
+if DB fails:
+No invalidation
+and the existing cache remains:
+John
+which still matches the DB.
+That is one reason database first, cache invalidation second is such a common pattern.
+But remember:
+It still doesn't make the two operations atomic.
+It merely gives us a safer failure mode.
+________________________________________
+26. Why not invalidate first?
+Suppose:
+redis.delete()
+database.update()
+Timeline:
+Redis deleted
+DB still old
+Another request comes in:
+cache MISS
+   ↓
+DB
+   ↓
+gets OLD value
+   ↓
+puts OLD value into Redis
+Then:
+DB update happens
+Now you've got:
+DB = NEW
+Redis = OLD
+So invalidating before the DB mutation can create a nasty race.
+Again, the exact concurrency behavior depends on the surrounding architecture, but this demonstrates why ordering is not a cosmetic detail.
+________________________________________
+27. A useful rule of thumb
+For ordinary cache-aside systems:
+WRITE:
+
+1. Update DB
+2. Invalidate cache
+And:
+READ:
+
+1. Read cache
+2. On miss → read DB
+3. Populate cache with TTL
+Conceptually:
+                ┌───────────┐
+                │    DB     │
+                └─────┬─────┘
+                      │
+                 authoritative
+                      │
+                      ↓
+              ┌──────────────┐
+              │    Redis     │
+              │   TTL set    │
+              └──────────────┘
+But this is a baseline, not a universal law.
+________________________________________
+28. When TTL is the better choice
+TTL works especially well when:
+Data changes infrequently
+Configuration
+Product metadata
+Reference data
+Slight staleness is acceptable
+Recommendations
+Search results
+Analytics
+Social counters
+You cannot reliably observe every mutation
+Multiple legacy systems
+Direct DB writes
+External systems
+You want automatic recovery from invalidation failures
+TTL gives you:
+eventual expiry
+________________________________________
+29. When explicit invalidation is more important
+Use stronger invalidation when stale data is costly.
+Examples:
+Permissions
+Feature flags
+Inventory
+Critical configuration
+Security-related state
+But even here, be careful.
+Sometimes the correct answer isn't:
+"Cache with explicit invalidation."
+It may be:
+"Don't cache this data in the first place."
+That's a very important architecture decision.
+________________________________________
+30. A surprising system-design lesson
+Developers often ask:
+"What's the best TTL?"
+That's usually the wrong first question.
+Ask:
+"What is the maximum acceptable staleness?"
+Then:
+business requirement
+       ↓
+acceptable stale window
+       ↓
+TTL / invalidation strategy
+       ↓
+cache architecture
+For example:
+Requirement:
+"Price changes must appear within 30 seconds."
+
+Possible strategy:
+explicit invalidation
++
+TTL <= 30 sec as safety net
+Versus:
+Requirement:
+"Product descriptions can be 15 minutes old."
+
+Possible strategy:
+TTL = 10 min
+The requirement drives the technology.
+________________________________________
+31. The deeper connection to distributed systems
+Here's the important conceptual progression.
+Database without cache
+One authoritative state
+Cache with TTL
+Authoritative state
+        +
+time-limited replica
+Cache with explicit invalidation
+Authoritative state
+        +
+replica
+        +
+change notification
+Distributed invalidation
+Authoritative state
+        +
+many replicas
+        +
+change propagation
+And now you're entering the world of:
+replication
+messaging
+ordering
+delivery guarantees
+idempotency
+eventual consistency
+versioning
+failure recovery
+That is exactly where Lesson 3 will go.
+________________________________________
+32. One diagram to remember
+                     DATABASE
+                  Source of Truth
+                        │
+                        │ mutation
+                        ↓
+              ┌─────────────────────┐
+              │                     │
+              ↓                     ↓
+       Explicit invalidation       TTL
+       "I know it changed"     "I stop trusting
+                                 after N seconds"
+              │                     │
+              └──────────┬──────────┘
+                         ↓
+                       CACHE
+Explicit invalidation gives you precision.
+TTL gives you automatic expiry and failure containment.
+Using both gives you:
+Fast invalidation
+      +
+Safety net
+________________________________________
+33. The key mental model
+Don't memorize:
+TTL = expiration
+Explicit invalidation = delete
+Instead remember:
+TTL
+│
+└── "I don't know when the source changes,
+     so I'll limit how long I trust my copy."
+
+Explicit invalidation
+│
+└── "I know the source changed,
+     so I'll stop trusting my copy immediately."
+And the most practical pattern:
+                 WRITE
+                   │
+                   ↓
+               Update DB
+                   │
+                   ↓
+            Explicit invalidate
+                   │
+                   ↓
+                Redis
+                   │
+              TTL safety net
+                   │
+                   ↓
+            eventual expiration
+________________________________________
+34. What Lesson 2 should leave you with
+The hierarchy of understanding is:
+Level 1:
+TTL means expiration.
+
+Level 2:
+TTL controls how long cached data survives.
+
+Level 3:
+TTL is a bounded-staleness mechanism.
+
+Level 4:
+Explicit invalidation provides faster reaction to mutations.
+
+Level 5:
+Explicit invalidation can fail, so TTL can act as a safety net.
+
+Level 6:
+Neither mechanism by itself solves concurrent read/write races.
+
+Level 7:
+The real problem is maintaining consistency among
+multiple representations of the same logical state.
+That Level 7 is the system-design understanding we're aiming for.
+
+Cache Invalidation — Lesson 3
+Distributed Invalidation
+Now we move from:
+DB → one Redis cache
+to the situation that actually makes system design interesting:
+                    Database
+                       │
+                       │ mutation
+                       ↓
+                    ????
+                 /     |      \
+                ↓      ↓       ↓
+             App #1  App #2  App #3
+             cache   cache   cache
+The fundamental question becomes:
+When data changes in one place, how do all the other copies learn that they are stale?
+That's distributed invalidation.
+________________________________________
+1. First, why do we even need distributed invalidation?
+Imagine one Java application:
+Client
+   ↓
+Spring Boot
+   ↓
+Redis
+   ↓
+MySQL
+Simple.
+Now scale the application horizontally:
+                    Load Balancer
+                   /      |       \
+                  ↓       ↓        ↓
+               App #1   App #2   App #3
+                  \       |       /
+                   \      |      /
+                       Redis
+                         |
+                        DB
+If Redis is the only cache, invalidation is relatively centralized.
+But Java applications frequently have local in-process caches too:
+App #1 JVM
+   └── Caffeine
+       user:123 = John
+
+App #2 JVM
+   └── Caffeine
+       user:123 = John
+
+App #3 JVM
+   └── Caffeine
+       user:123 = John
+
+                    Redis
+                  user:123 = John
+
+                    DB
+                  user:123 = John
+Now there are four copies.
+Suppose:
+DB → John
+becomes:
+DB → Mike
+Who tells:
+App #1 → delete John
+App #2 → delete John
+App #3 → delete John
+Redis  → delete John
+That's the distributed invalidation problem.
+________________________________________
+2. The naive solution: every application tells every other application
+You could do:
+App #1
+  |
+  +----> App #2: invalidate user:123
+  |
+  +----> App #3: invalidate user:123
+  |
+  +----> App #4: invalidate user:123
+  |
+  ...
+With:
+N application instances
+you potentially get:
+N × N
+communication relationships.
+For:
+N = 1,000
+that's potentially:
+1,000,000
+relationships/messages in the worst conceptual model.
+This doesn't scale nicely.
+More importantly, the application now needs to know:
+"Which other instances exist right now?"
+That creates a service-discovery and failure-detection problem.
+So we want to decouple producers from consumers.
+________________________________________
+3. Introduce an event
+Instead of:
+App #1 → App #2
+App #1 → App #3
+App #1 → App #4
+we do:
+App #1
+   |
+   ↓
+Event Bus
+   |
+   ├────> App #2
+   ├────> App #3
+   ├────> App #4
+   └────> Redis invalidation consumer
+For example:
+UserUpdated {
+    userId = 123
+}
+Now App #1 doesn't need to know who consumes the event.
+It simply publishes:
+"User 123 changed."
+This is the first major architectural shift.
+________________________________________
+4. The event bus becomes the communication boundary
+Conceptually:
+                  ┌─────────────┐
+                  │     DB      │
+                  └──────┬──────┘
+                         │
+                      changed
+                         │
+                         ↓
+                  ┌─────────────┐
+                  │ Event Bus   │
+                  └──────┬──────┘
+                         │
+             ┌───────────┼───────────┐
+             ↓           ↓           ↓
+          Cache #1    Cache #2    Cache #3
+The database mutation and cache invalidation are now connected through a message.
+That message is the synchronization signal.
+________________________________________
+5. What should an invalidation event contain?
+Beginner version:
+{
+  "userId": 123
+}
+But that's often insufficient.
+A stronger event might be:
+{
+  "eventType": "UserUpdated",
+  "userId": 123,
+  "version": 42
+}
+Possibly:
+{
+  "eventId": "8f3...",
+  "userId": 123,
+  "version": 42,
+  "timestamp": "..."
+}
+Why?
+Because distributed systems have:
+•	duplicate messages 
+•	delayed messages 
+•	reordered messages 
+•	retries 
+•	consumers restarting 
+The version becomes extremely important.
+We'll get to that.
+________________________________________
+6. First distributed problem: lost invalidation
+Imagine:
+DB update
+   ↓
+publish invalidation
+But:
+DB update ✓
+Event publish ✗
+Now:
+DB = Mike
+Cache = John
+If your cache has no TTL:
+John
+could remain indefinitely.
+This is why "just publish an event after the DB update" is not enough to claim strong correctness.
+We have a dangerous gap:
+DB transaction
+      │
+      │
+      └────── ??? ──────> Event Bus
+What happens if the application crashes between those two operations?
+________________________________________
+7. The famous dual-write problem
+This is a fundamental distributed-systems problem.
+You have two independent systems:
+Database
+Message broker
+You want:
+DB update
+AND
+event publish
+to behave like one atomic operation.
+But normally they don't share the same transaction.
+So:
+DB update ✓
+Event publish ✗
+or:
+Event publish ✓
+DB update ✗
+can happen.
+This is called the dual-write problem.
+And cache invalidation is one of the places where you encounter it naturally.
+________________________________________
+8. Example of the dual-write failure
+Suppose:
+@Transactional
+public void updateUser(User user) {
+
+    userRepository.update(user);
+
+    kafka.publish(new UserUpdated(user.id()));
+}
+Looks reasonable.
+But imagine:
+Step 1:
+DB transaction begins
+
+Step 2:
+DB UPDATE succeeds
+
+Step 3:
+Application crashes
+
+Step 4:
+Kafka event never gets published
+Transaction behavior may roll back the DB depending on where the crash happens, but if the DB commit has already become durable and the event isn't durably recorded, you've got a synchronization gap.
+The important concept isn't the exact Java transaction semantics.
+It's:
+Two independently durable systems don't automatically commit together.
+________________________________________
+9. The Outbox Pattern
+This leads directly to one of the most important patterns in distributed systems.
+Instead of:
+DB update
+   +
+Kafka publish
+we write both the business change and the event into the same database transaction.
+For example:
+users
+--------------------------------
+id | name
+123 | Mike
+and:
+outbox
+--------------------------------
+event_id | type       | payload
+abc      | UserUpdate | {...}
+One DB transaction:
+BEGIN
+
+UPDATE users
+SET name = 'Mike'
+
+INSERT INTO outbox
+VALUES ('abc', 'UserUpdated', ...)
+
+COMMIT
+Now both are committed together.
+             DB
+       ┌───────────────┐
+       │ users         │
+       │ outbox        │
+       └───────┬───────┘
+               │
+          publisher
+               │
+               ↓
+             Kafka
+               │
+               ↓
+         cache consumers
+The publisher can later read the outbox and publish the event.
+This solves a major part of the dual-write problem.
+________________________________________
+10. Why the outbox works
+Suppose the application crashes.
+Before commit:
+users = old
+outbox = empty
+Transaction rolls back.
+No problem.
+After commit:
+users = new
+outbox = UserUpdated
+Then the application crashes.
+Still okay.
+The event is sitting in the database:
+outbox:
+UserUpdated
+When the publisher restarts:
+outbox
+  ↓
+Kafka
+The event can be published.
+So we transformed:
+DB update + external publish
+into:
+atomic DB update + durable event record
+That's a huge conceptual improvement.
+________________________________________
+11. But now we have another problem
+Suppose the outbox publisher does:
+read event
+   ↓
+publish to Kafka
+   ↓
+mark event as published
+What if:
+publish ✓
+mark published ✗
+because the publisher crashes?
+On restart:
+read event
+   ↓
+publish again
+Now Kafka receives:
+UserUpdated
+UserUpdated
+Duplicate events.
+This teaches us an important distributed-systems principle:
+At-least-once delivery means duplicates are normal.
+Therefore cache invalidation consumers must generally be idempotent.
+________________________________________
+12. Idempotency
+Suppose the event says:
+DELETE user:123
+First delivery:
+Redis DELETE
+Second delivery:
+Redis DELETE
+No problem.
+Deleting something twice has the same effect as deleting it once.
+That's naturally idempotent.
+This is one reason delete-based invalidation is attractive.
+Compare that with:
+INCREMENT user:123.version
+If delivered twice:
+version + 2
+instead of:
+version + 1
+Now duplication changes the result.
+So distributed consumers should prefer operations that are naturally idempotent or explicitly implement deduplication.
+________________________________________
+13. Lost events vs duplicate events
+Now we have two failure modes.
+Lost event
+DB changed
+event never delivered
+Result:
+cache remains stale
+Duplicate event
+same event delivered twice
+Result:
+consumer processes it twice
+A good distributed architecture must address both.
+Typical mechanisms:
+Lost event:
+    durable event log / outbox / replay
+
+Duplicate event:
+    idempotent consumer / event ID / versioning
+This is why Kafka-like systems are so useful: they don't just "send messages"; they can provide durable, replayable history.
+________________________________________
+14. Third problem: event ordering
+This is one of the most important concepts.
+Suppose:
+User version 41
+   ↓
+name = John
+Then:
+User version 42
+   ↓
+name = Mike
+Events:
+Event A:
+version = 41
+
+Event B:
+version = 42
+Correct order:
+41 → 42
+But distributed systems may encounter:
+42 → 41
+If your consumer processes both blindly:
+process 42
+cache = Mike
+
+process 41
+cache = John
+You've just moved backward.
+Database:
+Mike
+Cache:
+John
+Very bad.
+________________________________________
+15. Versions solve this
+Suppose cache stores:
+user:123
+value = Mike
+version = 42
+Then an event arrives:
+version = 41
+Consumer says:
+41 < 42
+Therefore:
+ignore event
+This gives us:
+Monotonic versioning.
+Only newer versions are allowed to replace older versions.
+Conceptually:
+if event.version <= cached.version:
+    ignore
+else:
+    apply
+Now out-of-order delivery is much safer.
+________________________________________
+16. Why versions are better than timestamps
+You might think:
+timestamp = 2026-08-16T10:00:00
+can tell us which update is newer.
+But distributed clocks are messy.
+Two machines can have:
+Machine A clock = 10:00:01
+Machine B clock = 09:59:59
+Clock skew makes wall-clock timestamps less reliable for ordering.
+A database-generated monotonic version:
+41
+42
+43
+is much easier to reason about.
+Depending on architecture, you might use:
+•	database sequence 
+•	row version 
+•	revision number 
+•	logical clock 
+•	broker partition ordering 
+The underlying idea is:
+We need a way to tell whether an event represents newer state than what we already processed.
+________________________________________
+17. Why Kafka partitions matter
+Suppose you use Kafka-like event streaming.
+You could publish:
+UserUpdated(userId=123)
+If all events for user 123 go to the same partition:
+Partition 7
+
+user:123 v41
+user:123 v42
+user:123 v43
+Kafka can preserve ordering within that partition.
+But here's the subtle point:
+Kafka ordering is not global ordering across the entire system.
+You usually care about:
+ordering per entity
+rather than:
+ordering of every event in the world
+So a common partitioning strategy is:
+partition key = userId
+Then:
+user 123 → partition 7
+user 456 → partition 3
+user 789 → partition 11
+This lets each entity's events maintain order while allowing the overall system to scale.
+________________________________________
+18. Now let's look at the complete distributed architecture
+A robust conceptual architecture can look like:
+                    ┌─────────────┐
+                    │     DB      │
+                    └──────┬──────┘
+                           │
+                  same transaction
+                           │
+                  ┌────────┴────────┐
+                  │                 │
+                  ↓                 ↓
+             Business row       Outbox row
+                                    │
+                                    ↓
+                              Outbox publisher
+                                    │
+                                    ↓
+                                  Kafka
+                                    │
+                 ┌──────────────────┼─────────────────┐
+                 ↓                  ↓                 ↓
+              App #1             App #2            App #3
+              cache               cache              cache
+                 │                  │                 │
+                 └──────────────────┼─────────────────┘
+                                    ↓
+                                  Redis
+The important chain is:
+DB mutation
+    ↓
+durable outbox
+    ↓
+event
+    ↓
+consumers
+    ↓
+cache invalidation
+________________________________________
+19. But wait — why are App #1, #2, #3 even consuming events?
+Suppose each application has a local Caffeine cache:
+App #1:
+user:123 = John
+
+App #2:
+user:123 = John
+
+App #3:
+user:123 = John
+When:
+UserUpdated(123)
+arrives:
+App #1 → remove user:123
+App #2 → remove user:123
+App #3 → remove user:123
+Now the next request on any instance:
+local cache MISS
+      ↓
+Redis
+      ↓
+fresh value
+This gives us cache coherence through invalidation events.
+________________________________________
+20. Pub/Sub vs durable messaging
+This distinction is extremely important.
+Suppose you use Redis Pub/Sub:
+Publisher
+   ↓
+Redis Pub/Sub
+   ↓
+Subscribers
+What happens if:
+App #2
+is disconnected when the event is published?
+Potentially:
+UserUpdated
+   ↓
+App #1 ✓
+App #2 ✗
+App #3 ✓
+When App #2 reconnects, it doesn't automatically receive the old message.
+That's the difference between:
+ephemeral notification
+and:
+durable event stream
+________________________________________
+21. Pub/Sub is a notification mechanism
+Conceptually:
+"Hey everyone, something changed!"
+If you're listening:
+receive
+If you're not:
+missed
+This can be perfectly acceptable if:
+local cache has a short TTL
+because eventually:
+TTL expires
+But if you need reliable recovery, a durable event log is much stronger.
+________________________________________
+22. Durable messaging gives you replay
+With a durable event log:
+Event 100
+Event 101
+Event 102
+Event 103
+A consumer can say:
+"I processed through event 101."
+Then crashes.
+After restart:
+resume from 102
+This is fundamentally different from ephemeral pub/sub.
+Now invalidation becomes recoverable.
+________________________________________
+23. But replay introduces another problem
+Suppose you replay:
+UserUpdated v41
+UserUpdated v42
+UserUpdated v43
+and your cache is already at:
+v43
+Your consumer should not blindly execute every historical event.
+Version checks help:
+event v41 < cache v43 → ignore
+event v42 < cache v43 → ignore
+event v43 == cache v43 → ignore
+This is another reason versioning is such a powerful pattern.
+________________________________________
+24. Distributed invalidation is really state propagation
+This is the deeper mental model.
+Don't think:
+"Kafka sends delete messages to Redis."
+Think:
+Authoritative state changes
+          ↓
+Change is represented as an event
+          ↓
+Event propagates through distributed system
+          ↓
+Each replica learns about newer state
+          ↓
+Replica discards or updates obsolete state
+That is state propagation.
+Cache invalidation is one application of it.
+The exact same ideas appear in:
+•	search indexes 
+•	materialized views 
+•	read replicas 
+•	denormalized tables 
+•	analytics pipelines 
+•	recommendation systems 
+•	configuration propagation 
+________________________________________
+25. Cache invalidation vs cache update
+Suppose the event says:
+UserUpdated(123, version=42)
+You have two choices.
+Invalidate
+DELETE user:123
+Then:
+next read
+   ↓
+DB/authoritative cache
+   ↓
+populate
+Update
+Event contains enough information:
+{
+  "userId": 123,
+  "name": "Mike",
+  "version": 42
+}
+Consumer does:
+cache[user:123] = Mike
+The second is faster for reads because the cache remains warm.
+But it creates a larger synchronization responsibility.
+________________________________________
+26. Why invalidation is often safer than update
+Suppose your event contains:
+UserUpdated(123)
+but not the complete object.
+You don't have enough information to update the cache.
+So:
+DELETE
+is easy.
+The next reader can fetch the authoritative value.
+This is another reason the standard pattern is:
+DB = truth
+Cache = disposable projection
+When uncertain:
+delete cache
+rather than:
+guess what cache should contain
+________________________________________
+27. But there's a subtle race with deletion
+Consider:
+DB:
+version 41
+Cache:
+version 41
+Then:
+Update A → version 42
+Update B → version 43
+Events:
+A = invalidate
+B = invalidate
+Suppose event A is delayed.
+Timeline:
+DB → v42
+DB → v43
+
+Event B → cache delete
+Event A → cache delete
+Fine.
+Deletion is naturally robust to ordering because:
+delete
+delete
+still means:
+empty
+But if your event is an update event, ordering becomes much more dangerous:
+v43 → cache
+v42 → cache
+Now you can regress.
+This is another reason delete-based invalidation is attractive in distributed systems.
+________________________________________
+28. The role of TTL becomes even more interesting
+Now imagine:
+App #2 was down
+while:
+UserUpdated(123)
+was published.
+App #2's local cache still has:
+John
+When it comes back:
+John
+might still be there.
+If it has:
+TTL = 5 minutes
+then eventually:
+John
+ ↓
+expires
+ ↓
+fresh read
+ ↓
+Mike
+So distributed systems often combine:
+durable invalidation
++
+TTL
+for defense in depth.
+________________________________________
+29. Defense in depth
+Think of each mechanism as handling a different failure.
+Explicit event
+    ↓
+handles normal mutations quickly
+
+Durable event log
+    ↓
+handles consumer downtime / replay
+
+Idempotency
+    ↓
+handles duplicates
+
+Versioning
+    ↓
+handles reordering
+
+TTL
+    ↓
+handles missed invalidation / unknown failures
+This is a beautiful distributed-systems pattern:
+Don't expect one mechanism to solve every failure mode.
+Instead, layer mechanisms.
+________________________________________
+30. Let's build a failure matrix
+Failure	Possible solution
+Cache invalidation message lost	Durable event/outbox
+Consumer temporarily down	Replay
+Event delivered twice	Idempotent consumer
+Events arrive out of order	Versioning
+Consumer permanently misses event	TTL / reconciliation
+DB + event dual-write	Transactional outbox
+Cache update fails	Retry + TTL
+Consumer crashes during processing	Durable offset + idempotency
+Notice something:
+We're no longer talking specifically about Redis.
+We're designing a distributed state propagation system.
+________________________________________
+31. What happens if Redis itself is down?
+Interesting question.
+Suppose:
+DB = Mike
+Redis = unavailable
+Read:
+Redis GET
+   ↓
+failure
+   ↓
+DB
+   ↓
+Mike
+Your application can potentially continue without cache.
+This is an important architectural principle:
+The cache should usually be non-authoritative and disposable.
+If losing Redis means your business data is lost, you've accidentally made the cache part of your source of truth.
+That is a much more dangerous architecture.
+________________________________________
+32. What happens if Kafka is down?
+Now:
+DB update ✓
+Outbox write ✓
+Kafka publish ✗
+If you're using an outbox:
+outbox event remains durable
+When Kafka recovers:
+outbox
+   ↓
+publish
+   ↓
+consumers
+This is much better than:
+DB update
+   ↓
+Kafka unavailable
+   ↓
+event disappears forever
+Again:
+Durability changes failure from "lost forever" into "delayed."
+That's a very important distributed-systems distinction.
+________________________________________
+33. The "exactly once" trap
+You may hear:
+"We need exactly-once cache invalidation."
+Be careful.
+In distributed systems, exactly-once processing across multiple independent systems is extremely difficult.
+Instead, a much more practical design is:
+At-least-once delivery
++
+idempotent processing
+For invalidation:
+DELETE user:123
+is already naturally idempotent.
+So:
+event delivered 1 time → delete
+event delivered 2 times → delete
+event delivered 10 times → delete
+Final state:
+key absent
+Same result.
+This is often much easier than trying to guarantee exactly-once delivery.
+________________________________________
+34. A Java-oriented design
+Imagine Spring Boot + Kafka + Redis.
+Conceptually:
+public void updateUser(User user) {
+
+    transactionTemplate.execute(status -> {
+
+        userRepository.update(user);
+
+        outboxRepository.insert(
+            new UserUpdatedEvent(
+                user.id(),
+                user.version()
+            )
+        );
+
+        return null;
+    });
+}
+Then an outbox publisher:
+public void publishOutboxEvent(OutboxEvent event) {
+
+    kafkaProducer.send(
+        "user-events",
+        event.userId(),
+        event
+    );
+}
+And consumers:
+@KafkaListener(topics = "user-events")
+public void handle(UserUpdatedEvent event) {
+
+    redis.delete("user:" + event.userId());
+
+    localCache.invalidate("user:" + event.userId());
+}
+The code is simple.
+The architecture underneath is not.
+________________________________________
+35. Notice what each component is responsible for
+Database
+Source of truth
+Outbox
+Durable record that a change must be propagated
+Kafka
+Durable change distribution
+Consumer
+Apply invalidation
+Redis
+Shared derived cache
+Caffeine/local cache
+Process-local derived cache
+TTL
+Safety net
+Each component has a specific responsibility.
+That's good architecture.
+________________________________________
+36. But there's still a hole
+Suppose:
+DB update succeeds
+Outbox event exists
+Kafka event published
+Consumer processes it
+Everything looks good.
+Then:
+Consumer deletes cache
+but immediately after:
+another concurrent request
+repopulates the cache using stale data.
+We're back to:
+race conditions
+This is why distributed invalidation doesn't finish the cache consistency story.
+It solves:
+"How does another node learn about a change?"
+It does not automatically solve:
+"What happens when reads and writes race?"
+That's Lesson 4.
+________________________________________
+37. The full progression so far
+You can now see why we're studying these lessons in this order.
+Lesson 1
+We discovered:
+Caching creates multiple copies.
+Therefore:
+copies can become stale.
+Lesson 2
+We discovered:
+TTL
+handles uncertainty through time.
+And:
+explicit invalidation
+handles known mutations.
+Lesson 3
+Now:
+multiple application instances
+mean invalidation itself must propagate through a distributed system.
+So we need:
+events
+durability
+replay
+idempotency
+ordering
+versioning
+Lesson 4
+We still have:
+READ
+  ↕
+WRITE
+  ↕
+INVALIDATION
+happening concurrently.
+That's where race conditions and consistency strategies enter.
+________________________________________
+38. The architecture I want you to visualize
+Keep this diagram in your head:
+                         ┌─────────────┐
+                         │     DB      │
+                         │   TRUTH     │
+                         └──────┬──────┘
+                                │
+                         same transaction
+                                │
+                         ┌──────▼──────┐
+                         │   Outbox    │
+                         └──────┬──────┘
+                                │
+                         durable event
+                                │
+                         ┌──────▼──────┐
+                         │    Kafka    │
+                         └──────┬──────┘
+                                │
+                ┌───────────────┼───────────────┐
+                ↓               ↓               ↓
+             App #1          App #2          App #3
+             local           local           local
+             cache           cache           cache
+                │               │               │
+                └───────────────┼───────────────┘
+                                ↓
+                             Redis
+                                │
+                               TTL
+                                │
+                          safety net
+And the flow:
+WRITE:
+
+DB
+ ↓
+Outbox
+ ↓
+Kafka
+ ↓
+invalidate every replica
+while:
+READ:
+
+Local cache
+ ↓ miss
+Redis
+ ↓ miss
+DB
+ ↓
+populate caches with TTL
+That is a very common architecture for systems that need both local caching and distributed invalidation.
+________________________________________
+39. The five failure modes you should now be able to reason about
+If I give you a system-design interview question, I want your brain to automatically ask:
+1. What if the event is lost?
+→ outbox / durable log / TTL
+2. What if the event is duplicated?
+→ idempotency
+3. What if the event is reordered?
+→ versioning / ordering key
+4. What if the consumer is offline?
+→ durable log + replay
+5. What if the cache gets stale anyway?
+→ TTL + reconciliation + correctness strategy
+That's already a significant jump beyond "Redis knowledge."
+________________________________________
+40. The deepest lesson
+Distributed invalidation is not really about deleting cache keys.
+It is about:
+Propagating knowledge of state changes from an authoritative system to all derived copies, despite failures, duplication, delay, and reordering.
+Once you understand that sentence, technologies become implementation choices:
+Redis Pub/Sub
+Kafka
+RabbitMQ
+CDC
+Outbox
+Streams
+SNS/SQS
+etc.
+They're mechanisms for propagating change.
+The underlying problem stays the same.
+________________________________________
+41. One final mental model
+Think of your database as saying:
+"I know the latest truth."
+The cache says:
+"I have a copy of what I believe the truth was."
+The event system says:
+"Something changed. Here's evidence that the truth moved forward."
+The consumer says:
+"Okay, I'll stop trusting my old copy."
+TTL says:
+"And even if communication fails,
+I won't trust this copy forever."
+That's distributed cache invalidation.
+________________________________________
+Lesson 3 takeaway
+Remember these 8 principles:
+1.	Multiple application instances create multiple cache copies. 
+2.	Those copies need a change-propagation mechanism. 
+3.	Events decouple the writer from cache consumers. 
+4.	DB + message broker creates a dual-write problem. 
+5.	The transactional outbox makes the DB change and event record atomic. 
+6.	At-least-once delivery means duplicate events should be expected. 
+7.	Idempotency and versioning protect against duplicates and reordering. 
+8.	TTL remains useful as a safety net even when distributed invalidation exists. 
+And the key sentence:
+Distributed invalidation is a state-propagation problem under failure.
+
+Cache Invalidation — Lesson 4
+Race Conditions, Stale Data & Consistency Strategies
+This is the lesson where the previous three finally connect.
+So far:
+Lesson 1 → Cache creates multiple copies
+Lesson 2 → TTL / explicit invalidation
+Lesson 3 → How invalidation propagates across nodes
+Now we ask the hardest question:
+What happens when READ, WRITE, and INVALIDATION happen concurrently?
+This is where seemingly correct cache code can still return stale data.
+________________________________________
+1. The first important distinction
+There are actually three different things happening:
+READ
+WRITE
+INVALIDATE
+Developers often mentally combine them.
+Don't.
+For example:
+READ:
+    DB → cache
+
+WRITE:
+    DB ← new value
+
+INVALIDATE:
+    cache ← delete
+These are separate operations.
+And because they are separate, they can interleave.
+That's where races come from.
+________________________________________
+2. Start with the simplest cache-aside implementation
+Typical Java:
+public User getUser(long id) {
+    String key = "user:" + id;
+
+    User cached = redis.get(key);
+
+    if (cached != null) {
+        return cached;
+    }
+
+    User user = database.findById(id);
+
+    redis.set(key, user, Duration.ofMinutes(5));
+
+    return user;
+}
+Write:
+public void updateUser(User user) {
+    database.update(user);
+    redis.delete("user:" + user.id());
+}
+Looks correct.
+But let's execute it instruction by instruction.
+________________________________________
+3. Race #1 — the stale cache resurrection problem
+Initial state:
+DB:
+user:123 = John
+
+Redis:
+user:123 = John
+Now Redis entry disappears:
+Redis:
+user:123 = MISS
+Two threads arrive.
+Reader R
+R1: Redis GET → MISS
+Writer W
+W1: DB UPDATE → Mike
+W2: Redis DELETE
+But timing matters.
+Let's create a precise timeline.
+Time →
+
+Reader                         Writer
+
+R1: Redis GET
+    MISS
+
+R2: DB GET
+    John
+
+                             W1: DB UPDATE
+                                 Mike
+
+                             W2: Redis DELETE
+
+R3: Redis SET
+    John
+Final state:
+DB:
+Mike
+
+Redis:
+John   ← stale
+This is the classic:
+stale value resurrection
+The reader fetched an old value and wrote it back after the writer had already invalidated the cache.
+________________________________________
+4. Why this race is so important
+Notice something subtle.
+The writer did everything "correctly":
+DB UPDATE
+↓
+CACHE DELETE
+The reader also did everything "correctly":
+CACHE MISS
+↓
+DB READ
+↓
+CACHE SET
+Yet the system ended up incorrect.
+That's a fundamental distributed-systems lesson:
+Correct individual operations do not necessarily produce a correct concurrent system.
+The ordering between operations matters.
+________________________________________
+5. Why TTL doesn't fix this race
+Suppose:
+TTL = 5 minutes
+The reader resurrects:
+Redis = John
+TTL = 5 minutes
+Now:
+DB = Mike
+Redis = John
+The stale value may survive for another 5 minutes.
+TTL eventually helps, but it doesn't prevent the race.
+So:
+TTL bounds the lifetime of stale data; it doesn't establish ordering between concurrent readers and writers.
+This distinction is extremely important.
+________________________________________
+6. Race #2 — delete-before-write
+Someone might try:
+redis.delete(key);
+database.update(user);
+instead of:
+database.update(user);
+redis.delete(key);
+Let's see why that is dangerous.
+Initial:
+DB = John
+Redis = John
+Writer:
+W1: Redis DELETE
+Now:
+DB = John
+Redis = MISS
+Reader arrives:
+R1: Redis GET → MISS
+R2: DB GET → John
+R3: Redis SET → John
+Then writer:
+W2: DB UPDATE → Mike
+Final:
+DB = Mike
+Redis = John
+Again stale.
+So the usual ordering is:
+DB UPDATE
+      ↓
+CACHE INVALIDATE
+not the reverse.
+________________________________________
+7. But DB-first doesn't completely solve it
+This is the interesting part.
+You might say:
+DB update first
+cache delete second
+solves everything.
+It doesn't.
+We already saw:
+Reader:
+DB READ → old value
+
+Writer:
+DB UPDATE → new value
+CACHE DELETE
+
+Reader:
+CACHE SET → old value
+So DB-first avoids one class of race but not the stale-resurrection race.
+This is where more sophisticated strategies appear.
+________________________________________
+8. Strategy #1 — Delete after write
+The baseline strategy:
+WRITE:
+
+DB UPDATE
+   ↓
+DELETE CACHE
+And:
+READ:
+
+CACHE GET
+   ↓
+MISS
+   ↓
+DB GET
+   ↓
+CACHE SET
+Advantages:
+•	simple 
+•	cheap 
+•	easy to reason about 
+•	cache remains disposable 
+But:
+Problem:
+concurrent reader can resurrect stale data.
+This is the baseline we improve upon.
+________________________________________
+9. Strategy #2 — Double deletion
+One practical technique is:
+DELETE CACHE
+UPDATE DB
+DELETE CACHE AGAIN
+Conceptually:
+Writer:
+
+1. DELETE cache
+2. UPDATE DB
+3. DELETE cache again
+Why?
+Let's examine the race.
+Initial:
+DB = John
+Redis = John
+Writer:
+W1: DELETE Redis
+Reader:
+R1: Redis MISS
+R2: DB READ → John
+Writer:
+W2: DB UPDATE → Mike
+W3: DELETE Redis
+Reader:
+R3: Redis SET → John
+Oops.
+The second deletion happened before the reader's SET.
+So the race can still occur depending on timing.
+That's why people sometimes use:
+delete
+update
+sleep/delay
+delete
+But now we're getting into heuristics.
+________________________________________
+10. Delayed double-delete
+Conceptually:
+redis.delete(key);
+
+database.update(user);
+
+schedule(() -> redis.delete(key), delay);
+Timeline:
+Writer:
+DELETE
+  ↓
+DB UPDATE
+  ↓
+wait
+  ↓
+DELETE again
+The idea is:
+"Give any reader that is currently loading stale data enough time to finish, then delete the cache again."
+This can reduce stale resurrection.
+But notice the problem:
+How long should the delay be?
+10 ms?
+100 ms?
+1 second?
+5 seconds?
+There's no universal answer.
+The delay is based on assumptions about:
+•	DB latency 
+•	network latency 
+•	application latency 
+•	cache latency 
+•	worst-case scheduling 
+•	GC pauses 
+•	load spikes 
+So delayed double-delete is a heuristic, not a mathematically perfect consistency mechanism.
+________________________________________
+11. This teaches an important architectural lesson
+If your correctness depends on:
+"wait 500 ms and hopefully the other thread is done"
+you should become suspicious.
+You're using time to approximate ordering.
+Sometimes that's perfectly acceptable.
+But if the business requires strong correctness, you generally want something stronger:
+versions
+locks
+transactions
+compare-and-set
+serialization
+or avoiding the cache
+________________________________________
+12. Strategy #3 — Versioned cache values
+Now we're getting to a much more powerful idea.
+Instead of storing:
+Redis:
+user:123 → John
+store:
+Redis:
+user:123 → {
+    value: John,
+    version: 41
+}
+Database:
+user:123
+name = John
+version = 41
+After update:
+DB:
+name = Mike
+version = 42
+Now the system has a way to distinguish:
+John / version 41
+from:
+Mike / version 42
+________________________________________
+13. Why versioning helps
+Suppose stale reader gets:
+John / v41
+while writer produces:
+Mike / v42
+If the cache already contains:
+Mike / v42
+the stale reader should not be allowed to overwrite it with:
+John / v41
+Conceptually:
+if (incoming.version() > existing.version()) {
+    cache.set(incoming);
+}
+So:
+incoming v41
+existing v42
+
+41 > 42 → false
+
+ignore
+This solves a whole class of out-of-order update problems.
+________________________________________
+14. Versioning turns "time" into "ordering"
+This is a deep idea.
+Without versions:
+Which value is newer?
+is sometimes ambiguous.
+With versions:
+41
+42
+43
+we can say:
+43 > 42 > 41
+Now distributed systems can reason about state without relying purely on wall-clock time.
+That's why versions appear everywhere:
+•	optimistic locking 
+•	database row versions 
+•	Kafka offsets 
+•	MVCC 
+•	distributed caches 
+•	replicated state 
+•	event processing 
+________________________________________
+15. Optimistic locking connection
+You may have seen something like:
+UPDATE users
+SET name = ?, version = version + 1
+WHERE id = ?
+  AND version = ?;
+Suppose:
+version = 41
+Two writers read:
+A sees 41
+B sees 41
+A updates:
+41 → 42
+B tries:
+WHERE version = 41
+but the row is now:
+42
+so B's update affects zero rows.
+That's optimistic concurrency control.
+The same concept is useful in caches:
+Only accept a state transition if it moves forward.
+________________________________________
+16. Strategy #4 — Compare-and-set
+Another approach is to make cache updates conditional.
+Instead of:
+SET user:123 = John
+you want:
+SET user:123 = John
+ONLY IF version < 41
+Or:
+CAS
+= compare-and-set.
+Conceptually:
+existing:
+version = 42
+
+incoming:
+version = 41
+
+CAS:
+"Set only if existing version < incoming version"
+
+→ FAIL
+This prevents an older reader from overwriting a newer value.
+The exact implementation depends on your cache technology, but the principle is more important than the Redis command:
+Make stale writes fail rather than hoping they don't happen.
+________________________________________
+17. Strategy #5 — Don't let readers populate the cache blindly
+Another way to attack the stale-resurrection problem is to control cache population.
+Instead of:
+DB read
+   ↓
+blindly SET cache
+you can use:
+DB read
+   ↓
+determine version
+   ↓
+conditional cache write
+For example:
+DB:
+version 42
+
+Cache:
+version 43
+
+Reader wants to write:
+version 42
+Don't write.
+This is a major shift:
+Old mindset:
+"Cache SET is harmless."
+
+New mindset:
+"Cache SET is a state transition and must obey ordering."
+That is much closer to distributed-systems thinking.
+________________________________________
+18. Strategy #6 — Serialize operations per key
+Another approach:
+"What if only one operation at a time can modify cache state for user 123?"
+Conceptually:
+lock(user:123)
+
+    DB update
+    cache invalidation
+
+unlock
+Or for cache population:
+lock(user:123)
+
+    cache miss
+    DB read
+    cache set
+
+unlock
+This can prevent certain races.
+But now you've introduced:
+distributed locking
+which brings its own problems:
+•	lock acquisition failure 
+•	lock expiry 
+•	deadlocks 
+•	contention 
+•	latency 
+•	crashed owners 
+•	split-brain scenarios 
+So don't add a distributed lock casually.
+________________________________________
+19. Why locks are often overused
+A common reaction to concurrency problems is:
+"Let's put a Redis lock around it."
+But ask:
+Do I really need serialization?
+Suppose:
+1 million requests
+all want:
+product:123
+A global lock means:
+1 request
+   ↓
+lock
+   ↓
+DB
+   ↓
+cache
+   ↓
+unlock
+Potentially all other requests wait.
+You've turned a highly parallel system into:
+one-at-a-time
+Sometimes that's necessary.
+Often it isn't.
+Better solutions may be:
+single-flight
+versioning
+request coalescing
+stale-while-revalidate
+depending on the requirement.
+________________________________________
+20. The cache stampede problem
+Now consider expiration.
+Redis:
+product:123
+TTL = 5 minutes
+Millions of requests depend on it.
+At:
+12:00:00
+it expires.
+Then:
+Request 1 → MISS → DB
+Request 2 → MISS → DB
+Request 3 → MISS → DB
+Request 4 → MISS → DB
+...
+Request 100,000 → MISS → DB
+Your cache protected the DB from 100,000 requests.
+Then expiration caused all of them to hit the DB simultaneously.
+This is:
+Cache stampede / thundering herd.
+Notice how invalidation and stampede are connected.
+Invalidation creates a miss.
+Too many simultaneous misses create load.
+________________________________________
+21. Request coalescing
+A smarter strategy:
+1000 requests
+     ↓
+same key
+     ↓
+one DB request
+     ↓
+populate cache
+     ↓
+all 1000 receive result
+Conceptually:
+Request A ─┐
+Request B ─┤
+Request C ─┼──> single DB fetch
+Request D ─┤
+Request E ─┘
+This is sometimes called:
+•	request coalescing 
+•	single-flight 
+•	duplicate suppression 
+The idea is:
+For the same missing key, let one request perform the expensive work while others share the result.
+This solves a different problem from invalidation, but the problems frequently interact.
+________________________________________
+22. Stale-while-revalidate
+Another powerful strategy is:
+Don't immediately throw away slightly stale data.
+Suppose:
+TTL = 5 min
+At expiration, instead of:
+MISS
+↓
+everyone hits DB
+you can have:
+stale value
+   ↓
+return stale value immediately
+   +
+background refresh
+Conceptually:
+             Cache
+              │
+       ┌──────┴──────┐
+       │             │
+       ↓             ↓
+  return stale    refresh DB
+                  in background
+                       ↓
+                   update cache
+This is useful when:
+availability > absolute freshness
+For example:
+news feed
+product recommendations
+analytics
+But probably not appropriate for:
+bank balance
+authorization decision
+Again:
+Consistency strategy is a business requirement.
+________________________________________
+23. Now we need to define "consistency"
+People often say:
+"We need consistent cache."
+But consistent with what, and when?
+There are several useful levels.
+________________________________________
+24. Eventual consistency
+Suppose:
+DB = Mike
+Cache = John
+Eventually:
+Cache = Mike
+but there may be a period where:
+DB ≠ Cache
+That's eventual consistency.
+Formally, you're saying:
+If no further writes occur, eventually all replicas converge to the same value.
+This is extremely common for caches.
+________________________________________
+25. Strong consistency
+A stronger requirement is roughly:
+A read should observe the latest committed write according to the system's consistency model.
+Conceptually:
+WRITE:
+John → Mike
+       ↓
+future READ
+       ↓
+must see Mike
+Achieving this across caches and databases is much more expensive.
+Sometimes the correct answer is simply:
+Don't use a cache for this read path.
+That's not failure.
+That's good architecture.
+________________________________________
+26. Read-your-writes consistency
+There's a particularly useful middle ground.
+Suppose user changes:
+name:
+John → Mike
+Then immediately refreshes the page.
+They reasonably expect:
+Mike
+even if the global cache hasn't fully propagated.
+This is:
+Read-your-writes consistency.
+You can implement this in different ways.
+For example, after a write:
+user version = 42
+the user's subsequent requests might carry:
+minimumVersion = 42
+A cache response at:
+version = 41
+is insufficient.
+The application can wait/read from a fresher source.
+This is a more subtle and useful consistency requirement than simply saying "strong consistency."
+________________________________________
+27. Session consistency
+You can think of consistency guarantees as applying to a particular user/session rather than globally.
+For example:
+User A:
+writes X
+then reads
+→ must see X
+while another user:
+User B
+might temporarily see the previous value.
+This can dramatically reduce the infrastructure needed compared with global strong consistency.
+________________________________________
+28. Monotonic reads
+Another useful property:
+Suppose a user sees:
+version 42
+You don't want their next request to see:
+version 41
+That would feel like the system went backward.
+So:
+42 → 43 → 44
+is okay.
+But:
+42 → 41
+is not.
+Versioning can help enforce this.
+This is another example of why versions are more powerful than simply "delete the cache."
+________________________________________
+29. Let's classify consistency strategies
+Think of the spectrum:
+Less consistency
+      │
+      ↓
+TTL cache
+      │
+      ↓
+Explicit invalidation
+      │
+      ↓
+Distributed invalidation
+      │
+      ↓
+Versioned invalidation
+      │
+      ↓
+Read-your-writes
+      │
+      ↓
+Strong consistency
+As you move downward:
+consistency ↑
+complexity  ↑
+latency     ↑
+cost        ↑
+Not always linearly, but generally the trade-off exists.
+Your goal isn't:
+"Get maximum consistency."
+Your goal is:
+Get the minimum consistency necessary for the business requirement.
+________________________________________
+30. A concrete example: e-commerce inventory
+Suppose:
+stock = 1
+Two users attempt to buy.
+Cache says:
+stock = 1
+Both requests read:
+1
+Then both try to purchase.
+If your inventory logic relies on the cache:
+User A → buys
+User B → buys
+Now:
+stock = -1
+That's obviously unacceptable.
+This demonstrates:
+A cache should not automatically become the authority for correctness-sensitive state.
+The database or another strongly coordinated inventory system should enforce the invariant.
+The cache can assist reads, but correctness must come from the authoritative layer.
+________________________________________
+31. Another example: product description
+Description:
+"Blue cotton shirt"
+Cache:
+"Blue cotton shirt"
+DB:
+"Blue organic cotton shirt"
+If the cache takes 30 seconds to update:
+probably acceptable
+So:
+eventual consistency
++
+TTL
++
+explicit invalidation
+is likely sufficient.
+Same caching technology.
+Completely different consistency requirement.
+________________________________________
+32. Another example: authorization
+Suppose:
+User:
+admin = true
+Cache says:
+admin = true
+Security team removes admin access:
+DB:
+admin = false
+But cache still says:
+true
+If authorization uses that cached value, the user may continue having admin privileges.
+Now:
+TTL = 10 minutes
+is potentially unacceptable.
+This is a case where:
+The right solution may be not caching the authorization decision at all, or using a much stronger invalidation/consistency mechanism.
+This is why system design starts from the business invariant.
+________________________________________
+33. A very important concept: correctness vs freshness
+These aren't identical.
+Suppose a cached recommendation is stale:
+Recommended:
+Product A
+instead of:
+Product B
+It's stale, but probably not incorrect in a dangerous sense.
+Now:
+Authorization:
+ALLOW
+when it should be:
+DENY
+That's stale and security-incorrect.
+So when evaluating caching, ask:
+Does stale data merely reduce quality, or can it violate a business invariant?
+That question should drive the architecture.
+________________________________________
+34. Business invariants
+Examples:
+Account balance >= 0
+Inventory cannot go below 0
+Revoked user cannot access admin APIs
+Payment cannot be processed twice
+Caches should not be trusted to independently enforce these invariants unless the cache architecture itself provides the necessary atomicity/consistency guarantees.
+Usually:
+Cache → performance
+Database/service → correctness
+is the safer division.
+________________________________________
+35. Let's revisit distributed invalidation with versions
+Suppose:
+DB:
+user 123
+version = 43
+name = Mike
+Event:
+{
+  "userId": 123,
+  "version": 43
+}
+Cache:
+user:123
+version = 42
+name = John
+Consumer receives:
+43 > 42
+So:
+invalidate/update
+Now suppose event 42 arrives afterward:
+42 < 43
+Ignore.
+This gives us:
+DB → v43
+cache → v43
+even though events were reordered.
+This is much more robust than relying only on event arrival order.
+________________________________________
+36. But versioning doesn't solve everything
+Suppose cache is completely missing.
+Event:
+v43
+is lost.
+Then:
+cache = v42
+forever.
+Versioning can't help if the cache never learns that v43 exists.
+That's why you combine:
+versioning
++
+durable events
++
+TTL/reconciliation
+Again:
+Distributed correctness usually comes from several imperfect mechanisms layered together.
+________________________________________
+37. Reconciliation
+Suppose you want even stronger protection.
+Periodically:
+DB state
+    ↓
+compare with cache metadata
+    ↓
+repair inconsistencies
+For example:
+every 5 minutes
+a background process checks suspicious/stale entries.
+This isn't always necessary, but it provides another recovery mechanism.
+Think:
+Event propagation
+    = fast path
+
+Reconciliation
+    = repair path
+This pattern appears everywhere in distributed systems.
+________________________________________
+38. Fast path vs repair path
+This is a powerful system-design pattern.
+Fast path
+DB update
+ ↓
+event
+ ↓
+invalidate cache
+Usually happens within milliseconds/seconds.
+Repair path
+periodic reconciliation
+       ↓
+detect divergence
+       ↓
+repair
+If the fast path fails:
+repair path
+eventually restores correctness.
+This is much more robust than expecting every distributed operation to succeed perfectly.
+________________________________________
+39. What I would design for a typical Java system
+Suppose we have:
+Spring Boot
+MySQL/Postgres
+Redis
+Kafka
+Caffeine local cache
+For ordinary mutable business data, I'd start with:
+                DB
+                 │
+          transaction
+                 │
+          ┌──────▼──────┐
+          │   Outbox    │
+          └──────┬──────┘
+                 │
+               Kafka
+                 │
+       ┌─────────┼─────────┐
+       ↓         ↓         ↓
+     App #1    App #2    App #3
+       │         │         │
+   Caffeine  Caffeine  Caffeine
+       │         │         │
+       └─────────┼─────────┘
+                 ↓
+               Redis
+                 │
+                TTL
+Write:
+DB update
+→ outbox
+→ Kafka
+→ invalidate local caches / Redis
+Read:
+Caffeine
+→ Redis
+→ DB
+→ populate cache with TTL
+And I'd decide whether versioning is necessary based on the consistency requirement.
+________________________________________
+40. What I would NOT automatically add
+I wouldn't immediately add:
+distributed lock
+or:
+double delete
+or:
+complex consensus mechanism
+just because cache invalidation can race.
+First ask:
+How bad is stale data?
+How long can it be stale?
+Can stale data violate an invariant?
+Can we tolerate eventual consistency?
+Then choose the simplest mechanism that satisfies that requirement.
+This is what makes system design different from collecting patterns.
+________________________________________
+41. The hierarchy I'd use in an interview
+If asked:
+"How would you keep Redis consistent with the DB?"
+Don't immediately say:
+"Kafka + Redis Pub/Sub + distributed lock + Lua."
+Start here:
+Step 1
+DB is source of truth.
+Step 2
+Cache-aside.
+Step 3
+Write DB first, invalidate cache.
+Step 4
+TTL as safety net.
+Then ask:
+"Do we have multiple application-local caches?"
+If yes:
+distributed invalidation
+Then:
+"Can invalidation messages be lost?"
+If yes:
+outbox + durable event stream
+Then:
+"Can events reorder?"
+If yes:
+versions / ordering
+Then:
+"Can stale readers repopulate the cache?"
+If yes:
+conditional/versioned cache writes
+Then:
+"What consistency does the business require?"
+Only then choose whether you need stronger mechanisms.
+That's a much stronger system-design answer.
+________________________________________
+42. The entire four-lesson model
+Now put everything together.
+                 CACHE
+                   │
+                   │ creates
+                   ↓
+             Multiple copies
+                   │
+                   ↓
+          ┌───────────────────┐
+          │  Lesson 1         │
+          │  Why difficult?   │
+          └─────────┬─────────┘
+                    │
+                    ↓
+              Need invalidation
+                    │
+             ┌──────┴──────┐
+             ↓             ↓
+            TTL        Explicit
+                     invalidation
+             │             │
+             └──────┬──────┘
+                    ↓
+          ┌───────────────────┐
+          │  Lesson 2         │
+          │ TTL vs explicit   │
+          └─────────┬─────────┘
+                    │
+                    ↓
+             Multiple nodes
+                    │
+                    ↓
+             Need propagation
+                    │
+             ┌──────┴──────┐
+             ↓             ↓
+          Events          TTL
+________________________________________
+43. The deepest mental model
+Here's the one sentence I'd like you to remember from all four lessons:
+A cache is a replicated, disposable view of authoritative state, and cache invalidation is the mechanism by which that replica learns that its view may no longer be trusted.
+Then:
+TTL
+handles uncertainty through time.
+Explicit invalidation
+handles known mutations.
+Distributed events
+propagate mutations.
+Versions
+provide ordering.
+Idempotency
+handles duplicates.
+Reconciliation
+repairs missed changes.
+Consistency strategies
+determine how much temporary divergence the business can tolerate.
+________________________________________
+44. And the most important architectural decision
+When somebody says:
+"We need a cache."
+Your first response shouldn't be:
+"Let's use Redis."
+It should be:
+"What consistency guarantee does this data require?"
+Then:
+Consistency requirement
+        ↓
+acceptable stale window
+        ↓
+cache or no cache
+        ↓
+TTL
+        ↓
+explicit invalidation
+        ↓
+distributed propagation
+        ↓
+versioning / ordering
+        ↓
+reconciliation
+That's how you design the system from the problem downward, rather than from the technology upward.
+
+
