@@ -19,32 +19,32 @@ Imagine your Spring Boot application is hosted in:
 Plain Text
 1
 Mumbai (India)
-Show more lines
+
 Server:
 Plain Text
 1
 43.10.10.1
 2
 ``
-Show more lines
+
 A user from Hyderabad requests:
 Plain Text
 1
 https://myapp.com/logo.png
-Show more lines
+
 Distance is small.
 Response:
 Plain Text
 1
 40 ms
-Show more lines
+
 Good.
 ________________________________________
 Now a user from:
 Plain Text
 1
 New York
-Show more lines
+
 requests same image.
 Request path:
 Plain Text
@@ -66,12 +66,12 @@ Middle East
 ↓
 9
 India
-Show more lines
+
 Response:
 Plain Text
 1
 350 ms
-Show more lines
+
 Much slower.
 ________________________________________
 And another issue:
@@ -81,7 +81,7 @@ Plain Text
 logo.png
 2
 ``
-Show more lines
+
 from same server.
 Plain Text
 1
@@ -94,7 +94,7 @@ Plain Text
 10000000 users
 5
 ``
-Show more lines
+
 Your origin server becomes overloaded.
 ________________________________________
 Fundamental Problem
@@ -119,7 +119,7 @@ Internet
 |
 5
 Origin Server
-Show more lines
+
 Every request:
 Plain Text
 1
@@ -132,7 +132,7 @@ JS
 Images
 5
 Videos
-Show more lines
+
 came from one server.
 ________________________________________
 Example:
@@ -144,24 +144,24 @@ Plain Text
 20 Images
 3
 5 CSS files
-Show more lines
+
 Total:
 Plain Text
 1
 35 requests
 2
  
-Show more lines
+
 Now:
 Plain Text
 1
 1 Million Users
-Show more lines
+
 produces:
 Plain Text
 1
 35 Million Requests
-Show more lines
+
 against origin.
 Origin melts.
 ________________________________________
@@ -174,7 +174,7 @@ Origin
 |
 3
 Mumbai
-Show more lines
+
 Create copies.
 Plain Text
 1
@@ -189,14 +189,14 @@ Mumbai
 Tokyo London NewYork
 6
  
-Show more lines
+
 Now users fetch from nearest copy.
 ________________________________________
 This copy is called:
 Plain Text
 1
 Edge Cache
-Show more lines
+
 ________________________________________
 Core Definition
 A CDN (Content Delivery Network) is:
@@ -207,7 +207,7 @@ A globally distributed network
 that stores cached content closer
 3
 to end users.
-Show more lines
+
 ________________________________________
 4. Internal CDN Architecture
 At high level:
@@ -228,7 +228,7 @@ Edge A Edge B
 Users Nearby Users Nearby
 8
 ``
-Show more lines
+
 ________________________________________
 Terminology:
 Origin
@@ -241,7 +241,7 @@ Spring Boot Server
 S3 Bucket
 3
 Nginx
-Show more lines
+
 ________________________________________
 Edge Node
 CDN server storing cached copies.
@@ -258,7 +258,7 @@ Delhi
 Singapore
 4
 London
-Show more lines
+
 Each location hosts edge servers.
 ________________________________________
 5. Request Flow (Very Important)
@@ -266,19 +266,19 @@ Let's follow:
 Plain Text
 1
 GET /logo.png
-Show more lines
+
 ________________________________________
 First Request
 User:
 Plain Text
 1
 Hyderabad
-Show more lines
+
 requests:
 Plain Text
 1
 /logo.png
-Show more lines
+
 ________________________________________
 Step 1
 Request reaches nearest CDN edge.
@@ -289,14 +289,14 @@ User
 |
 3
 Mumbai Edge
-Show more lines
+
 ________________________________________
 Step 2
 Cache lookup.
 Plain Text
 1
 logo.png ?
-Show more lines
+
 Not found.
 Cache Miss.
 ________________________________________
@@ -309,7 +309,7 @@ Edge
 |
 3
 Origin
-Show more lines
+
 ________________________________________
 Step 4
 Origin returns file.
@@ -318,14 +318,14 @@ Plain Text
 200 OK
 2
 logo.png
-Show more lines
+
 ________________________________________
 Step 5
 Edge stores copy.
 Plain Text
 1
 cache["logo.png"]
-Show more lines
+
 ________________________________________
 Step 6
 Response sent to user.
@@ -335,12 +335,12 @@ Next user:
 Plain Text
 1
 GET /logo.png
-Show more lines
+
 Edge already has:
 Plain Text
 1
 cache["logo.png"]
-Show more lines
+
 Response immediately.
 No origin call.
 ________________________________________
@@ -348,7 +348,7 @@ This is:
 Plain Text
 1
 Cache Hit
-Show more lines
+
 ________________________________________
 6. Internal Data Structures
 At the edge server:
@@ -358,7 +358,7 @@ Java
 Map<String, CachedObject>
 2
  
-Show more lines
+
 Example:
 Java
 1
@@ -369,7 +369,7 @@ cache.put(
 image
 4
 );
-Show more lines
+
 ________________________________________
 Each object stores:
 Java
@@ -389,7 +389,7 @@ long expiryTime;
 Map<String,String> headers;
 8
 }
-Show more lines
+
 ________________________________________
 Real CDNs use more sophisticated structures.
 Examples:
@@ -402,7 +402,7 @@ Memory Index
 Disk Index
 4
 LSM Trees
-Show more lines
+
 depending on size.
 ________________________________________
 7. Cache Hit vs Cache Miss
@@ -420,12 +420,12 @@ Edge Cache
 |
 5
 Response
-Show more lines
+
 Latency:
 Plain Text
 1
 5 ms
-Show more lines
+
 ________________________________________
 Cache Miss
 Plain Text
@@ -447,12 +447,12 @@ Edge
 |
 9
 User
-Show more lines
+
 Latency:
 Plain Text
 1
 200 ms
-Show more lines
+
 ________________________________________
 Formula:
 Plain Text
@@ -468,7 +468,7 @@ Hits
 /
 6
 Total Requests
-Show more lines
+
 ________________________________________
 Example:
 Plain Text
@@ -478,12 +478,12 @@ Plain Text
  
 3
 5 misses
-Show more lines
+
 Hit Ratio:
 Plain Text
 1
 95%
-Show more lines
+
 Excellent CDN performance.
 ________________________________________
 8. Why CDNs Are Extremely Fast
@@ -494,12 +494,12 @@ Geographic proximity.
 Plain Text
 1
 User -> Nearby Edge
-Show more lines
+
 instead of
 Plain Text
 1
 User -> Origin
-Show more lines
+
 ________________________________________
 Reason 2
 Persistent connections.
@@ -513,7 +513,7 @@ Lookup speed:
 Plain Text
 1
 Microseconds
-Show more lines
+
 ________________________________________
 9. Performance Analysis
 Let's think like a Principal Engineer.
@@ -528,30 +528,30 @@ Latency = 250 ms
 Throughput = Origin Dependent
 4
  
-Show more lines
+
 ________________________________________
 With CDN
 Plain Text
 1
 Latency = 10 ms
-Show more lines
+
 for cache hit.
 ________________________________________
 Origin load reduction:
 Plain Text
 1
 10000 RPS
-Show more lines
+
 If hit ratio:
 Plain Text
 1
 95%
-Show more lines
+
 Origin only handles:
 Plain Text
 1
 500 RPS
-Show more lines
+
 Huge savings.
 ________________________________________
 Complexity Analysis
@@ -563,24 +563,24 @@ Hash Map
  
 3
 Average O(1)
-Show more lines
+
 ________________________________________
 Insertion:
 Plain Text
 1
 O(1)
-Show more lines
+
 ________________________________________
 Memory:
 Plain Text
 1
 O(N)
-Show more lines
+
 Where:
 Plain Text
 1
 N = Cached Objects
-Show more lines
+
 ________________________________________
 10. Failure Cases
 Real systems fail.
@@ -590,7 +590,7 @@ Edge Server Down
 Plain Text
 1
 Mumbai Edge ❌
-Show more lines
+
 What happens?
 Traffic rerouted.
 Plain Text
@@ -600,7 +600,7 @@ Hyderabad
 ↓
 3
 Bangalore Edge
-Show more lines
+
 Latency increases but service works.
 ________________________________________
 Scenario 2
@@ -609,7 +609,7 @@ Edge still serves:
 Plain Text
 1
 cached content
-Show more lines
+
 until expiry.
 This is why CDNs improve availability.
 ________________________________________
@@ -624,7 +624,7 @@ LRU
 LFU
 3
 FIFO
-Show more lines
+
 We'll study cache internals later.
 ________________________________________
 Scenario 4
@@ -634,7 +634,7 @@ Serve:
 Plain Text
 1
 stale content
-Show more lines
+
 temporarily.
 Production CDNs do this often.
 ________________________________________
@@ -677,7 +677,7 @@ return content;
 }
 18
 }
-Show more lines
+
 This demonstrates:
 Plain Text
 1
@@ -686,7 +686,7 @@ Cache Miss
 Cache Fill
 3
 Cache Hit
-Show more lines
+
 ________________________________________
 12. Principal Engineer Interview Discussion
 Question:
@@ -702,7 +702,7 @@ Bandwidth reduction
 Availability
 4
 Origin protection
-Show more lines
+
 Vertical scaling solves none of these.
 ________________________________________
 Question:
@@ -717,7 +717,7 @@ Latency increases
 Costs increase
 4
 System instability
-Show more lines
+
 ________________________________________
 Question:
 Why is Netflix heavily dependent on CDNs?
@@ -729,7 +729,7 @@ Large
 Frequently accessed
 3
 Read-heavy
-Show more lines
+
 Perfect for edge caching.
 ________________________________________
 13. Hands-On Project
@@ -739,19 +739,19 @@ Create:
 Plain Text
 1
 Spring Boot Origin Server
-Show more lines
+
 Endpoint:
 Java
 1
 GET /movie
-Show more lines
+
 ________________________________________
 Step 2
 Create:
 Plain Text
 1
 Edge Server
-Show more lines
+
 with cache.
 ________________________________________
 Step 3
@@ -759,7 +759,7 @@ Add:
 Java
 1
 ConcurrentHashMap
-Show more lines
+
 ________________________________________
 Step 4
 Measure:
@@ -774,7 +774,7 @@ First Request:
 Second Request:
 5
 5 ms
-Show more lines
+
 Observe cache hit benefit.
 ________________________________________
 14. Advanced Research
@@ -798,24 +798,24 @@ Edge Caching
 Global Routing
 5
  
-Show more lines
+
 ________________________________________
 Mental Model
 Think of a CDN as:
 Plain Text
 1
 Redis for the Internet.
-Show more lines
+
 Instead of caching near your application:
 Plain Text
 1
 Application -> Redis
-Show more lines
+
 CDN caches near the user:
 Plain Text
 1
 User -> Edge Cache
-Show more lines
+
 ________________________________________
 Homework Before Lesson 2
 Draw and explain:
@@ -830,7 +830,7 @@ CDN Edge
 |
 5
 Origin
-Show more lines
+
 For both:
 1.	Cache Hit
 2.	Cache Miss
@@ -842,7 +842,7 @@ Hit Ratio
 Origin Load Reduction
 3
 Latency Reduction
-Show more lines
+
 using a scenario with 1 million requests/day.
 
 Lesson 2: Request Routing
@@ -856,7 +856,7 @@ User
 ↓
 3
 Nearest CDN Server
-Show more lines
+
 Reality:
 Plain Text
 1
@@ -885,7 +885,7 @@ Edge Selection
 ↓
 13
 Cache Lookup
-Show more lines
+
 A Principal Engineer should be able to explain every hop.
 ________________________________________
 Learning Goals
@@ -915,18 +915,18 @@ Frankfurt
 New York
 6
 Sydney
-Show more lines
+
 CDN POPs.
 User:
 Plain Text
 1
 Hyderabad
-Show more lines
+
 requests:
 Plain Text
 1
 https://cdn.myapp.com/logo.png
-Show more lines
+
 Question:
 How does the CDN decide:
 Plain Text
@@ -936,7 +936,7 @@ Mumbai?
 Singapore?
 3
 Tokyo?
-Show more lines
+
 Which one should serve?
 ________________________________________
 Naive Approach
@@ -952,7 +952,7 @@ USA → New York
  
 5
 Japan → Tokyo
-Show more lines
+
 Problem:
 Network latency ≠ Geographic distance.
 Example:
@@ -967,7 +967,7 @@ Mumbai latency = 50 ms
  
 5
 Singapore latency = 20 ms
-Show more lines
+
 Why?
 Because ISP routing may be better.
 Therefore:
@@ -978,7 +978,7 @@ Closest city
 ≠
 3
 Fastest route
-Show more lines
+
 This is the first important distributed systems lesson.
 ________________________________________
 2. DNS Routing
@@ -986,7 +986,7 @@ Before HTTP starts:
 Plain Text
 1
 https://cdn.myapp.com/logo.png
-Show more lines
+
 DNS resolution happens.
 ________________________________________
 Request Flow
@@ -994,13 +994,13 @@ Browser asks:
 Plain Text
 1
 Where is cdn.myapp.com?
-Show more lines
+
 DNS responds.
 Example:
 Plain Text
 1
 104.16.10.20
-Show more lines
+
 Browser connects there.
 ________________________________________
 Why DNS Matters
@@ -1009,18 +1009,18 @@ Instead of returning:
 Plain Text
 1
 Single global IP
-Show more lines
+
 DNS can return:
 Plain Text
 1
 Mumbai IP
-Show more lines
+
 for Indian users.
 or
 Plain Text
 1
 New York IP
-Show more lines
+
 for US users.
 ________________________________________
 DNS-Based Routing
@@ -1028,28 +1028,28 @@ Example:
 Plain Text
 1
 Hyderabad User
-Show more lines
+
 DNS returns:
 Plain Text
 1
 Mumbai CDN
-Show more lines
+
 ________________________________________
 Plain Text
 1
 New York User
-Show more lines
+
 DNS returns:
 Plain Text
 1
 New York CDN
-Show more lines
+
 ________________________________________
 Advantages:
 Plain Text
 1
 Simple
-Show more lines
+
 Disadvantages:
 Plain Text
 1
@@ -1058,24 +1058,24 @@ DNS caching
 Slow updates
 3
 Coarse routing
-Show more lines
+
 ________________________________________
 Problem with DNS Routing
 Suppose:
 Plain Text
 1
 Mumbai POP crashes
-Show more lines
+
 But ISP DNS cache contains:
 Plain Text
 1
 Mumbai IP
-Show more lines
+
 for next:
 Plain Text
 1
 10 minutes
-Show more lines
+
 Users continue going to failed server.
 Bad.
 CDNs need something smarter.
@@ -1088,13 +1088,13 @@ We want:
 Plain Text
 1
 One IP
-Show more lines
+
 globally.
 Example:
 Plain Text
 1
 104.16.1.1
-Show more lines
+
 But we have:
 Plain Text
 1
@@ -1105,13 +1105,13 @@ Singapore
 Tokyo
 4
 New York
-Show more lines
+
 How can same IP exist everywhere?
 Answer:
 Plain Text
 1
 Anycast
-Show more lines
+
 ________________________________________
 Unicast vs Anycast
 ________________________________________
@@ -1124,17 +1124,17 @@ One IP
 =
 3
 One Server
-Show more lines
+
 Example:
 Plain Text
 1
 10.1.1.1
-Show more lines
+
 belongs to:
 Plain Text
 1
 Mumbai only
-Show more lines
+
 ________________________________________
 Anycast
 Same IP advertised from many locations.
@@ -1142,7 +1142,7 @@ Example:
 Plain Text
 1
 104.16.1.1
-Show more lines
+
 advertised from:
 Plain Text
 1
@@ -1155,7 +1155,7 @@ Tokyo
 London
 5
 New York
-Show more lines
+
 simultaneously.
 ________________________________________
 Visual:
@@ -1166,19 +1166,19 @@ Plain Text
 / | | \
 3
 Mumbai Singapore Tokyo London
-Show more lines
+
 All servers claim:
 Plain Text
 1
 I own this IP.
-Show more lines
+
 ________________________________________
 Why Doesn't Internet Get Confused?
 Because:
 Plain Text
 1
 BGP
-Show more lines
+
 decides.
 Which brings us to the most important protocol behind the Internet.
 ________________________________________
@@ -1201,18 +1201,18 @@ Amazon
 Microsoft
 7
 Cloudflare
-Show more lines
+
 All are networks.
 Question:
 Plain Text
 1
 How do packets know where to go?
-Show more lines
+
 Answer:
 Plain Text
 1
 BGP
-Show more lines
+
 ________________________________________
 Think of BGP as Google Maps for Networks
 Google Maps:
@@ -1227,7 +1227,7 @@ Road Selection
 ↓
 5
 Destination
-Show more lines
+
 BGP:
 Plain Text
 1
@@ -1240,14 +1240,14 @@ Path Selection
 ↓
 5
 Destination Network
-Show more lines
+
 ________________________________________
 Example
 Cloudflare announces:
 Plain Text
 1
 104.16.1.1
-Show more lines
+
 from:
 Plain Text
 1
@@ -1256,18 +1256,18 @@ Mumbai
 Singapore
 3
 Tokyo
-Show more lines
+
 User:
 Plain Text
 1
 Hyderabad
-Show more lines
+
 sends packet.
 Jio router asks:
 Plain Text
 1
 Which path is best?
-Show more lines
+
 BGP computes.
 Maybe:
 Plain Text
@@ -1277,7 +1277,7 @@ Hyderabad
 ↓
 3
 Mumbai
-Show more lines
+
 wins.
 Packet reaches Mumbai.
 ________________________________________
@@ -1287,7 +1287,7 @@ It selects:
 Plain Text
 1
 Best BGP path.
-Show more lines
+
 This may not be geographically nearest.
 ________________________________________
 BGP Decision Factors
@@ -1303,24 +1303,24 @@ ISP Policies
 Peering Agreements
 5
 Network Health
-Show more lines
+
 ________________________________________
 Real Example
 User:
 Plain Text
 1
 Delhi
-Show more lines
+
 can sometimes hit:
 Plain Text
 1
 Singapore PoP
-Show more lines
+
 instead of
 Plain Text
 1
 Mumbai PoP
-Show more lines
+
 because ISP routing makes Singapore faster.
 ________________________________________
 5. PoP Selection
@@ -1328,7 +1328,7 @@ Now packet reached:
 Plain Text
 1
 Mumbai PoP
-Show more lines
+
 Question:
 What is inside PoP?
 ________________________________________
@@ -1348,13 +1348,13 @@ Edge3
 Edge4
 7
 Edge5
-Show more lines
+
 Hundreds of machines.
 Now CDN must choose:
 Plain Text
 1
 Which Edge?
-Show more lines
+
 ________________________________________
 PoP = Mini Datacenter
 A PoP typically contains:
@@ -1369,7 +1369,7 @@ SSL Terminators
 Security Filters
 5
 Monitoring
-Show more lines
+
 ________________________________________
 Visual:
 Plain Text
@@ -1387,7 +1387,7 @@ Load Balancer
 ↓
 7
 Edge Servers
-Show more lines
+
 ________________________________________
 6. Edge Selection
 Inside PoP.
@@ -1402,7 +1402,7 @@ Edge1
 Edge2
 3
 Edge3
-Show more lines
+
 Requests rotate.
 Simple.
 ________________________________________
@@ -1411,7 +1411,7 @@ Choose:
 Plain Text
 1
 Lowest active connections
-Show more lines
+
 Example:
 Plain Text
 1
@@ -1424,12 +1424,12 @@ Edge2 = 20
  
 5
 Edge3 = 30
-Show more lines
+
 Pick:
 Plain Text
 1
 Edge2
-Show more lines
+
 ________________________________________
 Strategy 3: Consistent Hashing
 Critical for CDN cache efficiency.
@@ -1437,17 +1437,17 @@ Example:
 Plain Text
 1
 /logo.png
-Show more lines
+
 always routed to:
 Plain Text
 1
 Edge7
-Show more lines
+
 Benefits:
 Plain Text
 1
 Higher cache hit ratio
-Show more lines
+
 because object stays hot on same node.
 ________________________________________
 Complete Request Flow
@@ -1456,26 +1456,26 @@ User:
 Plain Text
 1
 Hyderabad
-Show more lines
+
 requests:
 Plain Text
 1
 cdn.myapp.com/logo.png
-Show more lines
+
 ________________________________________
 Step 1
 Browser asks DNS.
 Plain Text
 1
 cdn.myapp.com ?
-Show more lines
+
 ________________________________________
 Step 2
 DNS returns:
 Plain Text
 1
 104.16.1.1
-Show more lines
+
 Global Anycast IP.
 ________________________________________
 Step 3
@@ -1490,7 +1490,7 @@ Hyderabad
 ↓
 3
 Mumbai POP
-Show more lines
+
 ________________________________________
 Step 5
 Mumbai POP receives traffic.
@@ -1500,31 +1500,31 @@ PoP Load Balancer chooses:
 Plain Text
 1
 Edge Server #17
-Show more lines
+
 ________________________________________
 Step 7
 Edge checks cache.
 Plain Text
 1
 /logo.png ?
-Show more lines
+
 ________________________________________
 Cache Hit
 Plain Text
 1
 Return immediately
-Show more lines
+
 Latency:
 Plain Text
 1
 5 ms
-Show more lines
+
 ________________________________________
 Cache Miss
 Plain Text
 1
 Origin Fetch
-Show more lines
+
 then cache.
 ________________________________________
 7. Failure Scenarios
@@ -1534,7 +1534,7 @@ Scenario 1: Edge Server Crash
 Plain Text
 1
 Edge5 ❌
-Show more lines
+
 Load balancer removes it.
 Traffic shifts.
 ________________________________________
@@ -1542,7 +1542,7 @@ Scenario 2: Whole PoP Down
 Plain Text
 1
 Mumbai PoP ❌
-Show more lines
+
 What happens?
 Anycast announcement disappears.
 BGP recalculates.
@@ -1555,19 +1555,19 @@ Hyderabad
 ↓
 3
 Bangalore
-Show more lines
+
 or
 Plain Text
 1
 Singapore
-Show more lines
+
 ________________________________________
 Scenario 3: ISP Failure
 Suppose:
 Plain Text
 1
 Jio ↔ Mumbai link broken
-Show more lines
+
 BGP finds alternative route.
 Users still reach CDN.
 ________________________________________
@@ -1579,7 +1579,7 @@ Plain Text
 ↓
 3
 500K RPS
-Show more lines
+
 PoP overloaded.
 CDN may:
 Plain Text
@@ -1589,7 +1589,7 @@ Redirect Traffic
 Use Neighboring PoPs
 3
 Apply Rate Limits
-Show more lines
+
 ________________________________________
 Performance Analysis
 ________________________________________
@@ -1598,7 +1598,7 @@ Typically:
 Plain Text
 1
 5-50 ms
-Show more lines
+
 and cached by browser.
 ________________________________________
 Anycast Routing
@@ -1606,7 +1606,7 @@ Cost:
 Plain Text
 1
 Almost zero
-Show more lines
+
 handled by Internet routing.
 ________________________________________
 PoP Load Balancing
@@ -1614,20 +1614,20 @@ Round Robin:
 Plain Text
 1
 O(1)
-Show more lines
+
 ________________________________________
 Least Connections:
 Plain Text
 1
 O(log N)
-Show more lines
+
 using priority queues.
 ________________________________________
 Cache Lookup:
 Plain Text
 1
 O(1)
-Show more lines
+
 average HashMap lookup.
 ________________________________________
 Java Simulation
@@ -1641,12 +1641,12 @@ String id;
 int activeConnections;
 4
 }
-Show more lines
+
 Store:
 Java
 1
 PriorityQueue<EdgeServer>
-Show more lines
+
 for Least Connections routing.
 Request flow:
 Java
@@ -1660,12 +1660,12 @@ PriorityQueue.poll()
 ->
 5
 EdgeServer
-Show more lines
+
 Complexity:
 Plain Text
 1
 O(log N)
-Show more lines
+
 ________________________________________
 Staff Engineer Interview Questions
 Q1
@@ -1680,7 +1680,7 @@ Simpler global IP
 Automatic BGP rerouting
 4
 Lower routing complexity
-Show more lines
+
 ________________________________________
 Q2
 Does Anycast always choose nearest server?
@@ -1692,7 +1692,7 @@ No.
  
 3
 It chooses the best BGP path.
-Show more lines
+
 ________________________________________
 Q3
 Why can two users in the same city hit different CDN servers?
@@ -1704,7 +1704,7 @@ Different ISPs
 Different BGP paths
 3
 Different PoP routing decisions
-Show more lines
+
 ________________________________________
 Q4
 Why is Consistent Hashing useful inside a CDN?
@@ -1716,7 +1716,7 @@ Improves cache locality,
 reduces cache misses,
 3
 and minimizes object movement.
-Show more lines
+
 ________________________________________
 Homework
 Draw the complete path for:
@@ -1747,7 +1747,7 @@ Load Balancer
 ↓
 13
 Edge Cache
-Show more lines
+
 and explain what happens if:
 1.	Edge server crashes
 2.	Entire Mumbai PoP crashes
@@ -1761,7 +1761,7 @@ Many developers think:
 Plain Text
 1
 CDN = Store File
-Show more lines
+
 Wrong.
 The real question is:
 Plain Text
@@ -1773,7 +1773,7 @@ When should it refresh?
 How does it know content changed?
 4
 How can stale data be avoided?
-Show more lines
+
 These are solved by HTTP Caching.
 ________________________________________
 Learning Goals
@@ -1797,7 +1797,7 @@ Imagine:
 Plain Text
 1
 /logo.png
-Show more lines
+
 never changes.
 Without caching:
 Plain Text
@@ -1819,14 +1819,14 @@ CDN
 ↓
 9
 User
-Show more lines
+
 every request.
 ________________________________________
 Even worse:
 Plain Text
 1
 10 Million Requests
-Show more lines
+
 All reach origin.
 Huge waste.
 ________________________________________
@@ -1846,7 +1846,7 @@ How long?
  
 7
 How do we know file changed?
-Show more lines
+
 HTTP caching answers these.
 ________________________________________
 2. HTTP Cache Hierarchy
@@ -1867,67 +1867,67 @@ Origin Cache
 ↓
 7
 Database
-Show more lines
+
 ________________________________________
 Example:
 Plain Text
 1
 User requests logo.png
-Show more lines
+
 Browser checks:
 Plain Text
 1
 Do I already have it?
-Show more lines
+
 If yes:
 Plain Text
 1
 Serve immediately
-Show more lines
+
 No network call.
 ________________________________________
 If browser misses:
 Plain Text
 1
 Ask CDN
-Show more lines
+
 If CDN has it:
 Plain Text
 1
 Return from edge
-Show more lines
+
 ________________________________________
 If CDN misses:
 Plain Text
 1
 Ask Origin
-Show more lines
+
 ________________________________________
 Performance Comparison
 Browser Cache Hit
 Plain Text
 1
 0 ms
-Show more lines
+
 Network skipped.
 ________________________________________
 CDN Cache Hit
 Plain Text
 1
 5–20 ms
-Show more lines
+
 ________________________________________
 Origin Hit
 Plain Text
 1
 100–300 ms
-Show more lines
+
 ________________________________________
 Database Hit
 Plain Text
 1
 200–1000 ms
-Show more lines
+
 ________________________________________
 3. TTL (Time To Live)
 First fundamental concept.
@@ -1937,7 +1937,7 @@ Suppose CDN stores:
 Plain Text
 1
 logo.png
-Show more lines
+
 Forever.
 One day logo changes.
 Users still see old version.
@@ -1949,12 +1949,12 @@ TTL means:
 Plain Text
 1
 How long cache is valid.
-Show more lines
+
 Example:
 HTTP
 1
 Cache-Control: max-age=3600
-Show more lines
+
 Meaning:
 Plain Text
 1
@@ -1963,13 +1963,13 @@ Plain Text
 =
 3
 1 hour
-Show more lines
+
 ________________________________________
 After 1 hour:
 Plain Text
 1
 Cache expires
-Show more lines
+
 Need verification or re-fetch.
 ________________________________________
 Internal Data Structure
@@ -1987,18 +1987,18 @@ byte[] content;
 long expiryTime;
 6
 }
-Show more lines
+
 Request:
 Java
 1
 if(now < expiryTime)
-Show more lines
+
 Serve cache.
 Otherwise:
 Plain Text
 1
 Expired
-Show more lines
+
 Revalidate.
 ________________________________________
 4. Cache-Control Header
@@ -2009,7 +2009,7 @@ Before HTTP/1.1:
 Plain Text
 1
 Caching behavior inconsistent
-Show more lines
+
 Different browsers behaved differently.
 Needed standard rules.
 ________________________________________
@@ -2017,12 +2017,12 @@ Example
 HTTP
 1
 Cache-Control: max-age=3600
-Show more lines
+
 Meaning:
 Plain Text
 1
 Keep for 1 hour.
-Show more lines
+
 ________________________________________
 Common Directives
 ________________________________________
@@ -2030,12 +2030,12 @@ max-age
 HTTP
 1
 Cache-Control: max-age=3600
-Show more lines
+
 Fresh for:
 Plain Text
 1
 1 hour
-Show more lines
+
 ________________________________________
 no-cache
 Many developers misunderstand this.
@@ -2043,7 +2043,7 @@ It DOES NOT mean:
 Plain Text
 1
 Don't cache
-Show more lines
+
 It means:
 Plain Text
 1
@@ -2054,7 +2054,7 @@ Cache it
 BUT verify before reuse
 4
  
-Show more lines
+
 ________________________________________
 Request flow:
 Plain Text
@@ -2068,14 +2068,14 @@ Server Verification
 ↓
 5
 Reuse if unchanged
-Show more lines
+
 ________________________________________
 no-store
 Real meaning:
 Plain Text
 1
 Never store
-Show more lines
+
 Examples:
 Plain Text
 1
@@ -2084,28 +2084,28 @@ Banking
 Payments
 3
 OTP
-Show more lines
+
 ________________________________________
 private
 Only browser cache.
 HTTP
 1
 Cache-Control: private
-Show more lines
+
 CDN should not cache.
 ________________________________________
 Example:
 Plain Text
 1
 User profile page
-Show more lines
+
 ________________________________________
 public
 Anyone may cache.
 HTTP
 1
 Cache-Control: public
-Show more lines
+
 Perfect for:
 Plain Text
 1
@@ -2116,20 +2116,20 @@ JS
 Images
 4
 Videos
-Show more lines
+
 ________________________________________
 Example
 HTTP
 1
 Cache-Control: public,max-age=86400
-Show more lines
+
 Meaning:
 Plain Text
 1
 Cache publicly
 2
 For 24 hours
-Show more lines
+
 ________________________________________
 5. Fresh vs Stale Content
 Critical concept.
@@ -2139,19 +2139,19 @@ Current time:
 Plain Text
 1
 10:00 AM
-Show more lines
+
 Expiry:
 Plain Text
 1
 11:00 AM
 2
  
-Show more lines
+
 Request arrives:
 Plain Text
 1
 10:30 AM
-Show more lines
+
 Fresh.
 Serve immediately.
 ________________________________________
@@ -2160,7 +2160,7 @@ Current time:
 Plain Text
 1
 11:30 AM
-Show more lines
+
 Expired.
 Need revalidation.
 ________________________________________
@@ -2184,7 +2184,7 @@ Fresh
 ↓
 9
 Expired
-Show more lines
+
 ________________________________________
 6. ETag (Entity Tag)
 One of the most important concepts in web engineering.
@@ -2194,12 +2194,12 @@ Suppose:
 Plain Text
 1
 movie.jpg
-Show more lines
+
 is:
 Plain Text
 1
 20 MB
-Show more lines
+
 Browser has copy.
 After TTL expires:
 Should browser download entire 20 MB again?
@@ -2209,7 +2209,7 @@ Need way to ask:
 Plain Text
 1
 Has file changed?
-Show more lines
+
 without downloading file.
 ________________________________________
 Solution
@@ -2218,12 +2218,12 @@ Example:
 HTTP
 1
 ETag: "abc123"
-Show more lines
+
 Think of it as:
 Plain Text
 1
 File Version Hash
-Show more lines
+
 ________________________________________
 First Request
 Server:
@@ -2234,21 +2234,21 @@ HTTP
  
 3
 ETag: "abc123"
-Show more lines
+
 Browser stores:
 Plain Text
 1
 File
 2
 ETag
-Show more lines
+
 ________________________________________
 Second Request
 Browser sends:
 HTTP
 1
 If-None-Match: "abc123"
-Show more lines
+
 Meaning:
 Plain Text
 1
@@ -2257,14 +2257,14 @@ I already have this.
  
 3
 Has it changed?
-Show more lines
+
 ________________________________________
 Server Checks
 If unchanged:
 HTTP
 1
 304 Not Modified
-Show more lines
+
 No file sent.
 Only tiny response.
 ________________________________________
@@ -2274,7 +2274,7 @@ HTTP
 200 OK
 2
 ETag: "xyz999"
-Show more lines
+
 New file downloaded.
 ________________________________________
 Request Flow
@@ -2291,24 +2291,24 @@ If-None-Match: abc123
 Origin
 6
  
-Show more lines
+
 ________________________________________
 If same:
 Plain Text
 1
 304 Not Modified
-Show more lines
+
 ________________________________________
 Bandwidth:
 Plain Text
 1
 Few bytes
-Show more lines
+
 instead of:
 Plain Text
 1
 20 MB
-Show more lines
+
 Huge savings.
 ________________________________________
 7. Last-Modified
@@ -2322,7 +2322,7 @@ HTTP
 Last-Modified:
 2
 Mon, 01 Jan 2025 10:00:00 GMT
-Show more lines
+
 ________________________________________
 Browser later sends:
 HTTP
@@ -2330,20 +2330,20 @@ HTTP
 If-Modified-Since:
 2
 Mon, 01 Jan 2025 10:00:00 GMT
-Show more lines
+
 ________________________________________
 Server checks.
 Unchanged:
 HTTP
 1
 304 Not Modified
-Show more lines
+
 ________________________________________
 Changed:
 HTTP
 1
 200 OK
-Show more lines
+
 Send file.
 ________________________________________
 ETag vs Last-Modified
@@ -2361,7 +2361,7 @@ Without 304:
 Plain Text
 1
 20 MB Download
-Show more lines
+
 Every time.
 ________________________________________
 With 304:
@@ -2372,18 +2372,18 @@ Small Response
  
 3
 Use Existing File
-Show more lines
+
 ________________________________________
 Example:
 HTTP
 1
 HTTP/1.1 304 Not Modified
-Show more lines
+
 Browser:
 Plain Text
 1
 Use local copy
-Show more lines
+
 ________________________________________
 Benefits:
 Lower Bandwidth
@@ -2403,38 +2403,38 @@ Laptop
 Phone
 3
 Tablet
-Show more lines
+
 ________________________________________
 Advantages:
 Plain Text
 1
 Fastest possible
-Show more lines
+
 ________________________________________
 Scope:
 Plain Text
 1
 Single User
-Show more lines
+
 ________________________________________
 CDN Cache
 Stored at edge.
 Plain Text
 1
 Mumbai PoP
-Show more lines
+
 ________________________________________
 Advantages:
 Plain Text
 1
 Shared across millions of users
-Show more lines
+
 ________________________________________
 Scope:
 Plain Text
 1
 Many Users
-Show more lines
+
 ________________________________________
 Example
 Without CDN:
@@ -2445,7 +2445,7 @@ Plain Text
  
 3
 1000 Origin Requests
-Show more lines
+
 ________________________________________
 With CDN:
 Plain Text
@@ -2455,7 +2455,7 @@ Plain Text
  
 3
 999 Cache Hits
-Show more lines
+
 ________________________________________
 10. Performance Analysis
 Let's think like Staff Engineer.
@@ -2464,7 +2464,7 @@ Assume:
 Plain Text
 1
 1 Million Requests
-Show more lines
+
 ________________________________________
 Without Caching
 Plain Text
@@ -2472,7 +2472,7 @@ Plain Text
 Origin Requests:
 2
 1 Million
-Show more lines
+
 ________________________________________
 With 95% Cache Hit Ratio
 Plain Text
@@ -2482,12 +2482,12 @@ Plain Text
  
 3
 50,000 Misses
-Show more lines
+
 Origin load:
 Plain Text
 1
 95% reduction
-Show more lines
+
 ________________________________________
 Bandwidth Savings
 10 MB image
@@ -2495,7 +2495,7 @@ Without caching:
 Plain Text
 1
 10,000,000 MB
-Show more lines
+
 ________________________________________
 With caching:
 Massive reduction.
@@ -2509,20 +2509,20 @@ HashMap
  
 3
 Average O(1)
-Show more lines
+
 ________________________________________
 ETag comparison:
 Plain Text
 1
 O(1)
-Show more lines
+
 for stored fingerprint lookup.
 ________________________________________
 Memory:
 Plain Text
 1
 O(N)
-Show more lines
+
 N = cached objects.
 ________________________________________
 Failure Scenarios
@@ -2532,7 +2532,7 @@ TTL Too High
 Plain Text
 1
 7 Days
-Show more lines
+
 Content changes.
 Users see old data.
 ________________________________________
@@ -2540,21 +2540,21 @@ Result:
 Plain Text
 1
 Stale Content
-Show more lines
+
 ________________________________________
 Scenario 2
 TTL Too Low
 Plain Text
 1
 1 Second
-Show more lines
+
 Cache constantly expires.
 ________________________________________
 Result:
 Plain Text
 1
 Origin Overload
-Show more lines
+
 ________________________________________
 Scenario 3
 ETag Bug
@@ -2563,14 +2563,14 @@ Server thinks:
 Plain Text
 1
 Content unchanged
-Show more lines
+
 even when changed.
 ________________________________________
 Result:
 Plain Text
 1
 Users see stale content
-Show more lines
+
 ________________________________________
 Scenario 4
 Clock Differences
@@ -2606,7 +2606,7 @@ TimeUnit.HOURS
 .body(content);
 13
 }
-Show more lines
+
 Browser receives:
 HTTP
 1
@@ -2615,7 +2615,7 @@ Cache-Control: max-age=3600
  
 3
 ETag: abc123
-Show more lines
+
 ________________________________________
 Principal Engineer Discussion
 Q1
@@ -2623,7 +2623,7 @@ Why not set:
 Plain Text
 1
 max-age=365 days
-Show more lines
+
 for everything?
 Answer:
 Plain Text
@@ -2633,7 +2633,7 @@ Content changes.
  
 3
 Users get stale data.
-Show more lines
+
 ________________________________________
 Q2
 Why use ETag?
@@ -2641,7 +2641,7 @@ Answer:
 Plain Text
 1
 Avoid re-downloading unchanged files.
-Show more lines
+
 ________________________________________
 Q3
 When use no-store?
@@ -2653,7 +2653,7 @@ Banking
 Payment Authorization
 3
 Sensitive Data
-Show more lines
+
 ________________________________________
 Q4
 What's the difference between CDN cache and browser cache?
@@ -2669,14 +2669,14 @@ Per user.
 CDN:
 5
 Shared across users.
-Show more lines
+
 ________________________________________
 Hands-On Project
 Build:
 Plain Text
 1
 Origin Server
-Show more lines
+
 Returning:
 HTTP
 1
@@ -2689,13 +2689,13 @@ ETag
  
 5
 Last-Modified
-Show more lines
+
 ________________________________________
 Test using:
 Shell
 1
 curl -I http://localhost:8080/logo
-Show more lines
+
 Then:
 Shell
 1
@@ -2704,12 +2704,12 @@ curl \
 -H "If-None-Match: abc123" \
 3
 http://localhost:8080/logo
-Show more lines
+
 Observe:
 HTTP
 1
 304 Not Modified
-Show more lines
+
 ________________________________________
 Mental Model
 Think of HTTP caching as answering three questions:
@@ -2736,7 +2736,7 @@ Plain Text
  
 11
 (ETag / Last-Modified)
-Show more lines
+
 Master these three, and you've understood 80% of real-world CDN caching behavior.
 Lesson 4: Cache Invalidation
 Welcome to one of the most famous and difficult topics in distributed systems.
@@ -2768,7 +2768,7 @@ Plain Text
 Origin:
 2
 logo.png
-Show more lines
+
 CDN caches it.
 Plain Text
 1
@@ -2779,19 +2779,19 @@ Singapore Edge
 Tokyo Edge
 4
 London Edge
-Show more lines
+
 All store:
 Plain Text
 1
 logo.png
-Show more lines
+
 ________________________________________
 One day Marketing changes logo.
 New file:
 Plain Text
 1
 logo.png
-Show more lines
+
 But same URL.
 Now problem:
 Plain Text
@@ -2801,7 +2801,7 @@ Origin = New Logo
  
 3
 CDN = Old Logo
-Show more lines
+
 Users continue seeing old content.
 ________________________________________
 Question:
@@ -2821,17 +2821,17 @@ Plain Text
  
 5
 50 Million Cached Objects
-Show more lines
+
 Now invalidate:
 Plain Text
 1
 /logo.png
-Show more lines
+
 Need to inform:
 Plain Text
 1
 Every edge server
-Show more lines
+
 On a global scale.
 ________________________________________
 This becomes a distributed systems problem.
@@ -2848,7 +2848,7 @@ Origin Version = V1
 CDN Version = V1
 4
 ``
-Show more lines
+
 Everything matches.
 ________________________________________
 Stale Content
@@ -2860,26 +2860,26 @@ Origin Version = V2
  
 3
 CDN Version = V1
-Show more lines
+
 Mismatch.
 ________________________________________
 User sees:
 Plain Text
 1
 Old Data
-Show more lines
+
 This is called:
 Plain Text
 1
 Stale Content
-Show more lines
+
 ________________________________________
 Real Example
 You upload:
 Plain Text
 1
 profile-photo.jpg
-Show more lines
+
 Then upload new photo.
 But users still see old image.
 Why?
@@ -2887,7 +2887,7 @@ CDN still has:
 Plain Text
 1
 Old Cache Entry
-Show more lines
+
 ________________________________________
 3. Hard Purge
 The simplest solution.
@@ -2902,27 +2902,27 @@ cache[
 "/logo.png"
 3
 ]
-Show more lines
+
 Exists.
 ________________________________________
 Purge request:
 Plain Text
 1
 PURGE /logo.png
-Show more lines
+
 ________________________________________
 After:
 Plain Text
 1
 cache.remove("/logo.png")
-Show more lines
+
 Object gone.
 ________________________________________
 Next request:
 Plain Text
 1
 Cache Miss
-Show more lines
+
 Fetch from origin.
 ________________________________________
 Request Flow
@@ -2945,7 +2945,7 @@ Origin
 ↓
 9
 Fresh Content
-Show more lines
+
 ________________________________________
 Advantages
 Very accurate.
@@ -2957,7 +2957,7 @@ Imagine:
 Plain Text
 1
 10 Million Users
-Show more lines
+
 immediately after purge.
 Every edge receives miss.
 Origin gets flooded.
@@ -2966,7 +2966,7 @@ This creates:
 Plain Text
 1
 Cache Thundering Herd
-Show more lines
+
 which we'll study more in Lesson 6.
 ________________________________________
 4. Soft Purge
@@ -2976,13 +2976,13 @@ Instead:
 Plain Text
 1
 Mark Object Stale
-Show more lines
+
 ________________________________________
 Before:
 Plain Text
 1
 /logo.png
-Show more lines
+
 valid.
 ________________________________________
 After purge:
@@ -2991,13 +2991,13 @@ Plain Text
 /logo.png
 2
 status = STALE
-Show more lines
+
 ________________________________________
 Next request:
 Plain Text
 1
 Serve stale copy
-Show more lines
+
 while asynchronously fetching fresh version.
 ________________________________________
 Visual:
@@ -3016,7 +3016,7 @@ Serve Stale
 ↓
 7
 Background Refresh
-Show more lines
+
 ________________________________________
 Benefits:
 Plain Text
@@ -3024,7 +3024,7 @@ Plain Text
 Lower latency
 2
 Origin protection
-Show more lines
+
 ________________________________________
 Used heavily by:
 Plain Text
@@ -3034,30 +3034,30 @@ Fastly
 Cloudflare
 3
 Akamai
-Show more lines
+
 ________________________________________
 Hard Purge vs Soft Purge
 Hard Purge
 Plain Text
 1
 Delete immediately
-Show more lines
+
 Result:
 Plain Text
 1
 Cache Miss
-Show more lines
+
 ________________________________________
 Soft Purge
 Plain Text
 1
 Mark stale
-Show more lines
+
 Result:
 Plain Text
 1
 Serve existing content temporarily
-Show more lines
+
 while refreshing.
 ________________________________________
 5. TTL-Based Invalidation
@@ -3071,18 +3071,18 @@ HTTP
 Cache-Control:
 2
 max-age=3600
-Show more lines
+
 ________________________________________
 Meaning:
 Plain Text
 1
 1 hour
-Show more lines
+
 After:
 Plain Text
 1
 1 hour
-Show more lines
+
 object expires.
 ________________________________________
 Flow:
@@ -3097,14 +3097,14 @@ Wait TTL
 ↓
 5
 Cache Refresh
-Show more lines
+
 ________________________________________
 Problem:
 Users may see stale content for:
 Plain Text
 1
 1 hour
-Show more lines
+
 ________________________________________
 Example
 News website.
@@ -3115,7 +3115,7 @@ Plain Text
 24 hours
 2
  
-Show more lines
+
 Users continue seeing wrong version all day.
 Bad.
 ________________________________________
@@ -3129,24 +3129,24 @@ Instead of:
 Plain Text
 1
 /logo.png
-Show more lines
+
 Use:
 Plain Text
 1
 /logo-v1.png
-Show more lines
+
 ________________________________________
 When updated:
 Plain Text
 1
 /logo-v2.png
-Show more lines
+
 ________________________________________
 CDN sees:
 Plain Text
 1
 Completely New URL
-Show more lines
+
 No invalidation required.
 ________________________________________
 Flow
@@ -3154,14 +3154,14 @@ Version 1:
 Plain Text
 1
 /logo-v1.png
-Show more lines
+
 cached forever.
 ________________________________________
 Version 2:
 Plain Text
 1
 /logo-v2.png
-Show more lines
+
 new object.
 Cache miss occurs once.
 Then cached.
@@ -3177,7 +3177,7 @@ React build:
 Plain Text
 1
 app.47a2f1.js
-Show more lines
+
 ________________________________________
 Next build:
 Plain Text
@@ -3185,25 +3185,25 @@ Plain Text
 app.93bc71.js
 2
  
-Show more lines
+
 ________________________________________
 Angular:
 Plain Text
 1
 main.a2c1.js
-Show more lines
+
 ________________________________________
 Next deployment:
 Plain Text
 1
 main.f5d2.js
-Show more lines
+
 ________________________________________
 This technique is called:
 Plain Text
 1
 Cache Busting
-Show more lines
+
 ________________________________________
 7. Query Parameter Versioning
 Alternative approach.
@@ -3212,33 +3212,33 @@ Instead of:
 Plain Text
 1
 /logo.png
-Show more lines
+
 Use:
 Plain Text
 1
 /logo.png?v=1
 2
  
-Show more lines
+
 ________________________________________
 Update:
 Plain Text
 1
 /logo.png?v=2
-Show more lines
+
 ________________________________________
 CDN sees:
 Plain Text
 1
 Different Cache Key
-Show more lines
+
 New object.
 ________________________________________
 Common in:
 Plain Text
 1
 Legacy Applications
-Show more lines
+
 ________________________________________
 Less preferred than filename versioning.
 ________________________________________
@@ -3257,12 +3257,12 @@ Plain Text
  
 5
 10000 Edge Machines
-Show more lines
+
 Need to purge:
 Plain Text
 1
 /logo.png
-Show more lines
+
 ________________________________________
 How?
 ________________________________________
@@ -3273,14 +3273,14 @@ Plain Text
 Control Plane
 2
  
-Show more lines
+
 responsible for metadata.
 ________________________________________
 Purge request:
 Plain Text
 1
 Invalidate logo.png
-Show more lines
+
 ________________________________________
 Control plane sends message:
 Plain Text
@@ -3294,7 +3294,7 @@ Edge #3
 ...
 5
 Edge #10000
-Show more lines
+
 ________________________________________
 All edges update local cache.
 ________________________________________
@@ -3312,13 +3312,13 @@ Control Plane
 PoP1 PoP2 PoP3
 6
  
-Show more lines
+
 ________________________________________
 This resembles:
 Plain Text
 1
 Distributed Database Replication
-Show more lines
+
 ________________________________________
 9. Purge Propagation Delays
 Important interview topic.
@@ -3327,7 +3327,7 @@ People assume:
 Plain Text
 1
 Purge = Instant
-Show more lines
+
 Wrong.
 ________________________________________
 Reality:
@@ -3342,7 +3342,7 @@ Network
 ↓
 5
 Thousands of Edges
-Show more lines
+
 takes time.
 ________________________________________
 For few seconds:
@@ -3353,13 +3353,13 @@ Some edges = old content
  
 3
 Some edges = new content
-Show more lines
+
 ________________________________________
 This is called:
 Plain Text
 1
 Eventual Consistency
-Show more lines
+
 ________________________________________
 Exactly like distributed databases.
 ________________________________________
@@ -3371,7 +3371,7 @@ Advantages:
 Plain Text
 1
 Always correct
-Show more lines
+
 ________________________________________
 Disadvantages:
 Plain Text
@@ -3381,7 +3381,7 @@ Expensive
 Slow
 3
 Large coordination cost
-Show more lines
+
 ________________________________________
 Eventual Consistency
 Most CDNs use.
@@ -3390,7 +3390,7 @@ Meaning:
 Plain Text
 1
 Eventually all nodes agree.
-Show more lines
+
 Temporary mismatch allowed.
 ________________________________________
 Benefits:
@@ -3401,7 +3401,7 @@ Fast
 Scalable
 3
 Reliable
-Show more lines
+
 ________________________________________
 10. Internal Data Structures
 Cache entry often contains:
@@ -3430,18 +3430,18 @@ boolean stale;
 String version;
 12
 }
-Show more lines
+
 ________________________________________
 Purge operation:
 Java
 1
 cacheEntry.stale = true;
-Show more lines
+
 or
 Java
 1
 cache.remove(key);
-Show more lines
+
 ________________________________________
 11. Failure Scenarios
 Now think like a Principal Engineer.
@@ -3455,12 +3455,12 @@ Control Plane
 ↓
 3
 Some Edge Misses Update
-Show more lines
+
 Result:
 Plain Text
 1
 Old Content
-Show more lines
+
 still served.
 ________________________________________
 Solution:
@@ -3471,7 +3471,7 @@ Retry Mechanisms
 Version Tracking
 3
 Acknowledgements
-Show more lines
+
 ________________________________________
 Scenario 2
 Massive Global Purge
@@ -3479,28 +3479,28 @@ Company purges:
 Plain Text
 1
 /*
-Show more lines
+
 Everything.
 ________________________________________
 Result:
 Plain Text
 1
 100% Cache Miss Rate
-Show more lines
+
 Origin overload.
 ________________________________________
 Known as:
 Plain Text
 1
 Cache Cold Start
-Show more lines
+
 ________________________________________
 Scenario 3
 Very Long TTL
 Plain Text
 1
 30 Days
-Show more lines
+
 Business updates content.
 Users see stale data for weeks.
 ________________________________________
@@ -3511,7 +3511,7 @@ Plain Text
 5 Seconds
 2
  
-Show more lines
+
 Cache useless.
 Origin constantly hit.
 ________________________________________
@@ -3521,7 +3521,7 @@ Developer updates content but forgets:
 Plain Text
 1
 v1 -> v2
-Show more lines
+
 CDN continues serving old file.
 Very common production bug.
 ________________________________________
@@ -3538,17 +3538,17 @@ String content;
 boolean stale;
 5
 }
-Show more lines
+
 Soft purge:
 Java
 1
 cache.get(key).setStale(true);
-Show more lines
+
 Hard purge:
 Java
 1
 cache.remove(key);
-Show more lines
+
 ________________________________________
 Versioned URL:
 Java
@@ -3556,7 +3556,7 @@ Java
 /logo-v1.png
 2
 /logo-v2.png
-Show more lines
+
 Each becomes separate cache key.
 ________________________________________
 13. Principal Engineer Discussion
@@ -3598,7 +3598,7 @@ Images
 JS
 3
 CSS
-Show more lines
+
 Use:
 Plain Text
 1
@@ -3607,7 +3607,7 @@ Long TTL
 +
 3
 Versioned URLs
-Show more lines
+
 ________________________________________
 For:
 Plain Text
@@ -3617,7 +3617,7 @@ News
 Product prices
 3
 Dynamic content
-Show more lines
+
 Use:
 Plain Text
 1
@@ -3626,26 +3626,26 @@ Short TTL
 +
 3
 Selective Purges
-Show more lines
+
 ________________________________________
 Mental Model
 Think of cache invalidation as:
 Plain Text
 1
 Database Replication
-Show more lines
+
 except:
 Plain Text
 1
 Database Nodes
 2
  
-Show more lines
+
 become:
 Plain Text
 1
 CDN Edge Servers
-Show more lines
+
 The moment content changes, the challenge becomes:
 Plain Text
 1
@@ -3654,7 +3654,7 @@ How do thousands of machines
 forget the old version
 3
 without breaking performance?
-Show more lines
+
 That's the essence of cache invalidation.
 
 Lesson 5: Cache Keys
@@ -3662,12 +3662,12 @@ This lesson separates:
 Plain Text
 1
 Intermediate Engineers
-Show more lines
+
 from
 Plain Text
 1
 Senior/Staff Engineers
-Show more lines
+
 Most developers think:
 Plain Text
 1
@@ -3676,19 +3676,19 @@ URL
 =
 3
 Cache Key
-Show more lines
+
 That's only partially true.
 In reality, a CDN's entire performance depends on how cache keys are constructed.
 A badly designed cache key can reduce:
 Plain Text
 1
 95% Hit Ratio
-Show more lines
+
 to
 Plain Text
 1
 20% Hit Ratio
-Show more lines
+
 without changing a single line of business logic.
 ________________________________________
 Learning Goals
@@ -3712,7 +3712,7 @@ Imagine two users request:
 HTTP
 1
 GET /product/100
-Show more lines
+
 CDN stores:
 Plain Text
 1
@@ -3725,12 +3725,12 @@ Key:
 Value:
 5
 HTML Response
-Show more lines
+
 Next request:
 HTTP
 1
 GET /product/100
-Show more lines
+
 CDN returns cached copy.
 Simple.
 ________________________________________
@@ -3738,7 +3738,7 @@ Now a new request appears:
 HTTP
 1
 GET /product/100?utm=google
-Show more lines
+
 Question:
 Should CDN use existing cache?
 Or create new cache entry?
@@ -3749,7 +3749,7 @@ Think of cache like a HashMap.
 Java
 1
 Map<Key, Response>
-Show more lines
+
 Example:
 Java
 1
@@ -3760,19 +3760,19 @@ cache.put(
 imageData
 4
 );
-Show more lines
+
 The lookup value:
 Plain Text
 1
 /logo.png
-Show more lines
+
 is the cache key.
 ________________________________________
 Internally:
 Java
 1
 hash(cacheKey)
-Show more lines
+
 is used to find the cached object.
 ________________________________________
 CDN Mental Model
@@ -3791,12 +3791,12 @@ Lookup Cache
 ↓
 7
 Hit or Miss
-Show more lines
+
 The entire caching decision depends on:
 Plain Text
 1
 Cache Key Construction
-Show more lines
+
 ________________________________________
 2. Simplest Cache Key
 Most basic version:
@@ -3805,28 +3805,28 @@ Plain Text
 Cache Key =
 2
 URL Path
-Show more lines
+
 Example:
 HTTP
 1
 /logo.png
-Show more lines
+
 key:
 Plain Text
 1
 /logo.png
-Show more lines
+
 ________________________________________
 Request:
 HTTP
 1
 /logo.png
-Show more lines
+
 Again:
 HTTP
 1
 /logo.png
-Show more lines
+
 Same key.
 Cache hit.
 ________________________________________
@@ -3839,12 +3839,12 @@ Request 1:
 HTTP
 1
 /product?id=100
-Show more lines
+
 Request 2:
 HTTP
 1
 /product?id=101
-Show more lines
+
 These cannot share cache.
 Different products.
 ________________________________________
@@ -3852,12 +3852,12 @@ Cache keys become:
 Plain Text
 1
 /product?id=100
-Show more lines
+
 and
 Plain Text
 1
 /product?id=101
-Show more lines
+
 Two entries.
 ________________________________________
 Perfectly valid.
@@ -3867,12 +3867,12 @@ Now consider:
 HTTP
 1
 /product?id=100&utm=google
-Show more lines
+
 and
 HTTP
 1
 /product?id=100&utm=facebook
-Show more lines
+
 Product is identical.
 Only tracking changes.
 ________________________________________
@@ -3880,31 +3880,31 @@ Naive cache key:
 Plain Text
 1
 /product?id=100&utm=google
-Show more lines
+
 and
 Plain Text
 1
 /product?id=100&utm=facebook
-Show more lines
+
 creates:
 Plain Text
 1
 Two Cache Entries
-Show more lines
+
 for same content.
 ________________________________________
 This causes:
 Plain Text
 1
 Cache Fragmentation
-Show more lines
+
 ________________________________________
 Cache Fragmentation
 One page becomes:
 Plain Text
 1
 100 cache entries
-Show more lines
+
 because of:
 Plain Text
 1
@@ -3913,7 +3913,7 @@ utm_source
 utm_campaign
 3
 utm_medium
-Show more lines
+
 etc.
 ________________________________________
 Hit ratio drops heavily.
@@ -3924,13 +3924,13 @@ Instead use:
 Plain Text
 1
 /product?id=100
-Show more lines
+
 as cache key.
 Ignore:
 Plain Text
 1
 utm_*
-Show more lines
+
 parameters.
 ________________________________________
 Cloud CDNs commonly support:
@@ -3943,7 +3943,7 @@ Exclude Parameters
 Whitelist
 4
 Blacklist
-Show more lines
+
 rules.
 ________________________________________
 Example
@@ -3951,12 +3951,12 @@ Incoming Request:
 HTTP
 1
 /product?id=100&utm=google
-Show more lines
+
 Normalized key:
 Plain Text
 1
 /product?id=100
-Show more lines
+
 Higher cache hit ratio.
 ________________________________________
 4. Cache Key Normalization
@@ -3967,27 +3967,27 @@ These URLs are equivalent.
 HTTP
 1
 /product?id=100
-Show more lines
+
 HTTP
 1
 /product?id=100&
-Show more lines
+
 HTTP
 1
 /product?id=100&utm=x
-Show more lines
+
 ________________________________________
 Without normalization:
 Plain Text
 1
 3 Cache Entries
-Show more lines
+
 ________________________________________
 With normalization:
 Plain Text
 1
 1 Cache Entry
-Show more lines
+
 ________________________________________
 Goal:
 Plain Text
@@ -3997,7 +3997,7 @@ Many Requests
 →
 3
 Few Cache Keys
-Show more lines
+
 while preserving correctness.
 ________________________________________
 5. Cookies
@@ -4009,14 +4009,14 @@ HTTP
 Cookie:
 2
 SESSION=abc123
-Show more lines
+
 Another request:
 HTTP
 1
 Cookie:
 2
 SESSION=xyz999
-Show more lines
+
 ________________________________________
 Question:
 Should these share cache?
@@ -4026,7 +4026,7 @@ Static Image
 HTTP
 1
 /logo.png
-Show more lines
+
 Cookie irrelevant.
 Can ignore cookie.
 ________________________________________
@@ -4034,7 +4034,7 @@ Cache key:
 Plain Text
 1
 /logo.png
-Show more lines
+
 ________________________________________
 Huge cache hit ratio.
 ________________________________________
@@ -4042,26 +4042,26 @@ User Dashboard
 HTTP
 1
 /dashboard
-Show more lines
+
 Response depends on user.
 Cookie determines:
 Plain Text
 1
 Current User
-Show more lines
+
 ________________________________________
 Now cache entries differ.
 User A:
 Plain Text
 1
 /dashboard
-Show more lines
+
 contains A's data.
 User B:
 Plain Text
 1
 /dashboard
-Show more lines
+
 contains B's data.
 ________________________________________
 Sharing cache would leak data.
@@ -4073,12 +4073,12 @@ Plain Text
 Cookie becomes part of cache key.
 2
  
-Show more lines
+
 or
 Plain Text
 1
 Do not cache.
-Show more lines
+
 ________________________________________
 Real Production Rule
 Static content:
@@ -4087,13 +4087,13 @@ Plain Text
 Ignore Cookies
 2
  
-Show more lines
+
 ________________________________________
 Personalized pages:
 Plain Text
 1
 Respect Cookies
-Show more lines
+
 ________________________________________
 6. Headers in Cache Keys
 Sometimes response depends on headers.
@@ -4101,37 +4101,37 @@ Example:
 HTTP
 1
 Accept-Language
-Show more lines
+
 ________________________________________
 User A:
 HTTP
 1
 Accept-Language: en
-Show more lines
+
 ________________________________________
 User B:
 HTTP
 1
 Accept-Language: hi
-Show more lines
+
 ________________________________________
 Same URL:
 HTTP
 1
 /home
-Show more lines
+
 Different content.
 ________________________________________
 English User
 Plain Text
 1
 Welcome
-Show more lines
+
 Hindi User
 Plain Text
 1
 स्वागत है
-Show more lines
+
 ________________________________________
 Cache keys must differ.
 ________________________________________
@@ -4139,11 +4139,11 @@ Example:
 Plain Text
 1
 /home:en
-Show more lines
+
 Plain Text
 1
 /home:hi
-Show more lines
+
 ________________________________________
 7. The Vary Header
 HTTP introduced a mechanism for this.
@@ -4152,18 +4152,18 @@ Example:
 HTTP
 1
 Vary: Accept-Language
-Show more lines
+
 Meaning:
 Plain Text
 1
 Response varies by language.
-Show more lines
+
 ________________________________________
 CDN now includes:
 HTTP
 1
 Accept-Language
-Show more lines
+
 when constructing cache keys.
 ________________________________________
 Visual:
@@ -4178,7 +4178,7 @@ Language Header
 =
 5
 Cache Key
-Show more lines
+
 ________________________________________
 Example
 Request:
@@ -4187,12 +4187,12 @@ HTTP
 GET /home
 2
 Accept-Language: en
-Show more lines
+
 Key:
 Plain Text
 1
 /home|en
-Show more lines
+
 ________________________________________
 Request:
 HTTP
@@ -4200,12 +4200,12 @@ HTTP
 GET /home
 2
 Accept-Language: hi
-Show more lines
+
 Key:
 Plain Text
 1
 /home|hi
-Show more lines
+
 ________________________________________
 Separate cache entries.
 Correct behavior.
@@ -4217,12 +4217,12 @@ Very common.
 HTTP
 1
 gzip
-Show more lines
+
 vs
 HTTP
 1
 br
-Show more lines
+
 (Brotli)
 ________________________________________
 Responses differ.
@@ -4234,12 +4234,12 @@ ________________________________________
 HTTP
 1
 Mobile Chrome
-Show more lines
+
 vs
 HTTP
 1
 Desktop Chrome
-Show more lines
+
 ________________________________________
 Can become cache variant.
 ________________________________________
@@ -4249,7 +4249,7 @@ Example:
 HTTP
 1
 /home
-Show more lines
+
 Variants:
 Plain Text
 1
@@ -4258,21 +4258,21 @@ English
 Hindi
 3
 Japanese
-Show more lines
+
 and
 Plain Text
 1
 Desktop
 2
 Mobile
-Show more lines
+
 and
 Plain Text
 1
 Gzip
 2
 Brotli
-Show more lines
+
 ________________________________________
 Actual cache looks like:
 Plain Text
@@ -4282,13 +4282,13 @@ Plain Text
 /home|hi|mobile|gzip
 3
 /home|jp|desktop|br
-Show more lines
+
 ________________________________________
 This is called:
 Plain Text
 1
 Cache Variants
-Show more lines
+
 ________________________________________
 9. Personalized Content
 CDNs struggle here.
@@ -4297,7 +4297,7 @@ Example:
 HTTP
 1
 /profile
-Show more lines
+
 Output depends on:
 Plain Text
 1
@@ -4308,33 +4308,33 @@ Orders
 Balance
 4
 Preferences
-Show more lines
+
 Every user sees different response.
 ________________________________________
 Cache key:
 Plain Text
 1
 UserID
-Show more lines
+
 would create millions of entries.
 ________________________________________
 Result:
 Plain Text
 1
 Near-zero cache hit ratio
-Show more lines
+
 ________________________________________
 Most CDNs choose:
 Plain Text
 1
 Don't Cache
-Show more lines
+
 ________________________________________
 or
 Plain Text
 1
 Cache only public fragments
-Show more lines
+
 ________________________________________
 10. Internal CDN Data Structure
 Realistically:
@@ -4356,25 +4356,25 @@ String encoding;
 8
  
 9
-Show more lines
+
 ________________________________________
 Cache:
 Java
 1
 Map<CacheKey, CachedResponse>
-Show more lines
+
 ________________________________________
 Lookup:
 Java
 1
 cache.get(key)
-Show more lines
+
 ________________________________________
 Complexity:
 Plain Text
 1
 Average O(1)
-Show more lines
+
 Hash lookup.
 ________________________________________
 11. Performance Impact
@@ -4382,31 +4382,31 @@ Imagine:
 Plain Text
 1
 1 Million Requests
-Show more lines
+
 ________________________________________
 Without normalization:
 Plain Text
 1
 200,000 Cache Keys
-Show more lines
+
 Hit Ratio:
 Plain Text
 1
 40%
-Show more lines
+
 ________________________________________
 With normalization:
 Plain Text
 1
 20,000 Cache Keys
-Show more lines
+
 Hit Ratio:
 Plain Text
 1
 95%
 2
  
-Show more lines
+
 ________________________________________
 Origin traffic falls dramatically.
 ________________________________________
@@ -4420,14 +4420,14 @@ Static image:
 HTTP
 1
 /logo.png
-Show more lines
+
 Every user has unique session cookie.
 ________________________________________
 Result:
 Plain Text
 1
 Millions of cache entries
-Show more lines
+
 for same image.
 ________________________________________
 Cache hit ratio collapses.
@@ -4438,12 +4438,12 @@ User A:
 Plain Text
 1
 Account Balance = ₹5000
-Show more lines
+
 User B:
 Plain Text
 1
 Account Balance = ₹100
-Show more lines
+
 ________________________________________
 Same cache entry shared.
 Security disaster.
@@ -4471,7 +4471,7 @@ Device
 OS
 6
 Encoding
-Show more lines
+
 combined.
 ________________________________________
 Variants explode.
@@ -4479,7 +4479,7 @@ Known as:
 Plain Text
 1
 Cache Key Explosion
-Show more lines
+
 ________________________________________
 Hit ratio decreases.
 ________________________________________
@@ -4494,7 +4494,7 @@ String url,
 String language,
 4
 String encoding) {}
-Show more lines
+
 Cache:
 Java
 1
@@ -4505,17 +4505,17 @@ CacheKey,
 String
 4
 >
-Show more lines
+
 Requests:
 Java
 1
 /home + en
-Show more lines
+
 and
 Java
 1
 /home + hi
-Show more lines
+
 produce different cache entries.
 ________________________________________
 Observe:
@@ -4526,7 +4526,7 @@ Variants
 Hit Ratio
 3
 Memory Usage
-Show more lines
+
 ________________________________________
 Principal Engineer Interview Discussion
 Q1
@@ -4567,14 +4567,14 @@ Wrong Cache Key
 =
 7
 Wrong Content Served
-Show more lines
+
 Everything in CDN caching ultimately comes down to one question:
 Plain Text
 1
 What parts of the request
 2
 actually influence the response?
-Show more lines
+
 Only those should become part of the cache key.
 
 Lesson 6: Cache Stampede (Thundering Herd Problem)
@@ -4591,7 +4591,7 @@ Go to Origin
 ↓
 5
 Store Response
-Show more lines
+
 Looks harmless.
 But at scale, one cache miss can destroy an entire platform.
 ________________________________________
@@ -4614,29 +4614,29 @@ Imagine a popular product page:
 Plain Text
 1
 /product/iphone-17
-Show more lines
+
 Traffic:
 Plain Text
 1
 100,000 Requests/Minute
-Show more lines
+
 CDN cache contains:
 Plain Text
 1
 /product/iphone-17
-Show more lines
+
 Everything works.
 ________________________________________
 Then TTL expires.
 Plain Text
 1
 Cache Entry Removed
-Show more lines
+
 Now imagine:
 Plain Text
 1
 50,000 Requests
-Show more lines
+
 arrive almost simultaneously.
 All requests perform:
 Plain Text
@@ -4646,14 +4646,14 @@ Cache Lookup
 ↓
 3
 MISS
-Show more lines
+
 ________________________________________
 What happens next?
 Every request tries:
 Plain Text
 1
 Origin Fetch
-Show more lines
+
 Result:
 Plain Text
 1
@@ -4662,7 +4662,7 @@ Plain Text
 ↓
 3
 Origin Server
-Show more lines
+
 Origin gets hammered.
 ________________________________________
 This is called:
@@ -4677,26 +4677,26 @@ User
 ↓
 3
 Database
-Show more lines
+
 Every request hit DB.
 Problem:
 Plain Text
 1
 Database overloaded
-Show more lines
+
 Caching solved this.
 However engineers discovered:
 Plain Text
 1
 Cache Expiry
-Show more lines
+
 creates a new issue:
 Plain Text
 1
 Millions of requests suddenly
 2
 bypass cache simultaneously.
-Show more lines
+
 The cache becomes the cause of failure.
 ________________________________________
 3. Timeline of a Stampede
@@ -4716,7 +4716,7 @@ Cache Hit
 Cache Hit
 6
 Cache Hit
-Show more lines
+
 Origin healthy.
 ________________________________________
 At Expiry
@@ -4727,7 +4727,7 @@ Plain Text
  
 3
 TTL Expired
-Show more lines
+
 Cache entry invalid.
 ________________________________________
 Massive Traffic Arrives
@@ -4744,7 +4744,7 @@ Request 4 → MISS
 ...
 6
 Request 50000 → MISS
-Show more lines
+
 ________________________________________
 Everyone Hits Origin
 Plain Text
@@ -4754,7 +4754,7 @@ Origin
 │
 3
 ├── 50000 concurrent requests
-Show more lines
+
 ________________________________________
 Result:
 Plain Text
@@ -4766,7 +4766,7 @@ Memory Exhausted
 Connection Pool Full
 4
 Database
-Show more lines
+
 System collapses.
 ________________________________________
 4. Real World Example
@@ -4780,22 +4780,22 @@ Product Page
 Traffic:
 4
 100,000 RPM
-Show more lines
+
 Origin can handle:
 Plain Text
 1
 1,000 RPS
-Show more lines
+
 Normally:
 Plain Text
 1
 99% Cache Hit Ratio
-Show more lines
+
 Origin receives:
 Plain Text
 1
 10 RPS
-Show more lines
+
 Easy.
 ________________________________________
 Cache expires.
@@ -4803,20 +4803,20 @@ Suddenly:
 Plain Text
 1
 5,000 RPS
-Show more lines
+
 arrive.
 Origin capacity:
 Plain Text
 1
 1,000 RPS
-Show more lines
+
 Needed:
 Plain Text
 1
 5,000 RPS
 2
 ``
-Show more lines
+
 Result:
 Plain Text
 1
@@ -4825,7 +4825,7 @@ Timeouts
 503 Errors
 3
 Crashes
-Show more lines
+
 ________________________________________
 5. Request Coalescing
 The first major solution.
@@ -4833,19 +4833,19 @@ Also called:
 Plain Text
 1
 Request Collapsing
-Show more lines
+
 or
 Plain Text
 1
 Single Flight
-Show more lines
+
 ________________________________________
 Idea
 If multiple requests ask for the same object:
 Plain Text
 1
 /product/iphone-17
-Show more lines
+
 only ONE request should hit origin.
 ________________________________________
 Instead of:
@@ -4858,7 +4858,7 @@ R2 → Origin
 R3 → Origin
 4
 R4 → Origin
-Show more lines
+
 Use:
 Plain Text
 1
@@ -4873,13 +4873,13 @@ R3 → Wait
 R4 → Wait
 6
 R5 → Wait
-Show more lines
+
 ________________________________________
 When response returns:
 Plain Text
 1
 Cache Updated
-Show more lines
+
 everyone receives same result.
 ________________________________________
 Visual:
@@ -4904,7 +4904,7 @@ Origin
 ▼
 10
 Cache Fill
-Show more lines
+
 ________________________________________
 Origin load:
 Plain Text
@@ -4914,7 +4914,7 @@ Plain Text
 ↓
 3
 1
-Show more lines
+
 Huge improvement.
 ________________________________________
 Internal Data Structure
@@ -4924,12 +4924,12 @@ Java
 ConcurrentHashMap<String,
 2
 CompletableFuture<Response>>
-Show more lines
+
 Each key tracks:
 Plain Text
 1
 Request Already In Progress?
-Show more lines
+
 ________________________________________
 Single Flight Algorithm
 Popularized by:
@@ -4938,7 +4938,7 @@ Plain Text
 Google
 2
 Go Language Runtime
-Show more lines
+
 ________________________________________
 Pseudo Flow:
 Plain Text
@@ -4964,7 +4964,7 @@ NO
 ↓
 11
 Fetch Origin
-Show more lines
+
 ________________________________________
 Example:
 Plain Text
@@ -4978,13 +4978,13 @@ Request B → Wait
 Request C → Wait
 5
 Request D → Wait
-Show more lines
+
 ________________________________________
 Response arrives:
 Plain Text
 1
 Wake Everyone
-Show more lines
+
 ________________________________________
 Complexity
 Without single flight:
@@ -4995,7 +4995,7 @@ N requests
 =
 3
 N origin calls
-Show more lines
+
 ________________________________________
 With single flight:
 Plain Text
@@ -5005,7 +5005,7 @@ N requests
 =
 3
 1 origin call
-Show more lines
+
 ________________________________________
 Massive win.
 ________________________________________
@@ -5024,17 +5024,17 @@ Visual:
 Plain Text
 1
 Cache Expired
-Show more lines
+
 Instead of:
 Plain Text
 1
 Wait for Origin
-Show more lines
+
 Serve:
 Plain Text
 1
 Old Version
-Show more lines
+
 Immediately.
 ________________________________________
 Meanwhile:
@@ -5049,13 +5049,13 @@ Origin
 ↓
 5
 Update Cache
-Show more lines
+
 ________________________________________
 User experience:
 Plain Text
 1
 Fast
-Show more lines
+
 Origin protected.
 ________________________________________
 Example Timeline
@@ -5063,14 +5063,14 @@ Cache:
 Plain Text
 1
 Version V1
-Show more lines
+
 TTL expired.
 ________________________________________
 User arrives:
 Plain Text
 1
 GET /homepage
-Show more lines
+
 ________________________________________
 CDN:
 Plain Text
@@ -5078,37 +5078,37 @@ Plain Text
 Serve V1
 2
  
-Show more lines
+
 Immediately.
 ________________________________________
 Background:
 Plain Text
 1
 Fetch V2
-Show more lines
+
 Store:
 Plain Text
 1
 V2
-Show more lines
+
 ________________________________________
 Future requests:
 Plain Text
 1
 Receive V2
-Show more lines
+
 ________________________________________
 Why Companies Love SWR
 Because users generally prefer:
 Plain Text
 1
 100ms old data
-Show more lines
+
 instead of:
 Plain Text
 1
 5 second timeout
-Show more lines
+
 ________________________________________
 Trade-Off
 Benefit:
@@ -5117,12 +5117,12 @@ Plain Text
 Fast
 2
 Origin Safe
-Show more lines
+
 Cost:
 Plain Text
 1
 Temporary Stale Content
-Show more lines
+
 ________________________________________
 7. Stale-If-Error
 Even smarter.
@@ -5131,19 +5131,19 @@ Suppose:
 Plain Text
 1
 Origin Down
-Show more lines
+
 Normally:
 Plain Text
 1
 500 Error
-Show more lines
+
 ________________________________________
 Instead:
 CDN says:
 Plain Text
 1
 I still have old copy.
-Show more lines
+
 Serve it.
 ________________________________________
 Visual:
@@ -5154,13 +5154,13 @@ Origin ❌
  
 3
 CDN → Stale Content
-Show more lines
+
 ________________________________________
 User sees:
 Plain Text
 1
 Working Website
-Show more lines
+
 instead of outage.
 ________________________________________
 Common in:
@@ -5171,7 +5171,7 @@ Cloudflare
 Fastly
 3
 Akamai
-Show more lines
+
 ________________________________________
 8. Cache Shielding
 Advanced CDN architecture.
@@ -5188,7 +5188,7 @@ Delhi MISS
 Singapore MISS
 4
 Tokyo MISS
-Show more lines
+
 All request origin.
 ________________________________________
 Origin overloaded.
@@ -5212,7 +5212,7 @@ Shield Cache
 / | \
 7
 Mumbai Delhi Tokyo
-Show more lines
+
 ________________________________________
 Now:
 Plain Text
@@ -5220,19 +5220,19 @@ Plain Text
 Mumbai MISS
 2
 ``
-Show more lines
+
 doesn't go to origin.
 It goes to:
 Plain Text
 1
 Shield Cache
-Show more lines
+
 ________________________________________
 If shield has object:
 Plain Text
 1
 Serve immediately
-Show more lines
+
 ________________________________________
 Origin protected.
 ________________________________________
@@ -5247,7 +5247,7 @@ PoP2 → Origin
 PoP3 → Origin
 4
 PoP4 → Origin
-Show more lines
+
 ________________________________________
 With Shield:
 Plain Text
@@ -5265,7 +5265,7 @@ PoP4 → Shield
 Origin
 7
  
-Show more lines
+
 Only one origin fetch.
 ________________________________________
 9. Hot Key Problem
@@ -5275,21 +5275,21 @@ Imagine:
 Plain Text
 1
 World Cup Final
-Show more lines
+
 Page becomes viral.
 ________________________________________
 Traffic:
 Plain Text
 1
 1 Million Requests/sec
-Show more lines
+
 for one object.
 ________________________________________
 Single cache server holding key:
 Plain Text
 1
 /worldcup-final
-Show more lines
+
 becomes overloaded.
 ________________________________________
 Solutions:
@@ -5297,19 +5297,19 @@ Replication
 Plain Text
 1
 Key on many nodes
-Show more lines
+
 ________________________________________
 Sharding
 Plain Text
 1
 Spread traffic
-Show more lines
+
 ________________________________________
 Load Balancing
 Plain Text
 1
 Across multiple cache servers
-Show more lines
+
 ________________________________________
 10. Failure Cases
 Now think like a Production Engineer.
@@ -5323,7 +5323,7 @@ Plain Text
 ↓
 3
 100K Origin Calls
-Show more lines
+
 Origin crashes.
 ________________________________________
 Scenario 2
@@ -5334,7 +5334,7 @@ Result:
 Plain Text
 1
 Hung Requests
-Show more lines
+
 Memory leaks.
 ________________________________________
 Scenario 3
@@ -5344,7 +5344,7 @@ Plain Text
 TTL = 1 Day
 2
 SWR = 30 Days
-Show more lines
+
 Users may see very old content.
 ________________________________________
 Scenario 4
@@ -5352,7 +5352,7 @@ Shield Failure
 Plain Text
 1
 Shield Cache Down
-Show more lines
+
 All PoPs fallback to origin.
 Massive traffic spike.
 ________________________________________
@@ -5361,12 +5361,12 @@ Origin Slow
 Plain Text
 1
 Origin 10 sec
-Show more lines
+
 Even with coalescing:
 Plain Text
 1
 Everyone waits 10 sec
-Show more lines
+
 Need:
 Plain Text
 1
@@ -5375,7 +5375,7 @@ Timeouts
 Circuit Breakers
 3
 Fallbacks
-Show more lines
+
 ________________________________________
 11. Java Implementation
 Naive Implementation
@@ -5386,12 +5386,12 @@ public String get(String key) {
 return fetchFromOrigin(key);
 3
 }
-Show more lines
+
 Problem:
 Plain Text
 1
 Every Miss Hits Origin
-Show more lines
+
 ________________________________________
 Single Flight Style
 Java
@@ -5403,7 +5403,7 @@ String,
 CompletableFuture<String>
 4
 > inFlight;
-Show more lines
+
 Flow:
 Plain Text
 1
@@ -5428,7 +5428,7 @@ Request 3
 ↓
 11
 Uses Same Future
-Show more lines
+
 Only one fetch occurs.
 ________________________________________
 12. Performance Analysis
@@ -5440,7 +5440,7 @@ Plain Text
 =
 3
 10000 Origin Calls
-Show more lines
+
 ________________________________________
 With Coalescing:
 Plain Text
@@ -5450,37 +5450,37 @@ Plain Text
 =
 3
 1 Origin Call
-Show more lines
+
 ________________________________________
 Reduction:
 Plain Text
 1
 99.99%
-Show more lines
+
 ________________________________________
 Time Complexity
 Cache Lookup:
 Plain Text
 1
 O(1)
-Show more lines
+
 ________________________________________
 Inflight Map Lookup:
 Plain Text
 1
 O(1)
-Show more lines
+
 ________________________________________
 Memory:
 Plain Text
 1
 O(K)
-Show more lines
+
 where:
 Plain Text
 1
 K = Active Refresh Operations
-Show more lines
+
 ________________________________________
 Principal Engineer Interview Discussion
 Q1
@@ -5500,26 +5500,26 @@ Single Flight
 Stale-While-Revalidate
 4
 Cache Shielding
-Show more lines
+
 ________________________________________
 Q3
 What is better:
 Plain Text
 1
 Fresh Data
-Show more lines
+
 or
 Plain Text
 1
 Fast Data
-Show more lines
+
 Answer:
 Depends.
 For:
 Plain Text
 1
 Stock Prices
-Show more lines
+
 Freshness matters.
 For:
 Plain Text
@@ -5529,7 +5529,7 @@ Images
 CSS
 3
 News Articles
-Show more lines
+
 Fast stale content is often acceptable.
 ________________________________________
 Q4
@@ -5547,7 +5547,7 @@ Tiered Cache
 Cache Reserve
 3
 SWR
-Show more lines
+
 ________________________________________
 Fastly
 Uses:
@@ -5558,7 +5558,7 @@ Soft Purge
 SWR
 3
 Shield POP
-Show more lines
+
 ________________________________________
 Netflix
 Uses:
@@ -5569,7 +5569,7 @@ Multi-layer caching
 Origin protection
 3
 Regional cache hierarchy
-Show more lines
+
 ________________________________________
 Mental Model
 Think of Cache Stampede exactly like this:
@@ -5584,7 +5584,7 @@ A supermarket sale opens.
 rush the same counter
 5
 at the same time.
-Show more lines
+
 Request Coalescing says:
 Plain Text
 1
@@ -5593,7 +5593,7 @@ One person buys the item.
  
 3
 Everyone else receives copies.
-Show more lines
+
 That single idea is what prevents large internet systems from collapsing when a hot cache entry expires.
 
 Lesson 7: CDN + Security
@@ -5941,7 +5941,7 @@ CDN + Images ✅
 CDN + CSS ✅
 3
 CDN + JS ✅
-Show more lines
+
 But then they ask:
 APIs are dynamic. How can a CDN cache them?
 The answer is:
@@ -5952,7 +5952,7 @@ Some APIs should be cached.
 Some APIs should never be cached.
 3
 Some APIs should be partially cached.
-Show more lines
+
 Understanding this distinction is what separates Senior Engineers from Architects.
 ________________________________________
 Learning Goals
@@ -5978,7 +5978,7 @@ API = Dynamic
 Therefore:
 3
 API cannot be cached.
-Show more lines
+
 Wrong.
 Let's see why.
 ________________________________________
@@ -5986,7 +5986,7 @@ Example 1: Weather API
 HTTP
 1
 GET /weather/hyderabad
-Show more lines
+
 Response:
 JSON
 1
@@ -5997,7 +5997,7 @@ JSON
 "condition": "Sunny"
 4
 }
-Show more lines
+
 Does temperature change every millisecond?
 No.
 Maybe every few minutes.
@@ -6007,7 +6007,7 @@ Example 2: Product Catalog
 HTTP
 1
 GET /products/123
-Show more lines
+
 Response:
 JSON
 1
@@ -6020,7 +6020,7 @@ JSON
 "price": 80000
 5
 }
-Show more lines
+
 Product information changes rarely.
 Cacheable.
 ________________________________________
@@ -6028,7 +6028,7 @@ Example 3: Bank Balance
 HTTP
 1
 GET /account/balance
-Show more lines
+
 Response:
 JSON
 1
@@ -6037,7 +6037,7 @@ JSON
 "balance": 50000
 3
 }
-Show more lines
+
 Changes frequently.
 Personalized.
 Dangerous to cache.
@@ -6049,17 +6049,17 @@ Plain Text
 Is response identical
 2
 for many users?
-Show more lines
+
 If YES:
 Plain Text
 1
 CDN cache candidate
-Show more lines
+
 If NO:
 Plain Text
 1
 Avoid CDN cache
-Show more lines
+
 ________________________________________
 2. Public vs Personalized Content
 This is the most important classification.
@@ -6082,13 +6082,13 @@ Blog Posts
 Documentation
 7
 Movies Catalog
-Show more lines
+
 ________________________________________
 Request:
 HTTP
 1
 GET /products/123
-Show more lines
+
 User A:
 JSON
 1
@@ -6101,7 +6101,7 @@ JSON
 }
 5
  
-Show more lines
+
 User B:
 Same response.
 Perfect cache candidate.
@@ -6122,13 +6122,13 @@ Cart
 Notifications
 6
 Rewards
-Show more lines
+
 ________________________________________
 Request:
 HTTP
 1
 GET /my-orders
-Show more lines
+
 User A:
 JSON
 1
@@ -6137,7 +6137,7 @@ JSON
 "Order1"
 3
 ]
-Show more lines
+
 User B:
 JSON
 1
@@ -6146,7 +6146,7 @@ JSON
 "Order99"
 3
 ]
-Show more lines
+
 Cannot share cache.
 ________________________________________
 Rule
@@ -6161,7 +6161,7 @@ Public Data
 Private Data
 5
 → Cache Carefully
-Show more lines
+
 ________________________________________
 3. API Response Headers
 Remember Lesson 3.
@@ -6173,12 +6173,12 @@ HTTP
 Cache-Control:
 2
 public,max-age=300
-Show more lines
+
 Meaning:
 Plain Text
 1
 Cache for 5 minutes
-Show more lines
+
 ________________________________________
 Example:
 HTTP
@@ -6186,7 +6186,7 @@ HTTP
 GET /products/123
 2
  
-Show more lines
+
 ________________________________________
 Non-Cacheable API
 HTTP
@@ -6194,14 +6194,14 @@ HTTP
 Cache-Control:
 2
 no-store
-Show more lines
+
 Example:
 HTTP
 1
 GET /account/balance
 2
  
-Show more lines
+
 ________________________________________
 CDN never stores it.
 ________________________________________
@@ -6211,7 +6211,7 @@ Request:
 HTTP
 1
 GET /products/iphone-17
-Show more lines
+
 Millions of users.
 ________________________________________
 Without CDN
@@ -6228,7 +6228,7 @@ Application
 Database
 6
  
-Show more lines
+
 Every request reaches DB.
 ________________________________________
 With CDN
@@ -6247,12 +6247,12 @@ Application
 ↓
 7
 Database
-Show more lines
+
 Hit ratio:
 Plain Text
 1
 95%
-Show more lines
+
 Origin receives very little traffic.
 ________________________________________
 Request Flow
@@ -6270,13 +6270,13 @@ Origin
 Cache Fill
 6
  
-Show more lines
+
 ________________________________________
 Second User
 Plain Text
 1
 HIT
-Show more lines
+
 Response from edge.
 ________________________________________
 Latency
@@ -6284,7 +6284,7 @@ Without CDN
 Plain Text
 1
 100 ms
-Show more lines
+
 ________________________________________
 With CDN
 Plain Text
@@ -6292,19 +6292,19 @@ Plain Text
 10 ms
 2
 ``
-Show more lines
+
 ________________________________________
 5. Personalized API Challenge
 Let's cache:
 HTTP
 1
 GET /profile
-Show more lines
+
 User A
 JSON
 1
 {"name":"Krishna"}
-Show more lines
+
 ________________________________________
 User B
 JSON
@@ -6312,14 +6312,14 @@ JSON
 {"name":"Rahul"}
 2
  
-Show more lines
+
 ________________________________________
 If CDN shares cache:
 User B may see:
 JSON
 1
 {"name":"Krishna"}
-Show more lines
+
 Disaster.
 ________________________________________
 Security issue.
@@ -6329,7 +6329,7 @@ Therefore:
 Plain Text
 1
 Never blindly cache personalized APIs.
-Show more lines
+
 ________________________________________
 6. Authenticated API Caching
 Interesting middle ground.
@@ -6342,14 +6342,14 @@ HTTP
 GET /product/123
 2
 Authorization: Bearer xxx
-Show more lines
+
 and
 HTTP
 1
 GET /product/123
 2
 Authorization: Bearer yyy
-Show more lines
+
 ________________________________________
 Product data identical.
 Token does not affect response.
@@ -6364,7 +6364,7 @@ Different tokens
 Different cache entries
 4
  
-Show more lines
+
 ________________________________________
 Hit ratio collapses.
 ________________________________________
@@ -6374,7 +6374,7 @@ Plain Text
 Ignore Authorization
 2
 for cache key
-Show more lines
+
 when safe.
 ________________________________________
 Huge improvement.
@@ -6386,7 +6386,7 @@ Plain Text
 Does authentication
 2
 change the response?
-Show more lines
+
 If not:
 Plain Text
 1
@@ -6395,7 +6395,7 @@ Authorization should not
 necessarily be part
 3
 of cache key.
-Show more lines
+
 ________________________________________
 7. Microcaching
 Very powerful pattern.
@@ -6406,21 +6406,21 @@ Example:
 Plain Text
 1
 Trending Products
-Show more lines
+
 Changes every few seconds.
 ________________________________________
 Traditional cache
 Plain Text
 1
 1 hour TTL
-Show more lines
+
 Too stale.
 ________________________________________
 No cache
 Plain Text
 1
 Origin Overload
-Show more lines
+
 ________________________________________
 Solution:
 Plain Text
@@ -6428,7 +6428,7 @@ Plain Text
 Microcache
 2
  
-Show more lines
+
 TTL:
 Plain Text
 1
@@ -6439,24 +6439,24 @@ Plain Text
 5 sec
 4
 ``
-Show more lines
+
 ________________________________________
 Example
 Traffic:
 Plain Text
 1
 50000 RPS
-Show more lines
+
 TTL:
 Plain Text
 1
 5 seconds
-Show more lines
+
 Origin only sees:
 Plain Text
 1
 One refresh every 5 seconds
-Show more lines
+
 Huge reduction.
 ________________________________________
 Used heavily by:
@@ -6467,7 +6467,7 @@ News Sites
 Search Systems
 3
 Social Feeds
-Show more lines
+
 ________________________________________
 8. Edge API Caching
 Modern CDNs cache JSON APIs directly.
@@ -6477,7 +6477,7 @@ Example:
 HTTP
 1
 GET /products
-Show more lines
+
 Returns:
 JSON
 1
@@ -6486,14 +6486,14 @@ JSON
 ...
 3
 ]
-Show more lines
+
 ________________________________________
 Edge stores JSON.
 Future users receive:
 JSON
 1
 same JSON
-Show more lines
+
 without touching backend.
 ________________________________________
 Example Architecture
@@ -6512,13 +6512,13 @@ Cache JSON
 ↓
 7
 Origin
-Show more lines
+
 ________________________________________
 Many modern APIs use:
 HTTP
 1
 application/json
-Show more lines
+
 and are heavily cached.
 ________________________________________
 9. Partial Personalization
@@ -6533,27 +6533,27 @@ Public Products
 Personal Recommendations
 3
 ``
-Show more lines
+
 ________________________________________
 Instead of:
 Plain Text
 1
 One Big API
-Show more lines
+
 Split.
 ________________________________________
 Public API
 HTTP
 1
 GET /trending-products
-Show more lines
+
 cached globally.
 ________________________________________
 Private API
 HTTP
 1
 GET /my-recommendations
-Show more lines
+
 not cached.
 ________________________________________
 Frontend merges both.
@@ -6568,7 +6568,7 @@ Page
 ├─ Cached Data
 4
 └─ User Data
-Show more lines
+
 ________________________________________
 Netflix, Amazon, YouTube use similar concepts.
 ________________________________________
@@ -6577,12 +6577,12 @@ Suppose:
 HTTP
 1
 GET /product/123
-Show more lines
+
 cached for:
 Plain Text
 1
 10 min
-Show more lines
+
 ________________________________________
 Price changes.
 Origin:
@@ -6591,12 +6591,12 @@ Plain Text
 ₹80,000
 2
 ``
-Show more lines
+
 CDN:
 Plain Text
 1
 ₹79,500
-Show more lines
+
 ________________________________________
 Who is correct?
 Origin.
@@ -6605,7 +6605,7 @@ But CDN still serves:
 Plain Text
 1
 Old Price
-Show more lines
+
 until refresh.
 ________________________________________
 Trade-Off
@@ -6616,7 +6616,7 @@ Freshness
 vs
 3
 Performance
-Show more lines
+
 Every cache decision is actually:
 Plain Text
 1
@@ -6625,7 +6625,7 @@ Consistency
 vs
 3
 Latency
-Show more lines
+
 ________________________________________
 11. Dynamic Content Acceleration
 CDNs also help when data isn't cached.
@@ -6635,7 +6635,7 @@ Even for:
 Plain Text
 1
 No Cache
-Show more lines
+
 CDNs provide:
 Plain Text
 1
@@ -6650,13 +6650,13 @@ HTTP/2
 HTTP/3
 6
 Compression
-Show more lines
+
 ________________________________________
 Meaning:
 Plain Text
 1
 Dynamic APIs
-Show more lines
+
 can still be faster through CDN.
 ________________________________________
 12. Internal Implementation
@@ -6683,12 +6683,12 @@ long expiryTime;
 String etag;
 10
 }
-Show more lines
+
 Storage:
 Java
 1
 Map<String, CachedApiResponse>
-Show more lines
+
 ________________________________________
 Lookup
 Java
@@ -6698,12 +6698,12 @@ response =
 cache.get(cacheKey);
 3
 ``
-Show more lines
+
 Complexity:
 Plain Text
 1
 O(1)
-Show more lines
+
 average.
 ________________________________________
 13. Failure Scenarios
@@ -6716,7 +6716,7 @@ Result
 Plain Text
 1
 Security Incident
-Show more lines
+
 Critical severity.
 ________________________________________
 Scenario 2
@@ -6724,7 +6724,7 @@ Very Long TTL
 Plain Text
 1
 24 Hours
-Show more lines
+
 Product price changes.
 Users see stale value.
 ________________________________________
@@ -6733,7 +6733,7 @@ Very Short TTL
 Plain Text
 1
 1 Second
-Show more lines
+
 Cache ineffective.
 Origin overloaded.
 ________________________________________
@@ -6744,7 +6744,7 @@ Result:
 Plain Text
 1
 Millions of cache entries
-Show more lines
+
 Low hit ratio.
 ________________________________________
 Scenario 5
@@ -6753,7 +6753,7 @@ If token affects response:
 Plain Text
 1
 Data Leakage
-Show more lines
+
 Huge risk.
 ________________________________________
 14. Real Company Examples
@@ -6766,7 +6766,7 @@ Product Metadata
 Images
 3
 Reviews
-Show more lines
+
 Not cache:
 Plain Text
 1
@@ -6775,7 +6775,7 @@ Cart
 Orders
 3
 Payments
-Show more lines
+
 ________________________________________
 Netflix
 Cache:
@@ -6786,14 +6786,14 @@ Movies
 Artwork
 3
 Catalog
-Show more lines
+
 Not cache:
 Plain Text
 1
 Current Playback State
 2
 Account Settings
-Show more lines
+
 ________________________________________
 Banking App
 Cache:
@@ -6804,7 +6804,7 @@ Static Assets
 FAQs
 3
 Documentation
-Show more lines
+
 Not cache:
 Plain Text
 1
@@ -6813,7 +6813,7 @@ Balance
 Transactions
 3
 Transfers
-Show more lines
+
 ________________________________________
 Principal Engineer Interview Discussion
 Q1
@@ -6832,7 +6832,7 @@ Plain Text
 Microcaching
 2
 1-5 Seconds TTL
-Show more lines
+
 instead of long TTLs.
 ________________________________________
 Q3
@@ -6848,12 +6848,12 @@ They separate:
 Plain Text
 1
 Public Content
-Show more lines
+
 from
 Plain Text
 1
 User-Specific Content
-Show more lines
+
 and cache only the shared portions aggressively.
 ________________________________________
 Mental Model
@@ -6871,7 +6871,7 @@ Plain Text
 3. What happens if users see
 6
 data that is 1-60 seconds old?
-Show more lines
+
 The answers determine:
 Plain Text
 1
@@ -6882,7 +6882,7 @@ Cache Key Strategy
 Invalidation Strategy
 4
 CDN Suitability
-Show more lines
+
 ________________________________________
 Lesson 9: Designing a CDN from Scratch
 This lesson combines everything you've learned so far.
@@ -6896,7 +6896,7 @@ Caching
 TTL
 4
 Anycast
-Show more lines
+
 individually.
 They understand how everything works together to build something like:
 Plain Text
@@ -6908,7 +6908,7 @@ Akamai
 Fastly
 4
 CloudFront
-Show more lines
+
 ________________________________________
 Learning Goals
 By the end of this lesson you'll be able to:
@@ -6937,7 +6937,7 @@ Fetch JS
 Fetch JSON APIs
 6
 ``
-Show more lines
+
 ________________________________________
 The CDN should:
 Plain Text
@@ -6951,7 +6951,7 @@ Reduce Origin Load
 Improve Availability
 5
  
-Show more lines
+
 ________________________________________
 Non-Functional Requirements
 Plain Text
@@ -6973,7 +6973,7 @@ Massive Scalability
  
 9
 DDoS Protection
-Show more lines
+
 ________________________________________
 Step 2: Start with the Simplest CDN
 Version 1
@@ -6986,7 +6986,7 @@ Users
 |
 4
 Origin Server
-Show more lines
+
 Problems:
 Plain Text
 1
@@ -6995,7 +6995,7 @@ High Latency
 Single Point of Failure
 3
 High Bandwidth Costs
-Show more lines
+
 Not scalable.
 ________________________________________
 Step 3: Add Edge Caches
@@ -7012,7 +7012,7 @@ Origin
 Mumbai London Tokyo
 6
 Edge Edge Edge
-Show more lines
+
 Now users fetch from local edge.
 Benefits:
 Plain Text
@@ -7020,19 +7020,19 @@ Plain Text
 Lower Latency
 2
 Lower Origin Load
-Show more lines
+
 ________________________________________
 Step 4: Add DNS Layer
 Problem:
 Plain Text
 1
 How does user reach nearest PoP?
-Show more lines
+
 Solution:
 Plain Text
 1
 DNS Routing
-Show more lines
+
 Architecture:
 Plain Text
 1
@@ -7045,7 +7045,7 @@ DNS
 |
 5
 Nearest PoP
-Show more lines
+
 Example:
 Plain Text
 1
@@ -7054,14 +7054,14 @@ India -> Mumbai
  
 3
 Japan
-Show more lines
+
 ________________________________________
 Problem with DNS
 What if:
 Plain Text
 1
 Mumbai PoP crashes?
-Show more lines
+
 DNS cache may still point users there.
 Need something better.
 ________________________________________
@@ -7078,17 +7078,17 @@ London IP
  
 5
 Tokyo IP
-Show more lines
+
 Use:
 Plain Text
 1
 One Global IP
-Show more lines
+
 Example:
 Plain Text
 1
 104.20.10.1
-Show more lines
+
 advertised from every PoP.
 ________________________________________
 Architecture:
@@ -7105,7 +7105,7 @@ Mumbai London
 \ /
 6
 IP
-Show more lines
+
 ________________________________________
 Benefits:
 Plain Text
@@ -7115,19 +7115,19 @@ Fast Rerouting
 Global Access
 3
 Simpler Architecture
-Show more lines
+
 ________________________________________
 Step 6: Add BGP Routing
 Now Internet chooses:
 Plain Text
 1
 Best Path
-Show more lines
+
 not necessarily:
 Plain Text
 1
 Nearest Geography
-Show more lines
+
 ________________________________________
 Flow:
 Plain Text
@@ -7145,7 +7145,7 @@ BGP chooses PoP
 ↓
 7
 PoP receives request
-Show more lines
+
 ________________________________________
 Step 7: Design the PoP
 A PoP is not one machine.
@@ -7153,7 +7153,7 @@ Think:
 Plain Text
 1
 Mini Datacenter
-Show more lines
+
 ________________________________________
 Architecture:
 Plain Text
@@ -7171,7 +7171,7 @@ Plain Text
 | | | |
 7
 E1 E2 
-Show more lines
+
 ________________________________________
 Components:
 Plain Text
@@ -7185,7 +7185,7 @@ Monitoring
 Metrics
 5
 Security Layer
-Show more lines
+
 ________________________________________
 Step 8: Edge Cache Design
 Every edge stores:
@@ -7211,24 +7211,24 @@ String etag;
 10
  
 11
-Show more lines
+
 ________________________________________
 Storage:
 Java
 1
 Map<CacheKey, CacheEntry>
-Show more lines
+
 ________________________________________
 Lookup:
 Java
 1
 cache.get(key);
-Show more lines
+
 Average complexity:
 Plain Text
 1
 O(1)
-Show more lines
+
 ________________________________________
 Step 9: Cache Key Construction
 Bad cache keys destroy a CDN.
@@ -7237,12 +7237,12 @@ Naive:
 Plain Text
 1
 /product?id=1&utm=google
-Show more lines
+
 Different from:
 Plain Text
 1
 /product?id=1&utm=facebook
-Show more lines
+
 ________________________________________
 Good CDN:
 Plain Text
@@ -7250,12 +7250,12 @@ Plain Text
 Normalize URL
 2
 Ignore Tracking Params
-Show more lines
+
 Cache key:
 Plain Text
 1
 /product?id=1
-Show more lines
+
 ________________________________________
 Hit ratio improves dramatically.
 ________________________________________
@@ -7274,12 +7274,12 @@ Edge
 ↓
 5
 Response
-Show more lines
+
 Latency:
 Plain Text
 1
 5-20 ms
-Show more lines
+
 ________________________________________
 Cache Miss
 Plain Text
@@ -7301,14 +7301,14 @@ Cache Fill
 ↓
 9
 User
-Show more lines
+
 ________________________________________
 Step 11: Add TTL
 Without expiration:
 Plain Text
 1
 Infinite Stale Data
-Show more lines
+
 ________________________________________
 Use:
 HTTP
@@ -7316,42 +7316,42 @@ HTTP
 Cache-Control:
 2
 max-age=3600
-Show more lines
+
 ________________________________________
 Edge stores:
 Plain Text
 1
 Expiry Time
-Show more lines
+
 When expired:
 Plain Text
 1
 Refresh
-Show more lines
+
 ________________________________________
 Step 12: Add ETag Validation
 Problem:
 Plain Text
 1
 Large Object
-Show more lines
+
 Do we download it again?
 ________________________________________
 Use:
 HTTP
 1
 ETag: abc123
-Show more lines
+
 Request:
 HTTP
 1
 If-None-Match: abc123
-Show more lines
+
 If unchanged:
 HTTP
 1
 304 Not Modified
-Show more lines
+
 Bandwidth saved.
 ________________________________________
 Step 13: Add Invalidation Service
@@ -7359,7 +7359,7 @@ Content updated:
 Plain Text
 1
 logo.png
-Show more lines
+
 Need CDN refresh.
 ________________________________________
 Add Control Plane:
@@ -7374,13 +7374,13 @@ Control Plane
 | | |
 5
 PoP1 PoP2 PoP3
-Show more lines
+
 ________________________________________
 Purge operation:
 Plain Text
 1
 Invalidate Key
-Show more lines
+
 ________________________________________
 Methods:
 Plain Text
@@ -7390,21 +7390,21 @@ Hard Purge
 Soft Purge
 3
 Versioned URLs
-Show more lines
+
 ________________________________________
 Step 14: Add Cache Stampede Protection
 Problem:
 Plain Text
 1
 50,000 MISS
-Show more lines
+
 all hit origin.
 ________________________________________
 Solution:
 Plain Text
 1
 Single Flight
-Show more lines
+
 Architecture:
 Plain Text
 1
@@ -7419,13 +7419,13 @@ Requests
 |
 6
 Single Origin Request
-Show more lines
+
 ________________________________________
 Add:
 Plain Text
 1
 Request Coalescing
-Show more lines
+
 ________________________________________
 Step 15: Add Stale-While-Revalidate (SWR)
 Instead of:
@@ -7434,19 +7434,19 @@ Plain Text
 Wait
 2
 ``
-Show more lines
+
 Serve:
 Plain Text
 1
 Old Copy
-Show more lines
+
 Immediately.
 ________________________________________
 Background:
 Plain Text
 1
 Fetch Fresh Version
-Show more lines
+
 ________________________________________
 Benefits:
 Plain Text
@@ -7454,7 +7454,7 @@ Plain Text
 Fast Response
 2
 Protected Origin
-Show more lines
+
 ________________________________________
 Step 16: Add Shield Cache
 Problem:
@@ -7465,14 +7465,14 @@ Mumbai MISS
 Tokyo MISS
 3
 London MISS
-Show more lines
+
 All hit origin.
 ________________________________________
 Solution:
 Plain Text
 1
 Regional Shield
-Show more lines
+
 Architecture:
 Plain Text
 1
@@ -7485,7 +7485,7 @@ Shield Cache
 / | \
 5
 Mumbai Tokyo London
-Show more lines
+
 ________________________________________
 Now:
 Plain Text
@@ -7495,7 +7495,7 @@ PoPs hit Shield
  
 3
 Shield hits Origin
-Show more lines
+
 ________________________________________
 Step 17: Add Security Layer
 Before cache lookup:
@@ -7508,7 +7508,7 @@ WAF
 Rate Limiter
 4
 Bot Detection
-Show more lines
+
 ________________________________________
 Architecture:
 Plain Text
@@ -7534,7 +7534,7 @@ Cache
 |
 11
 Origin
-Show more lines
+
 ________________________________________
 Complete Request Flow
 Let's trace a request.
@@ -7542,28 +7542,28 @@ User:
 HTTP
 1
 GET /product/123
-Show more lines
+
 ________________________________________
 Step 1
 DNS resolves:
 Plain Text
 1
 cdn.company.com
-Show more lines
+
 ________________________________________
 Step 2
 Returns:
 Plain Text
 1
 Anycast IP
-Show more lines
+
 ________________________________________
 Step 3
 BGP selects:
 Plain Text
 1
 Mumbai PoP
-Show more lines
+
 ________________________________________
 Step 4
 TLS Handshake
@@ -7579,7 +7579,7 @@ Cache Key Generation
 Plain Text
 1
 /product/123
-Show more lines
+
 ________________________________________
 Step 8
 Cache Lookup
@@ -7588,19 +7588,19 @@ Hit
 Plain Text
 1
 Response Returned
-Show more lines
+
 ________________________________________
 Miss
 Plain Text
 1
 Shield Cache
-Show more lines
+
 ________________________________________
 If Shield Miss:
 Plain Text
 1
 Origin Fetch
-Show more lines
+
 ________________________________________
 Cache Fill
 Plain Text
@@ -7608,7 +7608,7 @@ Plain Text
 Shield Updated
 2
 PoP Updated
-Show more lines
+
 ________________________________________
 Response
 Returned to user.
@@ -7679,14 +7679,14 @@ Origin
 |
 32
 Database
-Show more lines
+
 ________________________________________
 Bottleneck Analysis
 A Principal Engineer always asks:
 Plain Text
 1
 What breaks first?
-Show more lines
+
 ________________________________________
 Bottleneck 1
 Origin
@@ -7694,7 +7694,7 @@ When:
 Plain Text
 1
 Hit Ratio Falls
-Show more lines
+
 Origin traffic explodes.
 ________________________________________
 Bottleneck 2
@@ -7715,7 +7715,7 @@ Edge Server Crash
 Plain Text
 1
 Edge2 ❌
-Show more lines
+
 Load balancer removes it.
 Traffic shifts:
 Plain Text
@@ -7723,14 +7723,14 @@ Plain Text
 Edge1
 2
 Edge3
-Show more lines
+
 ________________________________________
 Failure Scenario 2
 Entire PoP Crash
 Plain Text
 1
 Mumbai PoP ❌
-Show more lines
+
 Anycast route disappears.
 BGP recalculates.
 Traffic:
@@ -7741,24 +7741,24 @@ Mumbai
 ↓
 3
 Bangalore/Singapore
-Show more lines
+
 ________________________________________
 Failure Scenario 3
 Origin Crash
 Plain Text
 1
 Origin ❌
-Show more lines
+
 Serve:
 Plain Text
 1
 Stale Content
-Show more lines
+
 using:
 Plain Text
 1
 Stale-If-Error
-Show more lines
+
 ________________________________________
 Failure Scenario 4
 Global Purge Mistake
@@ -7766,25 +7766,25 @@ Someone executes:
 Plain Text
 1
 PURGE /*
-Show more lines
+
 Result:
 Plain Text
 1
 100% Cache Miss
-Show more lines
+
 Origin overload.
 Known as:
 Plain Text
 1
 Cache Cold Start
-Show more lines
+
 ________________________________________
 Failure Scenario 5
 DDoS Attack
 Plain Text
 1
 10 Million RPS
-Show more lines
+
 Mitigation:
 Plain Text
 1
@@ -7795,54 +7795,54 @@ Rate Limiting
 WAF
 4
 Traffic Scrubbing
-Show more lines
+
 ________________________________________
 Performance Numbers
 Assume:
 Plain Text
 1
 1 Million Requests
-Show more lines
+
 Hit ratio:
 Plain Text
 1
 95%
-Show more lines
+
 ________________________________________
 Origin Requests:
 Plain Text
 1
 50,000
-Show more lines
+
 instead of
 Plain Text
 1
 1,000,000
-Show more lines
+
 ________________________________________
 Reduction:
 Plain Text
 1
 95%
-Show more lines
+
 ________________________________________
 Latency:
 Origin:
 Plain Text
 1
 200ms
-Show more lines
+
 Edge:
 Plain Text
 1
 10ms
-Show more lines
+
 ________________________________________
 Improvement:
 Plain Text
 1
 20x Faster
-Show more lines
+
 ________________________________________
 Principal Engineer Interview Question
 Design a CDN for Netflix.
@@ -7855,7 +7855,7 @@ Video Segments
 Long TTL
 3
 Versioned URLs
-Show more lines
+
 ________________________________________
 Routing
 Plain Text
@@ -7865,7 +7865,7 @@ Anycast
 BGP
 3
 Regional PoPs
-Show more lines
+
 ________________________________________
 Security
 Plain Text
@@ -7875,7 +7875,7 @@ TLS
 DDoS Protection
 3
 Rate Limiting
-Show more lines
+
 ________________________________________
 Reliability
 Plain Text
@@ -7885,7 +7885,7 @@ Multi-PoP
 Shield Cache
 3
 Stale-If-Error
-Show more lines
+
 ________________________________________
 Cost
 Plain Text
@@ -7895,7 +7895,7 @@ Storage
 Bandwidth
 3
 Replication
-Show more lines
+
 Trade-off discussion is mandatory.
 ________________________________________
 Final Mental Model
@@ -7927,6 +7927,6 @@ Plain Text
 5. Replication System
 13
 (Invalidation, Purging)
-Show more lines
+
 If you truly understand Lessons 1-9, you're already beyond what many 6-8 year engineers know about CDNs.
 
