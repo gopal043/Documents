@@ -1,0 +1,2736 @@
+ LOAD BALANCER
+Lesson Sequence
+Foundation
+Plain Text
+1
+Lesson 1
+2
+Why Load Balancer Was Invented
+3
+ 
+4
+Lesson 2
+5
+Load Balancer Architecture
+6
+ 
+7
+Lesson 3
+8
+Request Journey
+9
+(Client → LB → App → DB)
+10
+ 
+11
+Lesson 4
+12
+TCP vs HTTP Load Balancing
+
+________________________________________
+Algorithms
+Plain Text
+1
+Lesson 5
+2
+Round Robin
+3
+ 
+4
+Lesson 6
+5
+Weighted Round Robin
+6
+ 
+7
+Lesson 7
+8
+Least Connections
+9
+ 
+10
+Lesson 8
+11
+Least Response Time
+12
+ 
+13
+Lesson 9
+14
+Consistent Hashing
+15
+ 
+16
+Lesson 10
+17
+Power of Two Choices
+
+________________________________________
+Internal Mechanisms
+Plain Text
+1
+Lesson 11
+2
+Health Checks
+3
+ 
+4
+Lesson 12
+5
+Connection Pooling
+6
+ 
+7
+Lesson 13
+8
+Session Affinity (Sticky Sessions)
+9
+ 
+10
+Lesson 14
+11
+SSL/TLS Termination
+12
+ 
+13
+Lesson 15
+14
+Load Balancer State Management
+
+________________________________________
+Scalability
+Plain Text
+1
+Lesson 16
+2
+HA Load Balancers
+3
+ 
+4
+Lesson 17
+5
+Active-Active vs Active-Passive
+6
+ 
+7
+Lesson 18
+8
+Global Load Balancing
+9
+ 
+10
+Lesson 19
+11
+Anycast Load Balancing
+12
+ 
+13
+Lesson 20
+14
+Multi-Region Traffic Distribution
+
+________________________________________
+Failure Engineering
+Plain Text
+1
+Lesson 21
+2
+Load Balancer Failures
+3
+ 
+4
+Lesson 22
+5
+Connection Storms
+6
+ 
+7
+Lesson 23
+8
+Retry Storms
+9
+ 
+10
+Lesson 24
+11
+Cascading Failures
+12
+ 
+13
+Lesson 25
+14
+Real AWS / Google / Cloudflare Designs
+
+________________________________________
+Build From Scratch
+Plain Text
+1
+Lesson 26
+2
+Simple Java LB
+3
+ 
+4
+Lesson 27
+5
+Health Check System
+6
+ 
+7
+Lesson 28
+8
+Least Connection Implementation
+9
+ 
+10
+Lesson 29
+11
+Metrics Collection
+12
+ 
+13
+Lesson 30
+14
+Mini NGINX
+
+________________________________________
+Before Lesson 1
+Let's establish something important.
+Most people think:
+Plain Text
+1
+Load Balancer =
+2
+Traffic Distributor
+
+That definition is incomplete.
+A better definition:
+A Load Balancer is a traffic coordination system that hides backend complexity from clients while optimizing availability, scalability, resource utilization, and latency.
+Notice:
+Plain Text
+1
+Traffic Distribution
+
+is only one responsibility.
+________________________________________
+Lesson 1
+Why Was Load Balancer Invented?
+________________________________________
+The Original Internet
+In early web applications:
+Plain Text
+1
+Users
+2
+|
+3
+Server
+4
+|
+5
+Database
+
+Everything ran on:
+Plain Text
+1
+One Machine
+
+________________________________________
+Example:
+Plain Text
+1
+Amazon (1995)
+2
+ 
+3
+1 Web Server
+4
+1 Database
+
+conceptually.
+________________________________________
+The First Problem
+Traffic grows.
+________________________________________
+Initially:
+Plain Text
+1
+100 Users
+
+Works.
+________________________________________
+Then:
+Plain Text
+1
+10,000 Users
+
+Still works.
+________________________________________
+Then:
+Plain Text
+1
+1,000,000 Users
+
+Server starts struggling.
+________________________________________
+Why?
+Because every machine has limits.
+________________________________________
+CPU
+Plain Text
+1
+8 Cores
+2
+ 
+3
+100%
+4
+ 
+5
+No More Processing
+
+________________________________________
+Memory
+Plain Text
+1
+32 GB
+2
+ 
+3
+Full
+4
+ 
+5
+OOM Risk
+
+________________________________________
+Network
+Plain Text
+1
+1 Gbps
+2
+ 
+3
+Fully Consumed
+
+________________________________________
+Threads
+Plain Text
+1
+2000 Threads
+2
+ 
+3
+Exhausted
+
+________________________________________
+Traditional Solution
+Vertical Scaling
+________________________________________
+Upgrade machine.
+Plain Text
+1
+4 Core
+2
+↓
+3
+8 Core
+4
+↓
+5
+16 Core
+6
+↓
+7
+32 Core
+
+________________________________________
+Advantages
+Plain Text
+1
+Easy
+
+________________________________________
+Drawbacks
+Plain Text
+1
+Very Expensive
+
+and
+Plain Text
+1
+Eventually Machine Limit Reached
+2
+ 
+
+________________________________________
+This became known as:
+Plain Text
+1
+Scale-Up Strategy
+
+________________________________________
+Second Idea
+Instead of:
+Plain Text
+1
+1 Powerful Server
+
+Use:
+Plain Text
+1
+4 Servers
+
+________________________________________
+Architecture
+Plain Text
+1
+App1
+2
+App2
+3
+App3
+4
+App4
+
+Now compute capacity increases.
+________________________________________
+Question:
+How will a user know
+whether to call:
+Plain Text
+1
+App1 ?
+2
+ 
+3
+App2 ?
+4
+ 
+5
+App3 ?
+
+User has no idea.
+________________________________________
+This is the birth of Load Balancing.
+________________________________________
+First Load Balancer Concept
+Put a machine in front.
+________________________________________
+Plain Text
+1
+Users
+2
+|
+3
+|
+4
+Load Balancer
+5
+/ | \
+6
+/ | \
+7
+App1 App2 App3
+
+Now users only know:
+Plain Text
+1
+one address
+
+Example:
+Plain Text
+1
+amazon.com
+
+________________________________________
+Backend complexity hidden.
+This concept is called:
+Plain Text
+1
+Abstraction Layer
+
+Very important engineering idea.
+________________________________________
+Problem Solved #1
+Scalability
+Without LB:
+Plain Text
+1
+1 Server
+2
+ 
+3
+1000 RPS
+
+________________________________________
+With LB:
+Plain Text
+1
+3 Servers
+2
+ 
+3
+3000 RPS
+
+approximately.
+________________________________________
+This is called:
+Plain Text
+1
+Horizontal Scaling
+
+________________________________________
+Problem Solved #2
+Availability
+Suppose:
+Plain Text
+1
+App2 crashed
+
+Without LB:
+Users connected there fail.
+________________________________________
+With LB:
+Plain Text
+1
+App2 removed
+
+Traffic goes to:
+Plain Text
+1
+App1
+2
+App3
+
+System continues.
+________________________________________
+Problem Solved #3
+Maintenance
+Need deployment.
+________________________________________
+Without LB
+Plain Text
+1
+Stop Server
+2
+Deploy
+3
+Start Again
+4
+ 
+5
+Downtime
+
+________________________________________
+With LB
+Plain Text
+1
+Remove App2
+2
+Deploy App2
+3
+ 
+4
+Remove App3
+5
+Deploy App3
+
+No downtime.
+________________________________________
+This is called:
+Plain Text
+1
+Rolling Deployment
+
+________________________________________
+Problem Solved #4
+Resource Utilization
+Imagine:
+Plain Text
+1
+App1 = Busy
+2
+ 
+3
+App2 = Idle
+4
+ 
+5
+App3 = Idle
+6
+ 
+
+Without balancing:
+Resources wasted.
+________________________________________
+LB can distribute traffic.
+Plain Text
+1
+33%
+2
+33%
+3
+33%
+
+More efficient utilization.
+________________________________________
+Real Production Request Flow
+Imagine:
+HTTP
+1
+GET /products/1
+
+________________________________________
+Step 1
+Browser calls
+Plain Text
+1
+amazon.com
+
+________________________________________
+Step 2
+DNS returns LB IP.
+Plain Text
+1
+20.10.10.10
+
+________________________________________
+Step 3
+Request reaches LB.
+________________________________________
+Step 4
+LB decides:
+Plain Text
+1
+App2
+
+should handle.
+________________________________________
+Step 5
+Request forwarded.
+Plain Text
+1
+Client
+2
+↓
+3
+LB
+4
+↓
+5
+App2
+
+________________________________________
+Step 6
+Response returns.
+Plain Text
+1
+App2
+2
+↓
+3
+LB
+4
+↓
+5
+User
+
+________________________________________
+User never knows:
+Plain Text
+1
+App2 handled request
+
+________________________________________
+Internal View
+Think of LB as:
+Java
+1
+while(true){
+2
+ 
+3
+Request r = receiveRequest();
+4
+ 
+5
+Server s = selectServer();
+6
+ 
+7
+forward(r, s);
+8
+}
+
+This looks simple.
+But the entire field of load balancing comes from answering:
+Plain Text
+1
+How do we selectServer() ?
+
+________________________________________
+That single question leads to:
+Plain Text
+1
+Round Robin
+2
+Least Connections
+3
+Weighted Routing
+4
+Consistent Hashing
+5
+Latency Based Routing
+6
+Anycast
+
+which we'll study later.
+________________________________________
+Performance Thinking
+Suppose:
+Plain Text
+1
+Server Capacity
+2
+=
+3
+1000 RPS
+
+3 Servers:
+Plain Text
+1
+3000 RPS
+
+theoretically.
+________________________________________
+But reality:
+LB adds overhead.
+Request path becomes:
+Plain Text
+1
+Client
+2
+↓
+3
+LB
+4
+↓
+5
+App
+
+Extra network hop.
+________________________________________
+Trade-off:
+Plain Text
+1
+Small Latency Increase
+2
+ 
+3
+for
+4
+ 
+5
+Huge Scalability Gain
+
+Worth it.
+________________________________________
+Failure Thinking
+Staff Engineers always ask:
+Plain Text
+1
+What if LB dies?
+
+Architecture:
+Plain Text
+1
+Users
+2
+|
+3
+LB
+4
+|
+5
+Apps
+
+________________________________________
+LB Down:
+Plain Text
+1
+Entire Platform Down
+
+Even though:
+Plain Text
+1
+Apps Alive
+
+This makes LB a:
+Plain Text
+1
+Single Point of Failure
+
+We'll solve this in later lessons using:
+Plain Text
+1
+Active-Active
+2
+ 
+3
+Active-Passive
+4
+ 
+5
+VRRP
+6
+ 
+7
+Anycast
+
+________________________________________
+Interview Perspective
+A Principal Engineer won't ask:
+What is a load balancer?
+They may ask:
+Why was a load balancer invented even though vertical scaling exists?
+Expected answer:
+Plain Text
+1
+Vertical scaling has hardware limits,
+2
+is expensive,
+3
+creates a single point of failure,
+4
+and doesn't improve availability.
+5
+ 
+6
+Load balancing enables horizontal scaling,
+7
+fault tolerance,
+8
+rolling deployments,
+9
+and better resource utilization.
+
+________________________________________
+Hands-On Project (This Week)
+Build:
+Plain Text
+1
+Spring Boot App A : Port 8081
+2
+ 
+3
+Spring Boot App B : Port 8082
+
+Endpoint:
+Java
+1
+GET /hello
+
+Return:
+Plain Text
+1
+Hello From App A
+
+and
+Plain Text
+1
+Hello From App B
+
+Then create a simple Java proxy:
+Java
+1
+localhost:8080
+
+that alternates requests.
+Observe:
+Plain Text
+1
+Request 1 -> A
+2
+Request 2 -> B
+3
+Request 3 -> A
+4
+Request 4 -> B
+
+This is your first load balancer.
+
+Load Balancer Lesson 2: Internal Architecture
+What is inside a Load Balancer?
+Most developers imagine a load balancer as:
+Request comes → choose server → forward request
+Reality is much more complex.
+A production load balancer like:
+•	NGINX
+•	HAProxy
+•	Envoy
+•	AWS ALB
+contains multiple subsystems working together.
+Think of a load balancer as a small operating system specialized for network traffic.
+The major components are:
+1.	Listener
+2.	Connection Manager
+3.	Routing Engine
+4.	Health Checker
+5.	Load Balancing Algorithm Engine
+6.	SSL/TLS Engine
+7.	Metrics & Monitoring
+8.	Configuration Manager
+________________________________________
+1. Listener
+Problem
+How does the load balancer know a new request arrived?
+It needs a component constantly listening on a network port.
+Example:
+Plain Text
+1
+Port 80
+2
+Port 443
+
+When a packet arrives:
+Plain Text
+1
+Client
+2
+↓
+3
+Port 443
+4
+↓
+5
+Load Balancer
+
+The listener accepts the connection.
+________________________________________
+Operating System Level
+Internally:
+Java
+1
+ServerSocket serverSocket =
+2
+new ServerSocket(443);
+
+Linux does something similar using:
+Plain Text
+1
+socket()
+2
+bind()
+3
+listen()
+4
+accept()
+
+________________________________________
+Bottleneck
+Suppose:
+Plain Text
+1
+100,000 connections/sec
+
+Single-threaded listener becomes slow.
+Modern load balancers use:
+Plain Text
+1
+epoll (Linux)
+2
+kqueue (BSD)
+3
+IOCP (Windows)
+
+for efficient event-driven processing.
+________________________________________
+2. Connection Manager
+Problem
+After accepting the connection, what next?
+The load balancer must maintain information about active connections.
+Example:
+Plain Text
+1
+Client A -> Connected
+2
+Client B -> Connected
+3
+Client C -> Connected
+
+________________________________________
+The connection manager stores:
+•	Client IP
+•	Port
+•	Connection start time
+•	Current state
+•	Backend server assigned
+________________________________________
+Think of it as:
+Java
+1
+Map<ConnectionId, ConnectionInfo>
+
+________________________________________
+Why Important?
+Algorithms like:
+Plain Text
+1
+Least Connections
+
+depend entirely on this information.
+Without tracking active connections, the load balancer cannot know:
+Plain Text
+1
+Server1 = 500 connections
+2
+ 
+3
+Server2 = 50 connections
+
+________________________________________
+3. Routing Engine
+This is the brain.
+Its job:
+Where should this request go?
+Consider:
+Plain Text
+1
+/api/users
+2
+/api/orders
+3
+/images/logo.png
+
+Maybe they should go to different servers.
+________________________________________
+Example:
+Plain Text
+1
+/api/users -> User Service
+2
+ 
+3
+/api/orders -> Order Service
+4
+ 
+5
+/images -> CDN Cluster
+
+The routing engine decides.
+________________________________________
+NGINX example:
+Nginx Config
+1
+location /users {
+2
+}
+
+Internally this becomes routing rules.
+________________________________________
+4. Load Balancing Engine
+Now assume we have:
+Plain Text
+1
+Server1
+2
+Server2
+3
+Server3
+
+The routing engine decided:
+Plain Text
+1
+User Service Cluster
+
+Now which server?
+The load balancing engine applies an algorithm.
+Possible algorithms:
+•	Round Robin
+•	Weighted Round Robin
+•	Least Connections
+•	Least Latency
+•	Consistent Hashing
+We'll study each separately.
+________________________________________
+Internally:
+Java
+1
+Server chooseServer() {
+2
+}
+
+Everything depends on this decision.
+________________________________________
+5. Health Checker
+A huge production component.
+Problem
+Suppose:
+Plain Text
+1
+Server1 ✅
+2
+Server2 ❌
+3
+Server3 ✅
+
+How does the load balancer know Server2 died?
+________________________________________
+It runs periodic checks.
+Example every:
+Plain Text
+1
+5 seconds
+
+send:
+HTTP
+1
+GET /health
+
+Expected:
+HTTP
+1
+200 OK
+
+________________________________________
+If response fails repeatedly:
+Plain Text
+1
+Server marked unhealthy
+
+and removed from the routing pool.
+________________________________________
+Internal structure:
+Java
+1
+class ServerState {
+2
+boolean healthy;
+3
+int consecutiveFailures;
+4
+}
+
+________________________________________
+Why Consecutive Failures?
+Single failure does not necessarily mean server crash.
+Maybe:
+•	temporary network issue
+•	GC pause
+•	packet loss
+Therefore most load balancers require:
+Plain Text
+1
+3 failures
+
+or
+Plain Text
+1
+5 failures
+
+before removing a server.
+________________________________________
+6. SSL/TLS Engine
+This is one of the heaviest components.
+When user opens:
+Plain Text
+1
+https://amazon.com
+
+TLS handshake occurs.
+Cryptography is expensive.
+Load balancers often terminate TLS.
+Meaning:
+Plain Text
+1
+Client <-> LB
+
+HTTPS
+and
+Plain Text
+1
+LB <-> Backend
+
+either HTTP or HTTPS.
+________________________________________
+Benefits:
+•	backend CPUs freed
+•	centralized certificates
+•	easier management
+________________________________________
+AWS ALB works this way.
+________________________________________
+7. Metrics Engine
+Production systems run on metrics.
+The load balancer continuously records:
+•	RPS
+•	latency
+•	active connections
+•	backend failures
+•	bytes transferred
+________________________________________
+Metrics example:
+Plain Text
+1
+Current Connections: 15,000
+2
+ 
+3
+Requests/sec: 50,000
+4
+ 
+5
+Average Latency: 12 ms
+
+________________________________________
+Without metrics:
+Engineers are blind.
+________________________________________
+8. Configuration Manager
+Suppose new server added:
+Plain Text
+1
+Server4
+
+The load balancer must update configuration.
+________________________________________
+The configuration manager controls:
+•	routing rules
+•	health check rules
+•	TLS certificates
+•	balancing algorithms
+________________________________________
+In Kubernetes:
+Plain Text
+1
+Ingress Controller
+
+plays this role dynamically.
+________________________________________
+Complete Request Journey
+Let's trace one request.
+User sends:
+HTTP
+1
+GET /products/100
+
+Step 1:
+Listener accepts TCP connection.
+Step 2:
+Connection manager creates connection record.
+Step 3:
+TLS engine decrypts request.
+Step 4:
+Routing engine determines:
+Plain Text
+1
+Product Service
+
+Step 5:
+Health checker provides list of healthy servers.
+Example:
+Plain Text
+1
+A ✅
+2
+B ❌
+3
+C ✅
+
+Step 6:
+Load balancing engine chooses:
+Plain Text
+1
+Server C
+
+Step 7:
+Request forwarded.
+Step 8:
+Response returns.
+Step 9:
+Metrics updated.
+Step 10:
+Connection kept alive or closed.
+________________________________________
+Data Structures Used Internally
+A simplified production load balancer may contain:
+Java
+1
+Map<String, BackendServer>
+
+Server registry.
+________________________________________
+Java
+1
+Map<Long, Connection>
+
+Active connections.
+________________________________________
+Java
+1
+PriorityQueue<BackendServer>
+
+Least-connections algorithm.
+________________________________________
+Java
+1
+AtomicInteger
+
+Round-robin counter.
+________________________________________
+Java
+1
+ConcurrentHashMap
+
+Shared state.
+________________________________________
+Failure Scenario 1: Health Check False Positive
+Server responds:
+HTTP
+1
+200 OK
+
+but database is down.
+Load balancer still routes traffic.
+Users receive errors.
+________________________________________
+Real companies use:
+Plain Text
+1
+Deep Health Checks
+
+instead of simple heartbeat checks.
+________________________________________
+Failure Scenario 2: TLS Overload
+Imagine:
+Plain Text
+1
+500,000 new HTTPS connections/sec
+
+TLS handshakes become bottleneck.
+Solutions:
+•	Hardware acceleration
+•	TLS session reuse
+•	Multiple load balancers
+________________________________________
+Failure Scenario 3: Metrics Failure
+Traffic working.
+Monitoring broken.
+________________________________________
+Engineers cannot see:
+•	latency spikes
+•	failures
+•	overload
+Very dangerous.
+Many outages become worse because observability is missing.
+________________________________________
+Performance Thinking
+When Principal Engineers review a load balancer, they ask:
+Which component becomes the bottleneck first?
+Possible answers:
+•	listener saturation
+•	TLS CPU exhaustion
+•	routing rule explosion
+•	connection table size
+•	health check delays
+Not:
+Which algorithm are we using?
+Thinking about bottlenecks is what differentiates system design from memorization.
+
+Load Balancer Internal Architecture (Deep Dive)
+Let's assume a user calls:
+HTTP
+1
+GET /products/100
+
+from Chrome.
+Most engineers think:
+Plain Text
+1
+Request
+2
+↓
+3
+Load Balancer
+4
+↓
+5
+Backend
+
+Reality:
+Plain Text
+1
+TCP Layer
+2
+↓
+3
+Connection Manager
+4
+↓
+5
+TLS Layer
+6
+↓
+7
+HTTP Parser
+8
+↓
+9
+Routing Engine
+10
+↓
+11
+Health Check State
+12
+↓
+13
+Load Balancing Algorithm
+14
+↓
+15
+Proxy Engine
+16
+↓
+17
+Backend Server
+Show less
+________________________________________
+Component 1: Network Listener
+The first thing a LB does is not read HTTP.
+It deals with TCP packets.
+Example:
+Plain Text
+1
+Client wants:
+2
+https://amazon.com
+
+The client's OS creates:
+Plain Text
+1
+TCP Connection
+
+using:
+Plain Text
+1
+SYN
+
+packet.
+Load balancer receives it.
+________________________________________
+Internal OS Calls
+Linux internally uses:
+C
+1
+socket()
+2
+bind()
+3
+listen()
+4
+accept()
+
+NGINX and HAProxy are built around these system calls.
+________________________________________
+Why This Matters
+Before HTTP exists:
+Plain Text
+1
+TCP connection exists
+
+The LB must first accept a network connection.
+No connection.
+No request.
+________________________________________
+Component 2: Connection Table
+When connection arrives, LB stores it.
+Think:
+Java
+1
+Map<ConnectionId, Connection>
+
+Not actual implementation, but conceptually.
+________________________________________
+Each connection contains:
+Plain Text
+1
+Client IP
+2
+Client Port
+3
+Protocol
+4
+Creation Time
+5
+State
+6
+Selected Backend
+
+Example:
+Plain Text
+1
+Connection #1
+2
+ 
+3
+IP:
+4
+103.24.x.x
+5
+ 
+6
+Backend:
+7
+Server-2
+8
+ 
+9
+State:
+10
+ACTIVE
+
+________________________________________
+Why Store Connections?
+Without tracking:
+Plain Text
+1
+Active Connections
+
+the LB cannot answer:
+Plain Text
+1
+How busy is Server-2?
+2
+ 
+
+which is required for:
+Plain Text
+1
+Least Connections
+
+algorithm.
+________________________________________
+Component 3: HTTP Parser
+Now connection exists.
+Request arrives:
+HTTP
+1
+GET /products/100
+2
+Host: amazon.com
+
+________________________________________
+Load balancer parses HTTP.
+Extracts:
+Plain Text
+1
+Method
+2
+Headers
+3
+Path
+4
+Cookies
+5
+Host
+
+________________________________________
+Why?
+Because Layer 7 decisions require request content.
+Example:
+Plain Text
+1
+/users/*
+
+goes to:
+Plain Text
+1
+User Service
+
+________________________________________
+while:
+Plain Text
+1
+/orders/*
+2
+ 
+
+goes to:
+Plain Text
+1
+Order Service
+
+________________________________________
+Without parsing HTTP:
+the LB cannot route intelligently.
+________________________________________
+Component 4: Routing Engine
+This is where service discovery begins.
+Suppose:
+Plain Text
+1
+/users
+2
+/orders
+3
+/payments
+
+exist.
+Routing table:
+Plain Text
+1
+/users → User Cluster
+2
+ 
+3
+/orders → Order Cluster
+4
+ 
+5
+/payments → Payment Cluster
+
+________________________________________
+Internally it behaves like:
+Java
+1
+Map<PathPattern, Cluster>
+
+________________________________________
+Question:
+Why not send everything to same server?
+Because modern systems use:
+Plain Text
+1
+Microservices
+
+and each service lives in separate clusters.
+________________________________________
+Component 5: Backend Registry
+The LB maintains a registry.
+Example:
+Plain Text
+1
+User Cluster
+2
+ 
+3
+Server1
+4
+Server2
+5
+Server3
+
+________________________________________
+Internally:
+Java
+1
+class BackendServer {
+2
+ 
+3
+String host;
+4
+ 
+5
+int port;
+6
+ 
+7
+boolean healthy;
+8
+ 
+9
+int activeConnections;
+10
+}
+
+Thousands of these objects may exist.
+________________________________________
+The LB constantly updates them.
+________________________________________
+Component 6: Health Check Engine
+One of the most critical modules.
+Most outages happen because people underestimate health checks.
+________________________________________
+Simple health check:
+HTTP
+1
+GET /health
+
+Expected:
+HTTP
+1
+200 OK
+
+________________________________________
+Question:
+What if Java process is alive but DB is dead?
+________________________________________
+Example:
+Plain Text
+1
+Spring Boot ✅
+2
+ 
+3
+MySQL ❌
+
+________________________________________
+Health endpoint still returns:
+HTTP
+1
+200
+
+________________________________________
+Load balancer routes traffic.
+Users receive:
+Plain Text
+1
+500 Internal Server Error
+
+________________________________________
+This is called:
+Plain Text
+1
+False Healthy
+
+________________________________________
+Production companies use:
+Plain Text
+1
+Deep Health Checks
+
+________________________________________
+Example checks:
+Plain Text
+1
+Database
+2
+Redis
+3
+Kafka
+4
+Disk Space
+5
+External Dependencies
+
+before returning healthy.
+________________________________________
+Component 7: Server Selection Engine
+Now we reached the heart.
+Question:
+Plain Text
+1
+Which server should receive request?
+
+________________________________________
+Assume:
+Plain Text
+1
+Server1
+2
+Server2
+3
+Server3
+
+all healthy.
+Now LB runs algorithm.
+Possible choices:
+Plain Text
+1
+Round Robin
+2
+Least Connections
+3
+Least Latency
+4
+Consistent Hashing
+5
+ 
+
+________________________________________
+This decision happens for every request.
+Millions of times per second.
+________________________________________
+Why Algorithm Choice Matters
+Imagine:
+Plain Text
+1
+Server1 = 1000 active users
+2
+ 
+3
+Server2 = 10 active users
+
+Round Robin may still choose:
+Plain Text
+1
+Server1
+
+which is bad.
+________________________________________
+Least Connections would choose:
+Plain Text
+1
+Server2
+
+which is smarter.
+________________________________________
+A wrong algorithm can reduce overall system throughput dramatically.
+________________________________________
+Component 8: Proxy Engine
+This is where forwarding occurs.
+Incoming:
+Plain Text
+1
+Client
+
+Outgoing:
+Plain Text
+1
+Backend Server
+2
+ 
+
+________________________________________
+The LB behaves as both:
+Plain Text
+1
+Server
+
+for the client
+and
+Plain Text
+1
+Client
+
+for backend.
+________________________________________
+This is why load balancer is technically a:
+Plain Text
+1
+Proxy
+
+system.
+________________________________________
+Component 9: Connection Pooling
+Massive performance feature.
+Without pooling:
+Every request:
+Plain Text
+1
+New TCP connection
+
+to backend.
+________________________________________
+Example:
+Plain Text
+1
+10,000 requests
+
+creates:
+Plain Text
+1
+10,000 TCP handshakes
+
+________________________________________
+Huge overhead.
+________________________________________
+With pooling:
+Plain Text
+1
+LB
+
+maintains existing backend connections.
+Example:
+Plain Text
+1
+50 persistent connections
+
+shared across requests.
+________________________________________
+Benefits:
+Plain Text
+1
+Lower latency
+2
+ 
+3
+Lower CPU
+4
+ 
+5
+Higher throughput
+
+________________________________________
+Very important production optimization.
+________________________________________
+Component 10: SSL/TLS Engine
+For HTTPS:
+Plain Text
+1
+https://amazon.com
+
+TLS handshake occurs.
+________________________________________
+Cryptography operations include:
+Plain Text
+1
+Certificate Validation
+2
+ 
+3
+Key Exchange
+4
+ 
+5
+Encryption Setup
+
+________________________________________
+These are CPU expensive.
+________________________________________
+Therefore LBs often terminate TLS.
+Meaning:
+Plain Text
+1
+Client
+2
+↔ HTTPS ↔ LB
+3
+ 
+4
+LB
+5
+↔ HTTP ↔ Backend
+
+or sometimes HTTPS again.
+________________________________________
+This is called:
+Plain Text
+1
+SSL Offloading
+
+or
+Plain Text
+1
+TLS Termination
+
+________________________________________
+Why Companies Love TLS Termination
+Suppose:
+Plain Text
+1
+500,000 HTTPS requests/sec
+
+Without LB:
+every application server performs cryptography.
+________________________________________
+With LB:
+LB handles crypto.
+Backend handles business logic.
+________________________________________
+Java service gets more CPU for actual application work.
+________________________________________
+Component 11: Metrics Engine
+Modern systems survive on observability.
+LB collects:
+Plain Text
+1
+Requests/sec
+2
+ 
+3
+Latency
+4
+ 
+5
+Connection Count
+6
+ 
+7
+4xx
+8
+ 
+9
+5xx
+10
+ 
+11
+Traffic Volume
+12
+ 
+13
+Backend Status
+
+________________________________________
+Examples:
+Plain Text
+1
+Current Connections:
+2
+150,000
+3
+ 
+4
+RPS:
+5
+80,000
+6
+ 
+7
+Average Latency:
+8
+9 ms
+
+________________________________________
+Without metrics:
+you don't know:
+Plain Text
+1
+What is overloaded?
+2
+ 
+3
+Which backend is slow?
+4
+ 
+5
+Which region is failing?
+
+________________________________________
+Component 12: Logging Engine
+Every request often generates logs.
+Example:
+Plain Text
+1
+Client IP
+2
+ 
+3
+Timestamp
+4
+ 
+5
+Status Code
+6
+ 
+7
+Backend Server
+8
+ 
+9
+Latency
+
+________________________________________
+Useful during incidents.
+________________________________________
+Real outage investigation often begins from LB logs.
+________________________________________
+Internal Request Lifecycle
+Let's put everything together.
+User sends:
+HTTP
+1
+GET /products/100
+
+Step 1
+TCP connection accepted.
+________________________________________
+Step 2
+Connection stored.
+________________________________________
+Step 3
+TLS decrypted.
+________________________________________
+Step 4
+HTTP request parsed.
+________________________________________
+Step 5
+Routing engine identifies cluster.
+Plain Text
+1
+Product Cluster
+
+________________________________________
+Step 6
+Health status checked.
+Healthy servers:
+Plain Text
+1
+S1
+2
+S3
+3
+S4
+
+________________________________________
+Step 7
+Load balancing algorithm executed.
+Selected:
+Plain Text
+1
+S3
+2
+ 
+
+________________________________________
+Step 8
+Request forwarded.
+________________________________________
+Step 9
+Response received.
+________________________________________
+Step 10
+Metrics updated.
+________________________________________
+Step 11
+Connection reused or closed.
+________________________________________
+Real Staff-Level Thinking
+Most mid-level engineers ask:
+Plain Text
+1
+Which load balancing algorithm should we use?
+
+Staff engineers ask:
+Plain Text
+1
+What component breaks first?
+
+Possible answers:
+Listener Saturation
+Cannot accept more sockets.
+________________________________________
+Connection Table Explosion
+Millions of connections.
+Memory exhaustion.
+________________________________________
+TLS CPU Exhaustion
+Cryptography becomes bottleneck.
+________________________________________
+Slow Health Checks
+Dead server remains active.
+________________________________________
+Metrics Pipeline Failure
+System healthy but invisible.
+________________________________________
+This mindset is what moves you toward Architect/Principal level.
+
+Lesson 3: Request Journey (Client → LB → App → DB)
+This lesson is extremely important because everything later (Round Robin, Health Checks, SSL Termination, API Gateway, NGINX, Envoy, Istio) operates on this request flow.
+________________________________________
+Learning Objective
+By the end of this lesson you should be able to answer:
+•	What exactly happens when a user clicks a URL?
+•	How does a request reach the load balancer?
+•	How does LB choose a backend?
+•	What metadata travels between systems?
+•	Where is latency introduced?
+•	Where can failures occur?
+________________________________________
+The Problem
+Consider a simple URL:
+HTTP
+1
+https://amazon.com/products/100
+
+Most engineers think:
+Plain Text
+1
+Browser
+2
+↓
+3
+Server
+4
+↓
+5
+Response
+
+Reality:
+Plain Text
+1
+Browser
+2
+↓
+3
+DNS
+4
+↓
+5
+Load Balancer
+6
+↓
+7
+Backend Application
+8
+↓
+9
+Database
+10
+↓
+11
+Application
+12
+↓
+13
+Load Balancer
+14
+↓
+15
+Browser
+Show less
+Many components are involved.
+________________________________________
+System Architecture
+Assume:
+Plain Text
+1
+Users
+2
+|
+3
+|
+4
+Load Balancer
+5
+/ \
+6
+/ \
+7
+App A App B
+8
+\ /
+9
+\ /
+10
+MySQL
+
+User never directly contacts:
+Plain Text
+1
+App A
+2
+App B
+
+User only knows:
+Plain Text
+1
+amazon.com
+
+________________________________________
+Step 1: User Clicks URL
+User enters:
+HTTP
+1
+https://amazon.com/products/100
+
+Browser now needs:
+Plain Text
+1
+IP Address
+
+because computers communicate using IPs.
+________________________________________
+Step 2: DNS Resolution
+Browser asks:
+Plain Text
+1
+What is IP for amazon.com?
+
+DNS returns:
+Plain Text
+1
+52.84.10.15
+
+That IP usually belongs to:
+Plain Text
+1
+Load Balancer
+
+not application server.
+________________________________________
+Why Point DNS To LB?
+Imagine:
+Plain Text
+1
+App1 added
+2
+App2 removed
+3
+App3 replaced
+
+Users shouldn't care.
+Only LB IP remains constant.
+This is abstraction.
+________________________________________
+Step 3: Connection Reaches Load Balancer
+Request arrives:
+HTTP
+1
+GET /products/100
+
+LB receives:
+Plain Text
+1
+Client IP
+2
+Headers
+3
+Cookies
+4
+Path
+5
+Method
+
+Example:
+HTTP
+1
+GET /products/100
+2
+ 
+3
+User-Agent: Chrome
+4
+ 
+5
+Cookie: SESSION=abc
+
+________________________________________
+Step 4: Load Balancer Identifies Target Cluster
+Suppose company has:
+Plain Text
+1
+Product Service
+2
+ 
+3
+Order Service
+4
+ 
+5
+Inventory Service
+
+Routing rules:
+Plain Text
+1
+/products/*
+2
+→ Product Cluster
+3
+ 
+4
+/orders/*
+5
+→ Order Cluster
+
+Request:
+HTTP
+1
+/products/100
+
+matches:
+Plain Text
+1
+Product Cluster
+
+________________________________________
+Internal View
+Routing table may conceptually look like:
+Java
+1
+/products/* → ProductCluster
+2
+ 
+3
+/orders/* → OrderCluster
+
+LB first decides:
+Plain Text
+1
+Which cluster?
+
+Before deciding:
+Plain Text
+1
+Which server?
+
+________________________________________
+Step 5: Health Filtering
+Product Cluster contains:
+Plain Text
+1
+Server1
+2
+ 
+3
+Server2
+4
+ 
+5
+Server3
+
+Health status:
+Plain Text
+1
+Server1 ✅
+2
+ 
+3
+Server2 ❌
+4
+ 
+5
+Server3 ✅
+
+LB immediately removes:
+Plain Text
+1
+Server2
+
+from eligible candidates.
+Now candidate list:
+Plain Text
+1
+Server1
+2
+ 
+3
+Server3
+
+________________________________________
+Why Health Filtering Happens First
+Imagine algorithm chooses:
+Plain Text
+1
+Server2
+
+and only afterwards discovers it is dead.
+Request fails.
+Therefore:
+Plain Text
+1
+Unhealthy nodes removed first.
+
+Then balancing occurs.
+________________________________________
+Step 6: Load Balancing Algorithm Runs
+Suppose:
+Plain Text
+1
+Round Robin
+
+Current position:
+Plain Text
+1
+Server1
+
+selected.
+Decision:
+Plain Text
+1
+Request
+2
+↓
+3
+Server1
+
+________________________________________
+Step 7: Request Forwarding
+LB now acts as client.
+Remember:
+Load Balancer is both:
+Plain Text
+1
+Server
+
+for browser
+and
+Plain Text
+1
+Client
+
+for backend.
+Flow:
+Plain Text
+1
+Browser
+2
+↓
+3
+LB
+4
+↓
+5
+App Server
+
+________________________________________
+Step 8: Backend Application Processing
+Spring Boot application receives:
+HTTP
+1
+GET /products/100
+
+Application logic executes.
+Example:
+Java
+1
+ProductService.getProduct(100);
+
+________________________________________
+Step 9: Database Query
+Application queries database.
+SQL
+1
+SELECT *
+2
+FROM products
+3
+WHERE id = 100;
+
+Database returns:
+Plain Text
+1
+iPhone
+2
+₹80000
+3
+Stock = 25
+
+________________________________________
+Step 10: Application Creates Response
+Backend builds:
+JSON
+1
+{
+2
+"id":100,
+3
+"name":"iPhone",
+4
+"price":80000
+5
+}
+
+Returns it.
+________________________________________
+Step 11: Response Travels Back
+Response path:
+Plain Text
+1
+Database
+2
+↓
+3
+Application
+4
+↓
+5
+Load Balancer
+6
+↓
+7
+Browser
+
+LB may:
+•	add headers
+•	log metrics
+•	measure latency
+•	compress response
+before sending.
+________________________________________
+Complete Request Flow
+Plain Text
+1
+User
+2
+↓
+3
+Browser
+4
+↓
+5
+DNS
+6
+↓
+7
+Load Balancer
+8
+↓
+9
+Health Check Filter
+10
+↓
+11
+Load Balancing Algorithm
+12
+↓
+13
+Application
+14
+↓
+15
+Database
+16
+↓
+17
+Application
+18
+↓
+19
+Load Balancer
+20
+↓
+21
+Browser
+Show less
+Memorize this.
+Everything else builds on top of it.
+________________________________________
+Latency Breakdown
+Suppose user experiences:
+Plain Text
+1
+200 ms
+
+response time.
+Where did it go?
+Example:
+Plain Text
+1
+DNS Lookup 10 ms
+2
+ 
+3
+LB Processing 5 ms
+4
+ 
+5
+Network 30 ms
+6
+ 
+7
+Application 40 ms
+8
+ 
+9
+Database 100 ms
+10
+ 
+11
+Response Transfer 15 ms
+
+Total:
+Plain Text
+1
+200 ms
+
+________________________________________
+Major Bottlenecks
+A Staff Engineer asks:
+Where is time spent?
+Not:
+Is LB working?
+Common bottlenecks:
+Database
+Most common.
+Plain Text
+1
+Slow queries
+2
+Missing indexes
+3
+Locks
+
+________________________________________
+Application
+Plain Text
+1
+Expensive business logic
+2
+GC pauses
+3
+Thread starvation
+
+________________________________________
+Network
+Plain Text
+1
+Cross-region traffic
+2
+Packet loss
+3
+Congestion
+
+________________________________________
+Load Balancer
+Plain Text
+1
+TLS processing
+2
+Connection saturation
+
+________________________________________
+Failure Scenario 1
+Application Server Dies
+Plain Text
+1
+Server1 ❌
+
+LB health check removes it.
+Traffic goes to:
+Plain Text
+1
+Server3
+
+Users unaffected.
+________________________________________
+Failure Scenario 2
+Database Dies
+Plain Text
+1
+App1 ✅
+2
+App2 ✅
+3
+DB ❌
+
+LB sees app healthy.
+Requests still routed.
+Users receive:
+Plain Text
+1
+500 Internal Server Error
+
+This is why deep health checks are important.
+________________________________________
+Failure Scenario 3
+Load Balancer Dies
+Plain Text
+1
+Users
+2
+↓
+3
+LB ❌
+4
+↓
+5
+Apps ✅
+
+Everything breaks.
+This creates:
+Plain Text
+1
+Single Point Of Failure
+
+which we'll solve in Lesson 16.
+________________________________________
+Interview Perspective
+A Senior Engineer answer:
+Request goes to load balancer and then server.
+A Principal Engineer answer:
+DNS resolves to the LB, routing rules identify the cluster, health checks eliminate unhealthy nodes, the balancing algorithm selects a healthy backend, the application executes business logic, accesses data stores, and the response returns through the LB where metrics, logging, compression, and security policies may be applied.
+That level of depth is what differentiates seniority levels.
+
