@@ -763,7 +763,7 @@ memory-efficient
 highly available
 scalable
 ________________________________________
-32. The most important mental model
+32. The most important 
 Don't think:
 "Cache = HashMap."
 That's only the simplest implementation.
@@ -862,6 +862,7 @@ Client
 Java Application
   ↓
 Database
+
 With a cache:
 Client
   ↓
@@ -964,7 +965,6 @@ Database
 Invalidate cache
 So:
 database.update(user);
-
 cache.delete("user:100");
 Why delete instead of immediately putting the new value?
 Because the database is the authoritative source.
@@ -1102,7 +1102,6 @@ ________________________________________
 Because application code becomes simpler.
 Instead of:
 User user = cache.get(key);
-
 if (user == null) {
     user = database.findById(id);
     cache.put(key, user);
@@ -1202,7 +1201,6 @@ ________________________________________
 18. Write-Through vs Cache-Aside
 Cache-Aside
 WRITE
-
 Application
     ↓
 Database
@@ -1210,7 +1208,6 @@ Database
 Invalidate cache
 Write-Through
 WRITE
-
 Application
     ↓
 Cache
@@ -1319,7 +1316,6 @@ ________________________________________
 Suppose:
 Write A:
 balance = 100
-
 Write B:
 balance = 200
 The database must eventually receive:
@@ -1407,12 +1403,12 @@ access frequency
 expiration time
 ________________________________________
 29. Let's compare all five
-Pattern	Read miss	Write path	Main advantage	Main risk
-Cache-Aside	App loads DB	DB + invalidate cache	Simple, flexible	App must manage consistency
-Read-Through	Cache loads DB	Depends on implementation	Simpler application	Cache becomes more complex
-Write-Through	Cache serves/coordinates	Cache → DB synchronously	Cache stays current	Write latency
-Write-Back	Cache	Cache → DB asynchronously	Very fast writes	Data loss/ordering complexity
-Refresh-Ahead	Cache refreshes before expiry	Usually independent	Avoids hot-key misses	Unnecessary refreshes
+Pattern	                                     Read miss	                      Write path	                                                                ,                    Main advantage	                                         Main risk
+Cache-Aside	                                  App loads DB	                     DB + invalidate cache	   ,   ,                      Simple, flexible	                         App must manage consistency
+Read-Through                                 Cache loads DB	                  Depends on implementation          ,                     Simpler                                             application Cache becomes more complex
+Write-Through                                Cache serves/coordinates       Cache → DB synchronously	 Cache stays                                            Write latency
+Write-Back	                                           Cache	                                 Cache → DB asynchronously	Very fast writes	                            Data loss/ordering complexity
+Refresh-Ahead	                  Cache refreshes before expiry	Usually independent	Avoids hot-key misses	              Unnecessary refreshes
 ________________________________________
 30. The patterns can be combined
 This is important.
@@ -1593,7 +1589,6 @@ ________________________________________
 When analyzing any caching design, draw:
 time →
 ────────────────────────────────────────────>
-
 Request A
 Request B
 Database Write
@@ -1625,26 +1620,18 @@ ________________________________________
 40. Where these patterns fit in a real Java system
 A common Cache-Aside implementation could look like:
 public User getUser(long id) {
-
     String key = "user:" + id;
-
     User cached = redis.get(key);
-
     if (cached != null) {
         return cached;
     }
-
     User user = userRepository.findById(id);
-
     redis.set(key, user);
-
     return user;
 }
 Write:
 public void updateUser(User user) {
-
     userRepository.update(user);
-
     redis.delete("user:" + user.id());
 }
 This is intentionally simple.
@@ -1667,26 +1654,26 @@ When designing a cache, start here:
                      │
                      ▼
              Is DB authoritative?
-                 /        \
-               YES         NO
-                │           │
-                ▼           ▼
+                 /                                \
+               YES                            NO
+                │                                   │
+                ▼                               ▼
          Cache as copy    More complex
                 │
                 ▼
         How should reads work?
-           /           \
-          /             \
+           /                                  \
+          /                                      \
  Cache-Aside        Read-Through
           │
           ▼
-       Writes?
-       /     \
-      /       \
+        Writes?
+       /               \
+      /                   \
 invalidate   synchronous
-             /       \
-            /         \
-     Write-Through   Write-Back
+             /                            \
+            /                                 \
+     Write-Through      Write-Back
 Then separately consider:
 Do hot keys need proactive refresh?
              │
@@ -1794,7 +1781,6 @@ That's eviction.
 So:
 TTL:
 "Can this value still be used?"
-
 Eviction:
 "Which value should we remove?"
 ________________________________________
@@ -1831,7 +1817,6 @@ The simplest approach:
 Don't actively search for expired entries. Remove them when someone tries to access them.
 Example:
 Cache:
-
 A → expires at 10:01
 B → expires at 10:05
 C → expires at 10:10
@@ -1851,7 +1836,6 @@ An expired entry can exist physically but be logically unavailable.
 Think:
 Physical memory:
 A exists
-
 Logical cache:
 A doesn't exist
 That's perfectly possible.
@@ -2019,7 +2003,6 @@ likely to be accessed again
 LRU exploits that assumption.
 So:
 recently used → keep
-
 not recently used → candidate for removal
 ________________________________________
 15. But how do we implement LRU efficiently?
@@ -2070,17 +2053,13 @@ D
 TAIL
 Interpretation:
 HEAD → most recently used
-
 TAIL → least recently used
 When an entry is accessed:
 A
 move it to the front:
 Before:
-
 C → A → B → D
-
 After:
-
 A → C → B → D
 Now the least recently used is still at the tail:
 D
@@ -2107,10 +2086,7 @@ A → NodeA
 B → NodeB
 C → NodeC
 D → NodeD
-
-
 Doubly Linked List
-
 HEAD
  ↓
 A ↔ C ↔ B ↔ D
@@ -2132,10 +2108,8 @@ Node:
 class Node<K, V> {
     K key;
     V value;
-
     Node<K, V> prev;
     Node<K, V> next;
-
     Node(K key, V value) {
         this.key = key;
         this.value = value;
@@ -2143,17 +2117,12 @@ class Node<K, V> {
 }
 Cache:
 class LRUCache<K, V> {
-
     private final int capacity;
-
     private final Map<K, Node<K, V>> map = new HashMap<>();
-
     private final Node<K, V> head = new Node<>(null, null);
     private final Node<K, V> tail = new Node<>(null, null);
-
     LRUCache(int capacity) {
         this.capacity = capacity;
-
         head.next = tail;
         tail.prev = head;
     }
@@ -2164,10 +2133,8 @@ This removes many special cases.
 ________________________________________
 21. Add node at front
 private void addFirst(Node<K, V> node) {
-
     node.next = head.next;
     node.prev = head;
-
     head.next.prev = node;
     head.next = node;
 }
@@ -2178,7 +2145,6 @@ HEAD ↔ C ↔ A ↔ B ↔ TAIL
 ________________________________________
 22. Remove node
 private void remove(Node<K, V> node) {
-
     node.prev.next = node.next;
     node.next.prev = node.prev;
 }
@@ -2198,15 +2164,11 @@ Simple.
 ________________________________________
 24. LRU get
 public V get(K key) {
-
     Node<K, V> node = map.get(key);
-
     if (node == null) {
         return null;
     }
-
     moveToFront(node);
-
     return node.value;
 }
 Notice the important sequence:
@@ -2220,23 +2182,17 @@ return value
 ________________________________________
 25. LRU put
 public void put(K key, V value) {
-
     Node<K, V> node = map.get(key);
-
     if (node != null) {
         node.value = value;
         moveToFront(node);
         return;
     }
-
     node = new Node<>(key, value);
-
     map.put(key, node);
     addFirst(node);
-
     if (map.size() > capacity) {
         Node<K, V> lru = tail.prev;
-
         remove(lru);
         map.remove(lru.key);
     }
@@ -2381,11 +2337,11 @@ That's more sophisticated than simply counting from creation.
 This is why real cache eviction algorithms can become quite advanced.
 ________________________________________
 34. FIFO vs LRU vs LFU
-Policy	Tracks	Good for
-FIFO	insertion order	simple workloads
-LRU	recent access	temporal locality
-LFU	access frequency	stable hot items
-TTL	expiration time	validity requirements
+Policy	                          Tracks	                                                                          Good for
+FIFO	                           insertion order                                              	simple workloads
+LRU	                           recent access	                                                           temporal locality
+LFU	                           access frequency	                                            stable hot items
+TTL	                          expiration time	                                                           validity requirements
 Important:
 TTL isn't really an eviction policy.
 TTL determines validity.
@@ -2456,12 +2412,12 @@ Conceptually:
                  Cache Capacity
                        │
           ┌────────────┼────────────┐
-          │            │            │
-       recency      frequency      size
-          │            │            │
+          │                              │                               │
+       recency             frequency                size
+          │                               │                               │
           └────────────┼────────────┘
-                       ↓
-                eviction decision
+                                           ↓
+                            eviction decision
 This is why cache eviction isn't merely:
 if full -> remove first item
 in serious systems.
@@ -2492,8 +2448,7 @@ But today's traffic only accesses:
 5 million users
 The effective working set may be much smaller than the total database.
 Caching works best when:
-cache capacity
-is large enough to capture a significant portion of the working set.
+cache capacity is large enough to capture a significant portion of the working set.
 ________________________________________
 41. Cache hit ratio vs cache size
 Generally:
@@ -2513,7 +2468,7 @@ You've already captured the working set.
 ________________________________________
 42. One subtle problem: scan workloads
 Suppose a user performs:
-SELECT every product
+SELECT every product 
 and application caches each product.
 Sequence:
 A
@@ -2529,7 +2484,6 @@ This is called a cache pollution problem.
 Example:
 Hot:
 A A A A A
-
 Scan:
 B C D E F G H I J...
 A naive LRU can evict A even though A is highly valuable.
@@ -2571,11 +2525,11 @@ A realistic cache lifecycle:
              CACHE
                 │
        ┌────────┴────────┐
-       │                 │
-    TTL valid         TTL expired
-       │                 │
-       ▼                 ▼
-    available           remove
+       │                                            │
+    TTL valid                    TTL expired
+       │                                            │
+       ▼                                        ▼
+    available                         remove
        │
        ▼
 memory pressure?
@@ -2589,7 +2543,7 @@ eviction policy
 remove victim
 That's the core mechanism.
 ________________________________________
-46. Production mental model
+46. Production 
 When someone says:
 "We're using Redis with TTL."
 Don't stop there.
@@ -2638,8 +2592,7 @@ get    → O(1) average
 put    → O(1) average
 evict  → O(1)
 ________________________________________
-Next Lesson — 32.4
-Cache Consistency & Invalidation Internals
+Next Lesson — 32.4 Cache Consistency & Invalidation Internals
 This is where caching becomes significantly harder.
 We'll study:
 Database
@@ -2675,7 +2628,6 @@ ________________________________________
 Assume:
 Database:
 user:101 → balance = 100
-
 Cache:
 user:101 → balance = 100
 Everything is consistent.
@@ -2780,7 +2732,6 @@ ________________________________________
 6. The dangerous race
 Now:
 Initial:
-
 DB    = 100
 Cache = MISS
 Two requests arrive.
@@ -2863,7 +2814,6 @@ ________________________________________
 10. The famous race: DB update + cache delete
 Consider:
 Initial:
-
 DB    = 100
 Cache = 100
 Two requests:
@@ -2924,7 +2874,6 @@ cache.put(oldValue)
 Second delete removes that stale value.
 Conceptually:
 Writer:
-
 DB update
    ↓
 delete cache
@@ -3117,7 +3066,7 @@ potentially dangerous
 Authentication/authorization
 Stale permissions:
 potentially a security problem
-Therefore caching policy must be driven by business semantics.
+Therefore, caching policy must be driven by business semantics.
 ________________________________________
 22. Cache stampede
 Now let's move to another major failure mode.
@@ -3189,7 +3138,7 @@ while others wait:
             all receive
 This is called request coalescing, single-flight, or similar mechanisms depending on implementation.
 ________________________________________
-25. Java mental model
+25. Java 
 You could maintain:
 ConcurrentHashMap<String, CompletableFuture<User>>
 Conceptually:
@@ -3328,10 +3277,10 @@ can temporarily serve stale
 refresh asynchronously
 For example:
 0 ───────── 50 ─────── 60 sec
-            │           │
-         soft TTL     hard TTL
-            │
-      refresh starts
+                            │                      │
+                     soft TTL         hard TTL
+                           │
+                refresh starts
 This is a powerful technique for high-traffic data.
 ________________________________________
 33. The cache consistency toolbox
@@ -3357,7 +3306,6 @@ Redis
 PostgreSQL
 For relatively normal read-heavy data, a robust starting point could be:
 READ:
-
 Redis GET
    ↓
 HIT → return
@@ -3439,10 +3387,7 @@ You can now visualize the system as:
             │        CACHE
             │
             ▼
-          CLIENT
-
-
-                 WRITE
+          CLIENT                  WRITE
                   │
                   ▼
                   DB
@@ -3454,9 +3399,9 @@ You can now visualize the system as:
                 CACHE
 But concurrently:
              ┌──────────────┐
-             │ Concurrent   │
-             │ readers      │
-             └──────┬───────┘
+             │ Concurrent         │
+             │ readers                  │
+             └──────┬──────┘
                     │
                     ▼
              stale population
@@ -3465,7 +3410,7 @@ But concurrently:
               consistency race
 That's the part most superficial tutorials don't teach.
 ________________________________________
-38. The most important mental model from today's lesson
+38. The most important  from today's lesson
 There are three separate questions:
 Question 1 — Correctness
 Can cache return stale data?
@@ -3511,8 +3456,7 @@ What if all product keys expire simultaneously?
 TTL jitter.
 That's how a senior engineer approaches caching.
 ________________________________________
-Next Lesson — 32.5
-Cache Stampede, Hot Keys & Cache Failure Internals
+Next Lesson — 32.5  Cache Stampede, Hot Keys & Cache Failure Internals
 We'll go deeper into the failure side of caching:
 Cache Stampede
     ↓
@@ -3539,8 +3483,7 @@ Why fallback itself can kill the DB
 Load shedding
 This lesson will connect Caching → Redis → Distributed Lock → Resilience, so we won't repeat today's consistency material.
 Cache Stampede, Hot Keys & Cache Failure Internals 
-Module 2 — Caching
-Lesson 32.5 — Cache Stampede, Hot Keys & Cache Failure Internals
+Module 2 — Caching - Lesson 32.5 — Cache Stampede, Hot Keys & Cache Failure Internals
 We are now at the failure-engineering part of caching.
 So far we learned:
 Cache
@@ -3558,15 +3501,15 @@ They are related, but they are not the same problem.
 ________________________________________
 1. Cache Stampede
 Imagine this system:
-                    ┌─────────┐
-Requests ──────────►│  Redis  │
-                    └────┬────┘
+                                          ┌─────────┐
+Requests ────────►│  Redis  │
+                                         └────┬────┘
                          │
                        MISS
                          │
                          ▼
                     ┌─────────┐
-                    │   DB    │
+                    │   DB           │
                     └─────────┘
 Normally:
 100,000 requests/sec
@@ -3583,8 +3526,7 @@ Normally:
 Database is happy.
 Now imagine a very popular key:
 product:123
-TTL:
-60 seconds
+TTL: 60 seconds
 At exactly 12:00:00:
 product:123 expires
 Suddenly:
@@ -3674,18 +3616,18 @@ Flow:
                  Redis MISS
                      │
               ┌──────┴──────┐
-              │             │
-          First request   Others
-              │             │
-              ▼             │
-             DB              │
-              │             │
-              ▼             │
-           Redis             │
-              │             │
+              │                                  │
+          First request          Others
+              │                                 │
+              ▼                              │
+             DB                              │
+              │                                 │
+              ▼                              │
+           Redis                          │
+              │                                 │
               └──────┬──────┘
-                     ▼
-                  result
+                               ▼
+                         Result
 This is request coalescing / single-flight.
 ________________________________________
 5. Java implementation idea
@@ -3694,19 +3636,15 @@ ConcurrentHashMap<String, CompletableFuture<Product>>
 stores currently-loading keys.
 Conceptually:
 public Product get(String key) {
-
     Product cached = redis.get(key);
-
     if (cached != null) {
         return cached;
     }
-
     CompletableFuture<Product> future =
         inFlight.computeIfAbsent(
             key,
             k -> loadFromDatabase(k)
         );
-
     try {
         return future.join();
     } finally {
@@ -3927,16 +3865,16 @@ is extremely popular.
 Instead of one cache location:
 product:123 → Node B
 you can create replicas:
-product:123:replica1 → Node A
-product:123:replica2 → Node B
-product:123:replica3 → Node C
-product:123:replica4 → Node D
+product:123: replica1 → Node A
+product:123: replica2 → Node B
+product:123: replica3 → Node C
+product:123: replica4 → Node D
 Then requests can be distributed:
              product:123
                   │
         ┌─────────┼─────────┐
-        ▼         ▼         ▼
-       A          B          C
+        ▼                   ▼                  ▼
+       A                       B                       C
 Now the load is spread.
 ________________________________________
 17. But replication creates a consistency problem
@@ -4051,7 +3989,6 @@ So:
 Fail-open
 → better availability
 → potentially catastrophic DB load
-
 Fail-closed
 → protects backend
 → more application errors
@@ -4101,7 +4038,7 @@ Java CPU may not be 100%
 This is why resource exhaustion matters more than CPU alone.
 ________________________________________
 25. The fallback death spiral
-This sequence is worth memorizing as a system behavior, not a definition:
+This sequence is worth memorizing as a system behaviour, not a definition:
 Redis failure
      ↓
 Cache misses
@@ -4187,15 +4124,15 @@ A more resilient system could look like:
                  Redis
                     │
               ┌─────┴─────┐
-             HIT          FAIL
-              │             │
-              ▼             ▼
-           return       protection
-                            │
+             HIT                      FAIL
+              │                            │
+              ▼                        ▼
+           return             protection
+                                           │
                   ┌─────────┼─────────┐
-                  ▼         ▼         ▼
-              RateLimit  Circuit   Bulkhead
-                            │
+                  ▼                   ▼                      ▼
+              RateLimit     Circuit          Bulkhead
+                                            │
                             ▼
                            DB
 This is much closer to production engineering.
@@ -4459,26 +4396,25 @@ When a cache miss happens:
                      │
                      ▼
              Is key popular?
-                /       \
-              NO         YES
-              │           │
-              ▼           ▼
+                /                    \
+              NO                YES
+              │                       │
+              ▼                    ▼
           DB load     Stampede risk?
-                         │
-                     ┌───┴───┐
-                    NO      YES
-                    │         │
-                    ▼         ▼
-                  load     single-flight
-                              │
-                              ▼
-                       distributed?
-                         /       \
-                       NO         YES
-                       │           │
-                       ▼           ▼
-                   local SF    distributed
-                                coordination
+                                        │
+                             ┌───┴───┐
+                           NO             YES
+                            │                    │
+                           ▼                 ▼
+                         load     single-flight
+                                                 │
+                                               ▼
+                                     distributed?
+                                         /       \
+                                  NO         YES
+                                  │               │
+                                ▼             ▼
+                        local SF    distributed coordination
 Then separately:
 Cache HIT
    │
@@ -4494,14 +4430,14 @@ Cache unavailable
        │
        ▼
 Can stale data be served?
-     /       \
-   YES       NO
-    │         │
-    ▼         ▼
-serve stale  bounded fallback
-              │
-              ▼
-        circuit/rate limit
+     /                             \
+   YES                        NO
+    │                              │
+    ▼                           ▼
+serve stale      bounded fallback
+                                     │
+                                    ▼
+                            circuit/rate limit
 This is the reasoning framework I want you to develop.
 ________________________________________
 44. The deepest takeaway
@@ -4509,20 +4445,20 @@ Caching isn't fundamentally about:
 "put data in Redis"
 It is about managing:
               ┌──────────────┐
-              │   Database   │
-              │ source truth │
+              │   Database              │
+              │ source truth           │
               └──────┬───────┘
-                     │
-               consistency
-                     │
+                                 │
+                      consistency
+                                 │
               ┌──────▼───────┐
-              │    Cache     │
+              │           Cache            │
               └──────┬───────┘
-                     │
-             performance
-                     │
+                                │
+                    performance
+                                │
               ┌──────▼───────┐
-              │  Application │
+              │          Application  │
               └──────────────┘
 while controlling:
 staleness
@@ -4533,7 +4469,6 @@ failure
 concurrency
 hotspots
 That's why caching is a distributed-systems problem, not merely a performance trick.
-
 
 Resilience — Module 1: Retry
 Your first mental shift:
@@ -4554,8 +4489,8 @@ GET /user/123
 B normally responds in 20 ms.
 But occasionally:
 A ---> B
-       |
-       X network packet lost
+             |
+            X network packet lost
 A receives nothing.
 Should A immediately tell the user:
 "Sorry, operation failed."
@@ -4628,9 +4563,7 @@ POST /charge
 retrying may create:
 charge #1 → succeeded
 response → lost
-
 retry
-
 charge #2 → succeeded
 Now you've charged twice.
 That's why idempotency is not an optional detail around retry. It is part of the correctness model.
@@ -4831,7 +4764,7 @@ Usually, retry should be concentrated around the actual remote dependency bounda
 Amazon specifically recommends thinking about the optimal retry layer and warns against retries at multiple layers; its guidance says lower layers may use zero or one retry when retry responsibility is delegated to a higher layer. 
 ________________________________________
 9. Retry is a probability bet
-Here's a more useful mathematical mental model.
+Here's a more useful mathematical .
 Suppose:
 P(success on next attempt | transient failure) = 0.8
 Retrying is attractive.
@@ -4898,10 +4831,8 @@ When should we retry?
 Bad:
 fail
 retry immediately
-
 fail
 retry immediately
-
 fail
 retry immediately
 Imagine 50,000 clients doing this.
@@ -4992,7 +4923,6 @@ ________________________________________
 15. Full jitter
 A common algorithm is:
 cap = min(maxDelay, base × 2^attempt)
-
 sleep = random(0, cap)
 Example:
 attempt 1:
@@ -5002,11 +4932,9 @@ sleep = random(0,100)
 attempt 2:
 cap = 200 ms
 sleep = random(0,200)
-
 attempt 3:
 cap = 400 ms
 sleep = random(0,400)
-
 attempt 4:
 cap = 800 ms
 sleep = random(0,800)
@@ -5222,7 +5150,7 @@ Because it has no idea:
 It is syntactically correct.
 It is architecturally immature.
 ________________________________________
-23. A more realistic mental model
+23. A more realistic 
 Think of retry as:
 execute attempt
       |
@@ -5239,46 +5167,39 @@ execute attempt
              retry allowed?
                     |
           +---------+---------+
-          |                   |
-         no                  yes
-          |                   |
-        fail             remaining budget?
-                              |
-                       +------+------+
-                       |             |
-                      no            yes
-                       |             |
-                     fail      remaining deadline?
-                                     |
-                              +------+------+
-                              |             |
-                             no            yes
-                              |             |
-                            fail      calculate backoff
+          |                                  |
+         no                            yes
+          |                                  |
+        fail                  remaining budget?
                                              |
-                                             v
-                                           jitter
-                                             |
-                                             v
-                                           retry
+                                +------+------+
+                                 |                       |
+                               no                  yes
+                                 |                       |
+                             fail      remaining deadline?
+                                                         |
+                                            +------+------+
+                                             |                        |
+                                           no                   yes
+                                            |                        |
+                                         fail        calculate backoff
+                                                                     |
+                                                                  jitter
+                                                                     |
+                                                                 retry
 That's the algorithm I want you to have in your head.
 ________________________________________
 24. A production-oriented pseudocode
 Not framework-specific:
 Result execute(Request request, Deadline deadline) {
-
     for (;;) {
-
         Result result = attempt(request);
-
         if (result.isSuccess()) {
             return result;
         }
-
         if (!isRetryable(result)) {
             throw result.toException();
         }
-
         if (!isIdempotent(request)) {
             throw result.toException();
         }
@@ -5286,15 +5207,11 @@ Result execute(Request request, Deadline deadline) {
         if (!retryBudget.tryConsume()) {
             throw result.toException();
         }
-
         Duration remaining = deadline.remaining();
-
         Duration delay = calculateBackoffWithJitter();
-
         if (delay >= remaining) {
             throw result.toException();
         }
-
         sleep(delay);
     }
 }
@@ -5363,7 +5280,7 @@ This is the bridge between:
 Retry → Timeout → Circuit Breaker → Bulkhead → Rate Limiting
 We'll eventually connect all of them.
 ________________________________________
-27. The deepest mental model
+27. The deepest 
 I want you to think of resilience mechanisms as control systems.
 Retry:
 observe failure
@@ -5527,7 +5444,7 @@ Retry — Level 2
 •	retry placement in a service graph 
 •	synchronous vs asynchronous retries 
 •	queue-based retry 
-•	429 and Retry-After 
+•	429(Too Many Requests) and Retry-After 
 •	how to design a production Java retry component 
 •	Resilience4j/Spring implementation and its traps 
 •	failure-injection exercises 
@@ -5567,28 +5484,28 @@ We won't start Timeout until you've passed that checkpoint.
 
 The first thing to understand is this:
 Redis is fundamentally an in-memory data structure server driven by an event loop.
-A simplified mental model is:
+A simplified  is:
                  ┌──────────────────────┐
-                 │      Redis Client    │
-                 │ Java / Python / Go   │
+                 │      Redis Client                      │
+                 │ Java / Python / Go                 │
                  └──────────┬───────────┘
-                            │ TCP
-                            ▼
+                                             │ TCP
+                                            ▼
                  ┌──────────────────────┐
-                 │    Redis Server      │
-                 │                      │
-                 │  Network I/O         │
-                 │       ↓              │
-                 │   Event Loop         │
-                 │       ↓              │
+                 │    Redis Server                       │
+                 │                                                     │
+                 │  Network I/O                         │
+                 │       ↓                                          │
+                 │   Event Loop                         │
+                 │       ↓                                         │
                  │ Command Processing   │
-                 │       ↓              │
-                 │ Data Structures      │
-                 │                      │
-                 │ RAM                  │
+                 │       ↓                                         │
+                 │ Data Structures                 │
+                 │                                                   │
+                 │ RAM                                         │
                  └──────────────────────┘
 But this diagram hides a lot of important details.
-Let's build the real mental model.
+Let's build the real .
 ________________________________________
 1. Why was Redis designed this way?
 Suppose we build a traditional server.
@@ -5660,13 +5577,11 @@ This gives Redis a very powerful property:
 A large portion of Redis command execution doesn't need traditional locking between client commands.
 Compare:
 Multi-threaded server
-
 Thread A ─┐
           ├── shared data ── locks/CAS/etc.
 Thread B ─┘
 with:
 Redis command execution
-
 Command A
     ↓
    RAM
@@ -5703,33 +5618,28 @@ Conceptually:
               OS Kernel
                   │
           ┌───────┴────────┐
-          │                │
-       Socket 17        Socket 42
-       readable         readable
-          │                │
+          │                                         │
+       Socket 17                  Socket 42
+       readable                     readable
+          │                                        │
           └───────┬────────┘
-                  ↓
-             Event Loop
-                  ↓
+                               ↓
+                       Event Loop
+                                   ↓
        ┌──────────┼──────────┐
-       ↓          ↓          ↓
-   Client A   Client B   Client C
-       ↓          ↓          ↓
+       ↓                         ↓                         ↓
+   Client A           Client B            Client C
+       ↓                          ↓                         ↓
     command    command    command
 This is I/O multiplexing.
 ________________________________________
 4. Event Loop — the heart of Redis
 At a conceptual level, the event loop looks like:
 while (server is running) {
-
     wait for events
-
     process readable sockets
-
     process commands
-
     process writable sockets
-
     execute scheduled/background work
 }
 Don't take this as literal Redis source code. It's the conceptual model.
@@ -5806,8 +5716,7 @@ Then Redis parses the protocol.
 ________________________________________
 8. Command lookup
 Redis identifies:
-GET
-as a Redis command.
+GET as a Redis command.
 Conceptually:
 "GET"
   ↓
@@ -5944,11 +5853,9 @@ synchronization
 memory ordering
 Redis's traditional approach is simpler:
 Thread/Main Event Loop
-
 INCR counter
      ↓
 complete
-
 INCR counter
      ↓
 complete
@@ -6012,7 +5919,6 @@ A ──────► expensive command
           │
           ▼
        finishes
-
 B ──────► GET
 C ──────► SET
 D ──────► INCR
@@ -6036,9 +5942,9 @@ But the key conceptual distinction remains:
                 Redis
                   │
        ┌──────────┴───────────┐
-       │                      │
- Main command execution   Background/
- event loop               auxiliary work
+       │                                                        │
+ Main command execution       Background/ auxiliary work
+ event loop              
        │
        ▼
  Data structure operations
@@ -6096,19 +6002,19 @@ Think:
                 │
                 ▼
        ┌────────────────┐
-       │ I/O Multiplexer│
+       │ I/O Multiplexer         │
        └───────┬────────┘
                │
                ▼
           Event Loop
                │
        ┌───────┴───────┐
-       ▼       ▼       ▼
-      GET     SET     INCR
-       │       │       │
+       ▼               ▼                ▼
+      GET           SET           INCR
+       │                   │                  │
        └───────┼───────┘
-               ▼
-              RAM
+                           ▼
+                       RAM
 Concurrency is handled primarily by efficient I/O multiplexing, rather than by creating one execution thread per connection.
 ________________________________________
 19. A very important distinction: connection vs request
@@ -6167,7 +6073,7 @@ persistence
 replication
 background work
 ________________________________________
-21. Redis architecture — first-level mental model
+21. Redis architecture — first-level 
 Now build this model in your head:
                          CLIENTS
                             │
@@ -6175,31 +6081,31 @@ Now build this model in your head:
                             │
                             ▼
                  ┌─────────────────────┐
-                 │    Redis Server     │
-                 │                     │
-                 │ Network I/O         │
-                 │       ↓             │
-                 │ I/O Multiplexing    │
-                 │       ↓             │
-                 │ Event Loop          │
-                 │       ↓             │
-                 │ Command Parser      │
-                 │       ↓             │
+                 │    Redis Server                     │
+                 │                                                   │
+                 │ Network I/O                        │
+                 │       ↓                                        │
+                 │ I/O Multiplexing               │
+                 │       ↓                                       │
+                 │ Event Loop                        │
+                 │       ↓                                      │
+                 │ Command Parser          │
+                 │       ↓                                       │
                  │ Command Execution   │
-                 │       ↓             │
-                 │ Redis Objects       │
-                 │       ↓             │
-                 │ In-Memory Dataset   │
+                 │       ↓                                      │
+                 │ Redis Objects                 │
+                 │       ↓                                      │
+                 │ In-Memory Dataset        │
                  └─────────────────────┘
 Then around it:
                        Redis
                          │
         ┌────────────────┼────────────────┐
-        │                │                │
-     RDB/AOF         Replication       Cluster
-        │                │                │
-        ▼                ▼                ▼
-    Persistence       Replicas        Sharding
+        │                                         │                                        │
+     RDB/AOF                  Replication                   Cluster
+        │                                         │                                       │
+        ▼                                      ▼                                 ▼
+    Persistence                  Replicas                 Sharding
 We'll eventually build all of that.
 ________________________________________
 22. The most important architectural trade-off
@@ -6245,12 +6151,11 @@ No. Modern Redis uses additional threads for certain I/O and background tasks. T
 Q6. Why doesn't Redis need a lock around every command?
 Because commands on the main execution path are processed sequentially rather than concurrently modifying the same data structures.
 ________________________________________
-24. One level deeper: the mental model I want you to keep
+24. One level deeper: the  I want you to keep
 Don't remember:
 "Redis is single-threaded."
 Remember this instead:
                  REDIS
-
         Many concurrent clients
                   │
                   ▼
@@ -6266,12 +6171,12 @@ Remember this instead:
           Command execution
                   │
           ┌───────┴───────┐
-          ▼               ▼
+          ▼                                    ▼
       Data access      Response
-          │               │
+          │                                        │
           └───────┬───────┘
-                  ▼
-               Client
+                              ▼
+                          Client
 And the golden rule:
 If the main command execution path is busy, everyone waiting behind it can experience latency.
 That single idea will help you understand Redis performance, failure modes, latency spikes, and production
@@ -6325,7 +6230,7 @@ DB
                      +-- type = STRING
                      +-- encoding = ...
                      +-- pointer = ...
-The actual implementation has more details, but this is the mental model we need.
+The actual implementation has more details, but this is the  we need.
 ________________________________________
 2. Redis database is fundamentally a dictionary
 At a high level, Redis needs a structure that maps:
@@ -6337,14 +6242,13 @@ cart:501 → {...}
 counter → 100
 Conceptually:
 Dictionary
-
 Hash Table
 ┌──────────────────────────────┐
-│ bucket 0                     │
-│ bucket 1 → user:101          │
-│ bucket 2                     │
-│ bucket 3 → counter           │
-│ bucket 4 → cart:501          │
+│ bucket 0                                                       │
+│ bucket 1 → user:101                              │
+│ bucket 2                                                     │
+│ bucket 3 → counter                                │
+│ bucket 4 → cart:501                               │
 └──────────────────────────────┘
 This is conceptually similar to:
 Map<String, Object>
@@ -6612,9 +6516,8 @@ Redis wants string operations to be efficient and safer.
 SDS stores length metadata.
 Conceptually:
 SDS
-
 ┌─────────┬─────────┬───────────────┐
-│ length  │ free    │    buffer     │
+│ length          │ free                │    buffer                   │
 └─────────┴─────────┴───────────────┘
 So Redis can know:
 length = 5
@@ -6627,7 +6530,6 @@ Redis may have allocated some unused capacity.
 Conceptually:
 length = 5
 free   = 10
-
 [hello..........]
 Then appending data doesn't necessarily require reallocating immediately.
 For example:
@@ -6779,11 +6681,9 @@ Another important internal concept:
 Hash tables need to resize as the number of elements changes.
 Conceptually:
 Small table
-
 [ ][ ][ ][ ]
 becomes:
 Larger table
-
 [ ][ ][ ][ ][ ][ ][ ][ ]
 Redis uses mechanisms to resize its dictionaries efficiently.
 Why can't it just stop the world and move millions of entries instantly?
@@ -6815,7 +6715,6 @@ move some entries
 So the migration is spread across time.
 Conceptually:
 Old Hash Table             New Hash Table
-
 bucket 0 ────────────────► bucket 0
 bucket 1 ────────────────► bucket 1
 bucket 2
@@ -6836,18 +6735,13 @@ Then traffic causes rapid growth:
 The internal dictionary needs to adapt.
 If resizing were always a giant blocking operation, you'd see:
 Normal latency:
-
 0.5 ms
 0.4 ms
 0.6 ms
 0.5 ms
-
 Resize:
-
 ████████████████ 200 ms
-
 Then:
-
 0.5 ms
 0.4 ms
 Incremental techniques help avoid large pauses.
@@ -6886,7 +6780,6 @@ then allocates:
 The memory may become fragmented.
 Conceptually:
 Memory:
-
 [Used][Free][Used][Free][Used][Free]
 Even if enough total free memory exists, it may not be arranged optimally for future allocations.
 So:
@@ -7034,41 +6927,41 @@ We'll study exactly when this is true when we reach:
 Strings, Lists, Sets, Hashes, Sorted Sets.
 ________________________________________
 32. Redis memory has several layers
-You should now have this mental model:
-                 Redis Memory
-                      │
+You should now have this :
+                                 Redis Memory
+                                            │
         ┌─────────────┼──────────────┐
-        │             │              │
-      Keys          Values       Metadata
-        │             │              │
-      SDS         Objects       Dictionary
-                    │
-                    ▼
-                Encodings
-                    │
-                    ▼
-                Allocator
-                    │
-                    ▼
-             Fragmentation
-                    │
-                    ▼
-                   RSS
+        │                                 │                                    │
+      Keys                     Values                      Metadata
+        │                                │                                      │
+      SDS                     Objects                       Dictionary
+                                          │
+                                         ▼
+                                  Encodings
+                                           │
+                                          ▼
+                                    Allocator
+                                          │
+                                         ▼
+                               Fragmentation
+                                           │
+                                          ▼
+                                        RSS
 This is much closer to the real system.
 ________________________________________
 33. The Java comparison
 This comparison is worth remembering.
-Java	Redis
-Object	Redis object
-String	SDS-based string representation
-HashMap	Dictionary/hash table
-Object header	Object metadata
-Heap	Process memory
-GC	Redis object/allocator lifecycle mechanisms
-JVM allocator	jemalloc/system allocator layer
-Heap fragmentation	Allocator fragmentation
-Reference graph	Redis internal object references
-Primitive optimization	Specialized Redis encodings
+Java					Redis
+Object					Redis object
+String					SDS-based string representation
+HashMap				Dictionary/hash table
+Object header			Object metadata
+Heap					Process memory
+GC					Redis object/allocator lifecycle mechanisms
+JVM allocator				jemalloc/system allocator layer
+Heap fragmentation			Allocator fragmentation
+Reference graph			Redis internal object references
+Primitive optimization		Specialized Redis encodings
 Don't take these as exact one-to-one mappings.
 They're mental bridges, not implementation equivalences.
 ________________________________________
@@ -7171,7 +7064,7 @@ Redis's internal dictionary and data structures must resize efficiently because 
 Principle 6
 RSS can be significantly larger than the memory Redis reports as its dataset usage.
 ________________________________________
-38. Your Redis mental model so far
+38. Your Redis  so far
 We now have:
 01. Architecture + Event Loop
              ↓
@@ -7228,7 +7121,7 @@ ________________________________________
 3.1 Redis Strings
 Strings are the simplest and most commonly used Redis data type.
 But don't think:
-String value;
+String value;  
 Think:
 Redis Key
     |
@@ -7432,8 +7325,7 @@ Redis historically uses:
 SDS — Simple Dynamic String
 instead of relying everywhere on a raw C string.
 Conceptually:
-SDS
-
+SDS 
 +---------+---------+----------------+
 | length  |  free   |    buffer      |
 +---------+---------+----------------+
@@ -7512,7 +7404,6 @@ ________________________________________
 3.12 When should you NOT use a String?
 Suppose you have:
 User
-
 name
 age
 city
@@ -7544,11 +7435,8 @@ ________________________________________
 Now let's move to:
 LIST
 Think:
-Java:
-
-List<String>
-But don't assume the implementation is identical to:
-ArrayList
+Java: List<String>
+But don't assume the implementation is identical to: ArrayList
 Redis chooses internal representations based on its implementation and version.
 The important abstraction is:
 Redis LIST
@@ -7971,7 +7859,6 @@ ________________________________________
 3.34 Why Sorted Sets are powerful
 Suppose you build a gaming leaderboard.
 Player       Score
-
 Gopal         900
 Ravi          850
 Krishna       1200
@@ -7994,7 +7881,7 @@ Java sort
 take top 10
 ________________________________________
 3.35 Sorted Set = Set + Score + Ordering
-This is the mental model:
+This is the :
 ZSET
 
         Member
@@ -8055,7 +7942,7 @@ time indexes
 scheduled tasks
 There are important trade-offs, which we'll cover later.
 ________________________________________
-3.38 Five Redis structures — core mental model
+3.38 Five Redis structures — core 
 At this point remember:
 STRING
     |
@@ -8066,16 +7953,13 @@ LIST
     |
     +-- ordered sequence
 
-
 SET
     |
     +-- unique unordered members
 
-
 HASH
     |
     +-- field → value
-
 
 ZSET
     |
@@ -8085,12 +7969,12 @@ This is the most important first-level classification.
 ________________________________________
 3.39 Java developer mapping
 Don't treat these as exact implementation equivalents, but the mental bridge is useful:
-Redis	Java mental model	Main property
-String	String / scalar	Single value
-List	List / deque	Ordered elements
-Set	Set	Unique elements
-Hash	Map<Field, Value>	Field/value pairs
-Sorted Set	Set + score/index	Ordered unique members
+Redis		Java 			    		Main property
+String		String /               scalar				Single value
+List		List /    		deque				Ordered elements
+Set		Set						Unique elements
+Hash		Map<Field, Value>	Field/                                 value pairs
+Sorted Set	Set + score/index	                                           Ordered unique members
 ________________________________________
 3.40 Choosing the correct Redis type
 When designing a system, ask:
@@ -8228,7 +8112,7 @@ Redis is fast
       ↓
 therefore every Redis command is fast
 Wrong.
-Better mental model:
+Better :
 Redis is extremely fast
 for appropriate operations
 on appropriate data sizes
@@ -8328,7 +8212,6 @@ queue:emails
 queue:notifications
 recent:events
 
-
 SET
 ---
 users:online
@@ -8336,14 +8219,11 @@ users:java
 blocked:users
 unique:visitors
 
-
 HASH
 ----
 user:101
 product:1001
 session:abc
-
-
 ZSET
 ----
 leaderboard
@@ -8395,7 +8275,7 @@ Internal Encoding
        ↓
 Memory Representation
 ________________________________________
-3.49 One final mental model
+3.49 One final 
 Put everything together:
                          Redis
                            |
@@ -8426,7 +8306,7 @@ Put everything together:
 This is the connection between Lesson 02 and Lesson 03.
 Your previous lesson established that Redis's logical types are backed by different internal representations and that memory includes much more than raw payload. 
 04 — Expiration + TTL + Eviction
-The complete flow is:
+The complete flow is: 
 Key Creation
     ↓
 Set expiration
@@ -8459,10 +8339,9 @@ ________________________________________
 Suppose:
 SET user:101 "Gopal"
 Conceptually Redis stores:
-Redis DB
+Redis DB   
  ┌─────────────────────────────┐
  │ key → value                 │
- │                             │
  │ user:101 → "Gopal"          │
  └─────────────────────────────┘
 Now:
@@ -8473,8 +8352,6 @@ Keyspace
 user:101
    ↓
 "Gopal"
-
-
 Expiration metadata
 ────────────────────
 user:101
@@ -8524,7 +8401,6 @@ ________________________________________
 3. EXPIRE
 Basic command:
 SET session:123 abc
-
 EXPIRE session:123 60
 Meaning:
 Delete session:123 after approximately 60 seconds.
@@ -8560,7 +8436,7 @@ There are two major mechanisms:
               Expired key
                   │
         ┌─────────┴─────────┐
-        ↓                   ↓
+        ↓                                                 ↓
    Lazy expiration     Active expiration
 We'll go deep into both.
 ________________________________________
@@ -8594,7 +8470,6 @@ PEXPIRE
 milliseconds
 Example:
 SET payment:123 pending
-
 PEXPIRE payment:123 5000
 The key should expire after roughly:
 5 seconds
@@ -8616,8 +8491,6 @@ Current time
 duration
      ↓
 expiration timestamp
-
-
 EXPIREAT
 ────────
 specific timestamp
@@ -8629,7 +8502,6 @@ Same idea, but milliseconds.
 EXPIREAT
     ↓
 absolute timestamp in seconds
-
 PEXPIREAT
     ↓
 absolute timestamp in milliseconds
@@ -8668,11 +8540,9 @@ So:
 TTL = 100
     ↓
 exists + expires
-
 TTL = -1
     ↓
 exists + persistent
-
 TTL = -2
     ↓
 doesn't exist
@@ -8703,8 +8573,6 @@ Now Redis has:
 Key/value dictionary
 ────────────────────
 user:101 → Gopal
-
-
 Expiration dictionary
 ─────────────────────
 user:101 → 15:31:00
@@ -8780,7 +8648,6 @@ remain in memory
 That's bad.
 For example:
 RAM = 16 GB
-
 expired objects
       ↓
 still occupying memory
@@ -8806,18 +8673,16 @@ Active expiration
 ________________________________________
 17. Lazy vs Active Expiration
 This is an excellent interview comparison.
-Lazy expiration	Active expiration
-Triggered by key access	Triggered periodically by Redis
-Checks specific key	Searches for expired keys
-Prevents returning expired data	Cleans up unused expired keys
-Low background overhead	Uses background/event-loop work
+Lazy expiration				Active expiration
+Triggered by key access			Triggered periodically by Redis
+Checks specific key				Searches for expired keys
+Prevents returning expired data		Cleans up unused expired keys
+Low background overhead			Uses background/event-loop work
 May leave unused expired keys in memory	Removes expired keys proactively
 Together:
 Client accesses key
        ↓
 Lazy expiration
-
-
 Redis periodically runs
        ↓
 Active expiration
@@ -8919,9 +8784,9 @@ Think of two states:
         logically expired
                  ↓
         ┌────────┴─────────┐
-        ↓                  ↓
+        ↓                                              ↓
    client accesses     active cycle
-        ↓                  ↓
+        ↓                  			↓
    lazy deletion      active deletion
         └────────┬─────────┘
                  ↓
@@ -8956,9 +8821,7 @@ Mark the key to become invalid after a specified time.
 Conceptually:
 DEL
  ↓
-immediate deletion
-
-
+immediate deletio
 EXPIRE
  ↓
 future expiration
@@ -8988,18 +8851,14 @@ SET user:101 John
 The new SET normally replaces the value and removes the old expiration unless you explicitly use expiration-preserving options available in newer Redis versions.
 So:
 Before:
-
 user:101
    ↓
 Gopal
 TTL = 60
-
-
 SET user:101 John
 
 
 After:
-
 user:101
    ↓
 John
@@ -9031,7 +8890,7 @@ and:
 physical deletion time
 are not necessarily identical.
 ________________________________________
-28. Important Mental Model
+28. Important 
 Always think:
 TTL
  ↓
@@ -9098,18 +8957,13 @@ ________________________________________
 32. Eviction Policies
 The important Redis policies include:
 noeviction
-
 allkeys-lru
 volatile-lru
-
 allkeys-lfu
 volatile-lfu
-
 allkeys-random
 volatile-random
-
 volatile-ttl
-
 ...
 The major distinction is:
 allkeys-*
@@ -9154,8 +9008,7 @@ temporary cache data
 You may want:
 permanent data
     ↓
-protected
-
+Protected
 
 cache data
     ↓
@@ -9173,8 +9026,7 @@ Least Recently Used
 The basic idea:
 Frequently used recently
        ↓
-keep
-
+Keep
 
 Not used for a long time
        ↓
@@ -9221,7 +9073,6 @@ Perfect accuracy
        ↓
 expensive
 
-
 Approximation
        ↓
 much cheaper
@@ -9265,8 +9116,6 @@ Suppose:
 Key A:
 accessed 1,000,000 times last month
 but not accessed today
-
-
 Key B:
 accessed 100 times in the last 10 minutes
 LRU might prefer:
@@ -9279,8 +9128,6 @@ Therefore:
 LRU
  ↓
 recency
-
-
 LFU
  ↓
 frequency
@@ -9494,8 +9341,6 @@ An eviction candidate is a key Redis chooses to remove because of memory pressur
 They may overlap, but they are conceptually different.
 Expiration:
 "time says this key is dead"
-
-
 Eviction:
 "memory pressure says remove this key"
 ________________________________________
@@ -9618,7 +9463,7 @@ serve old value
 background refresh
 This is often excellent for high-read systems.
 ________________________________________
-60. The Full Mental Model
+60. The Full 
 You should now visualize Redis like this:
                      Redis
                        │
@@ -9754,7 +9599,6 @@ TTL
  ↓
 controls data freshness/lifetime
 
-
 maxmemory
  ↓
 controls memory boundary
@@ -9825,7 +9669,7 @@ We are focusing on:
 RDB
 We'll study AOF separately.
 ________________________________________
-3. RDB mental model
+3. RDB 
 Think of RDB as a photograph.
 Suppose Redis currently contains:
 user:101 → Gopal
@@ -9865,8 +9709,6 @@ So:
 RDB
  ↓
 snapshot of state
-
-
 AOF
  ↓
 log of operations
@@ -9901,13 +9743,9 @@ Imagine:
 Client 1 → SET A 10
 Client 2 → GET B
 Client 3 → SET C 20
-
           ↓
-
         SAVE
-
           ↓
-
 Redis is busy generating snapshot
 Commands may have to wait.
 Therefore:
@@ -9925,12 +9763,12 @@ Conceptually:
             fork()
               │
        ┌──────┴──────┐
-       │             │
-   Parent          Child
-   Redis           snapshot
-       │             │
-       │             ↓
-       │          dump.rdb
+       │            		 │
+   Parent          		Child
+   Redis           		snapshot
+       │             		│
+       │            		 ↓
+       │        		 dump.rdb
        │
    continues
    serving clients
@@ -9965,8 +9803,8 @@ Instead, initially:
 Parent
    │
    ├────────┐
-   │        │
-   ↓        ↓
+   │    	  	  │
+   ↓        		↓
 same physical memory pages
 Both processes initially reference the same memory pages.
 Conceptually:
@@ -9997,14 +9835,11 @@ Because the child may still need the old version for its snapshot, the OS perfor
 Copy-on-Write
 Conceptually:
 Before write:
-
 Parent ──┐
           ├──→ Page A
 Child  ──┘
 
-
 Parent modifies Page A
-
           Page A
              ↑
            Child
@@ -10042,22 +9877,17 @@ Those writes modify many memory pages.
 Copy-on-Write starts creating private copies.
 Conceptually:
 Initially:
-
 Parent ─┐
         ├── shared pages
 Child  ─┘
 
-
 After many writes:
-
 Parent ──→ modified copies
 Child  ───→ original pages
 Memory usage can increase significantly.
 Potentially:
 Original dataset = 10 GB
-
 Additional CoW pages = several GB
-
 Total physical memory pressure ≈ much higher
 The exact increase depends on how much memory is modified while the snapshot is running, not simply the dataset size.
 ________________________________________
@@ -10076,14 +9906,14 @@ During BGSAVE:
                   fork()
                     │
           ┌─────────┴─────────┐
-          │                   │
-        Parent              Child
-          │                   │
-          │                   │
-    serves clients       creates RDB
-          │                   │
-    SET / GET / DEL             ↓
-          │                 dump.rdb
+          │                 			  │
+        Parent              		Child
+          │                   		│
+          │                 			│
+    serves clients     	    creates RDB
+          │              			│
+    SET / GET / DEL           	↓
+          │                 		     dump.rdb
           │
           └───────────────┐
                           │
@@ -10163,9 +9993,9 @@ but potentially loses changes since last snapshot
 ________________________________________
 19. RDB Persistence Window
 Imagine:
-10:00 ─────────────── 10:10
- │                       │
-RDB snapshot           crash
+10:00 ───────────── 10:10
+ │                       		     │
+RDB snapshot              crash
 Changes from:
 10:00 → 10:10
 may be lost.
@@ -10189,8 +10019,6 @@ if at least 1 change occurs within 900 seconds
 
 if at least 10 changes occur within 300 seconds
     → snapshot
-
-
 if at least 10000 changes occur within 60 seconds
     → snapshot
 The exact configuration and semantics should be checked against the Redis version/configuration you're running, but the important concept is:
@@ -10412,7 +10240,6 @@ ________________________________________
 Suppose:
 Snapshot created:
 10:00
-
 Key expiration:
 10:05
 Redis crashes at:
@@ -10459,7 +10286,6 @@ snapshot
  ↓
 "What does Redis look like at this point?"
 
-
 AOF
  ↓
 operation log
@@ -10477,11 +10303,11 @@ ________________________________________
 36. Durability Trade-off
 Think of this triangle:
              Durability
-                /\
-               /  \
-              /    \
-             /      \
-            /        \
+                /	\
+               / 	 \
+              /   	 \
+             /     	 \
+            /      	  \
       Performance ---- Recovery
 You can't optimize every dimension perfectly.
 RDB chooses a strategy roughly like:
@@ -10558,32 +10384,32 @@ potential stampede
 So persistence, expiration, and cache architecture interact.
 They aren't isolated topics.
 ________________________________________
-40. Production Mental Model
+40. Production 
 When you see:
 Redis + RDB
 think:
-             Redis
-               │
-               │ BGSAVE
-               ↓
-             fork()
-               │
+             	        Redis
+                          │
+                          │ BGSAVE
+                          ↓
+                       fork()
+                           │
         ┌──────┴──────┐
-        │             │
-     Parent          Child
-        │             │
-     clients       snapshot
-        │             │
-        │          serialization
-        │             │
-        │          dump.rdb
+        │                                  │
+     Parent                     Child
+        │                                  │
+     clients                  snapshot
+        │                                  │
+        │                        serialization
+        │                                  │
+        │                          dump.rdb
         │
         └──────┐
-               │
-          Copy-on-Write
-               │
-       writes during snapshot
-               │
+              	           │
+              Copy-on-Write
+                         │
+            writes during snapshot
+                          │
        extra physical memory
 That is the core internal picture.
 ________________________________________
@@ -10596,7 +10422,6 @@ SAVE
 synchronous
  ↓
 blocks Redis during snapshot
-
 
 BGSAVE
  ↓
@@ -10616,7 +10441,7 @@ The parent continues accepting writes. Copy-on-Write ensures the child can see t
 Q8. What is the major RDB weakness?
 Potential loss of writes since the last successful snapshot.
 ________________________________________
-42. One Critical Correction for Your Mental Model
+42. One Critical Correction for Your 
 Don't think:
 BGSAVE
  ↓
@@ -10688,11 +10513,7 @@ The 5 things you absolutely need to remember
 
 05 — Persistence: RDB
 Now:
-06 — Redis Persistence: AOF
- 
- 
- 
-6
+06 — Redis Persistence: AOF(Append Only File)
 ________________________________________
 1. First: What problem is AOF solving?
 Remember the fundamental Redis architecture:
@@ -10720,7 +10541,7 @@ RDB
 
 AOF
  └── record the operations that changed the data
-The mental model is:
+The  is:
 RDB
 "What did Redis's state look like at a particular point in time?"
 AOF
@@ -10738,7 +10559,6 @@ AOF says:
 Don't just remember the final state. Record the commands that produced the state.
 Conceptually:
 AOF file
-
 SET user:101 Gopal
 SET user:101 Krishna
 INCR counter
@@ -11059,12 +10879,12 @@ Historically this uses a child process:
               Redis parent
                   |
           -----------------
-          |               |
+          |              	       |
        client          child process
        traffic         AOF rewrite
-          |               |
-          |               v
-          |          temporary file
+          |                         |
+          |                         v
+          |                   temporary file
           |
           v
         RAM
@@ -11169,6 +10989,7 @@ child
     |
     v
 snapshot file
+
 AOF rewrite
 Redis state
     |
@@ -11276,7 +11097,7 @@ Kafka logs
 filesystem journals
 ________________________________________
 22. AOF is similar to a WAL — but don't say they're identical
-A useful mental model:
+A useful :
 AOF ≈ command log
 WAL  ≈ write-ahead log
 They share ideas:
@@ -11311,7 +11132,6 @@ Reconstruct dataset
 Redis ready
 For example:
 AOF:
-
 SET user:1 Gopal
 SET user:2 Krishna
 INCR visits
@@ -11345,13 +11165,13 @@ parse/replay commands
     ↓
 potentially slower
 This is one of the trade-offs:
-Property	RDB	AOF
-Representation	Snapshot	Operations
-File size	Usually smaller	Usually larger
-Recovery	Usually faster	Can be slower
-Durability granularity	Snapshot interval	Configurable fsync
-Data loss window	Depends on snapshot	Can be ~1 sec with everysec
-Rewrite	RDB snapshot	AOF rewrite
+Property				RDB				AOF
+Representation			Snapshot			Operations
+File size				Usually smaller		Usually larger
+Recovery				Usually faster			Can be slower
+Durability granularity			Snapshot interval		Configurable fsync
+Data loss window		      Depends on snapshot	    Can be ~1 sec with everysec
+Rewrite				RDB snapshot		AOF rewrite
 ________________________________________
 25. The architecture you should remember
 Don't memorize individual facts.
@@ -11527,7 +11347,7 @@ Then:
 "If minimizing recent write loss is important, AOF with an appropriate fsync policy is generally preferable to relying only on periodic RDB snapshots. RDB can still be valuable for backups and faster recovery, so in production I'd consider using both depending on the workload."
 That is a much stronger system-design answer.
 ________________________________________
-32. Deep mental model: three buffers
+32. Deep : three buffers
 When studying AOF, remember these layers:
         Redis
           |
@@ -11729,14 +11549,12 @@ ________________________________________
 5. Replication lag
 Imagine:
 Time →
-
 Primary:
 SET x 1
 SET x 2
 SET x 3
 SET x 4
 SET x 5
-
 Replica:
 SET x 1
 SET x 2
@@ -11747,7 +11565,6 @@ Replication lag
 Conceptually:
 Primary position = 1000
 Replica position = 970
-
 lag = 30 units
 We'll soon see that Redis uses replication offsets to reason about this.
 ________________________________________
@@ -11851,8 +11668,8 @@ Conceptually:
                  Primary
                     |
           +---------+---------+
-          |                   |
-          v                   v
+          |                  		 |
+          v                   	v
        snapshot          new writes
           |                   |
           |                   |
@@ -11968,12 +11785,9 @@ backlog stores recent changes
 When replica reconnects:
 Replica:
 "I missed these changes."
-
 Primary:
 "I still have them in backlog."
-
         ↓
-
 Send missing portion
 That's partial synchronization.
 ________________________________________
@@ -12028,7 +11842,6 @@ But backlog only retains:
 Therefore:
 Required missing data = 50 MB
 Available backlog = 1 MB
-
 → partial resync impossible
 → full synchronization required
 This is why backlog sizing matters in production.
@@ -12056,7 +11869,6 @@ offset = 1,000,000
 
 Replica
 offset =   999,000
-
 difference = 1,000
 This is much more useful than saying:
 "Replica is 17 commands behind."
@@ -12070,14 +11882,11 @@ have very different byte lengths.
 Offsets track the replication stream position.
 ________________________________________
 16. Think of replication as a log
-This is the mental model I want you to keep:
+This is the  I want you to keep:
 Primary produces a stream:
-
 0 ---------------------------------------------------->
        replication bytes
-
 Replica consumes the stream:
-
 0 ----------------------------->
                          ^
                     replica offset
@@ -12145,7 +11954,6 @@ ________________________________________
 19. So partial synchronization requires matching history
 Think:
 Replica says:
-
 Replication ID = X
 Offset = 5000
 Primary asks:
@@ -12172,34 +11980,34 @@ Replica reconnects
         v
 Does primary recognize
 replication history?
-        |
+           |
      +--+--+
-     |     |
-    YES    NO
-     |     |
-     v     v
+     |     	    |
+    YES      NO
+     |     	         |
+     v                  v
 Is missing    FULL SYNC
 data still
 in backlog?
      |
    +--+--+
-   |     |
-  YES    NO
-   |     |
-   v     v
+   |            |
+  YES      NO
+   |            |
+   v             v
 PARTIAL  FULL
 SYNC     SYNC
 This diagram is worth remembering.
 ________________________________________
 21. Full vs partial synchronization
-Feature	Full Sync	Partial Sync
-Amount transferred	Large	Only missing portion
-Cost	High	Low
-New replica	Common	Usually not applicable initially
-Temporary disconnect	Expensive	Ideal
-Requires backlog	Not for initial full copy	Yes
-Requires matching replication history	No	Yes
-Impact	Network/CPU intensive	Much cheaper
+Feature			Full Sync			Partial Sync
+Amount transferred		Large				Only missing portion
+Cost				High				Low
+New replica			Common			Usually not applicable initially
+Temporary disconnect	Expensive			Ideal
+Requires backlog		Not for initial full copy	Yes
+Requires matching replication history	No		Yes
+Impact			Network/CPU intensive	Much cheaper
 ________________________________________
 22. What happens during normal replication?
 Let's simplify the steady state.
@@ -12293,10 +12101,10 @@ ________________________________________
 25. Replication + Persistence
 Now connect our previous topics.
                 Redis Primary
-                 /         \
-                /           \
-               v             v
-           Replica 1      Replica 2
+                 /                       \
+                /        		   \
+               v             	     v
+           Replica 1     	 Replica 2
                |
                |
           persistence
@@ -12305,10 +12113,8 @@ Now connect our previous topics.
 These mechanisms solve different problems:
 Replication
 → another live copy
-
 RDB
 → snapshot / backup / recovery
-
 AOF
 → finer-grained persistence
 
@@ -12374,7 +12180,6 @@ GET user:101 name
 If the read goes to a replica:
 Primary:
 name = Gopal
-
 Replica:
 still has old value
 The application could see:
@@ -12387,11 +12192,9 @@ You might design:
 Writes
    ↓
 Primary
-
 Critical immediate reads
    ↓
 Primary
-
 Eventually consistent reads
    ↓
 Replicas
@@ -12426,10 +12229,9 @@ This does not turn Redis replication into a fully synchronous consensus protocol
 There are still failure and consistency nuances.
 So don't say:
 "WAIT makes Redis synchronous."
-A better mental model:
+A better :
 Normal replication
 → asynchronous
-
 WAIT
 → client can impose a stronger acknowledgement condition
 ________________________________________
@@ -12548,7 +12350,7 @@ Partial synchronization
 Otherwise:
 Full synchronization
 ________________________________________
-37. The complete Redis replication mental model
+37. The complete Redis replication 
 I want you to visualize this:
                          CLIENTS
                             |
@@ -12659,33 +12461,33 @@ Backup
 Automatic failover
 That's the level that starts to demonstrate genuine system-design understanding.
 
-Redis Sentinel — Deep Dive
+09. Redis Sentinel - Deep Dive
 Think of Redis Sentinel as solving a very specific problem:
 Replication gives you copies. Sentinel gives you automated failure detection, leader election, and failover.
 A typical setup is:
                   ┌─────────────────┐
-                  │ Sentinel 1      │
-                  │ 26379           │
+                  │ Sentinel 1                   │
+                  │ 26379                           │
                   └────────┬────────┘
-                           │
+                         	            │
                   ┌────────┴────────┐
-                  │ Sentinel 2      │
-                  │ 26379           │
+                  │ Sentinel 2                      │
+                  │ 26379                              │
                   └────────┬────────┘
-                           │
+                                          │
                   ┌────────┴────────┐
-                  │ Sentinel 3      │
-                  │ 26379           │
+                  │ Sentinel 3                      │
+                  │ 26379                              │
                   └────────┬────────┘
-                           │
-                           ▼
+                                           │
+                                          ▼
               ┌───────────────────────┐
-              │       Redis           │
-              │                       │
-              │  Master               │
-              │     │                 │
-              │     ├── Replica 1     │
-              │     └── Replica 2     │
+              │       Redis                                     │
+              │                                                        │
+              │  Master                                       │
+              │     │                                               │
+              │     ├── Replica 1                   │
+              │     └── Replica 2                      │
               └───────────────────────┘
 There are three separate responsibilities here:
 1.	Detect that something is wrong. 
@@ -12730,7 +12532,6 @@ NEW MASTER = R1
 Automatic failover
 If the master really dies:
 M 💀
-
 R1
 R2
 Sentinel can perform:
@@ -12767,26 +12568,24 @@ Instead:
                         │
 APP ────────────────────┼──────────> Redis
 Application communicates directly with Redis.
-Sentinel is primarily a:
-control-plane component
-while Redis is the:
-data-plane component
+Sentinel is primarily a control-plane component
+while Redis is the data-plane component
 This distinction becomes very useful when designing large systems.
 ________________________________________
 4. Sentinel Architecture
 Let's create a realistic cluster:
                     Sentinel S1
-                        |
-                        |
+                                          |
+                                          |
              ┌──────────┼──────────┐
-             │          │          │
-             ▼          ▼          ▼
+             │                          │                         │
+             ▼                      ▼                       ▼
            Redis M    Redis R1    Redis R2
 
                     Sentinel S2
                         |
                         |
-             ┌──────────┼──────────┐
+             ┌───┼────┐
 
                     Sentinel S3
 Usually you want multiple Sentinels.
@@ -12813,14 +12612,12 @@ But this does not mean failover starts.
 Why?
 Because perhaps the network is broken only between S1 and Redis.
        Network partition
-       
 S1  XXXXXXXXX  Master
 Master could still be perfectly healthy.
 ________________________________________
 6. Objectively Down — ODOWN
 Now Sentinel asks other Sentinels:
-S1 ---> S2
-     ---> S3
+S1 ---> S2 ---> S3
 
 "Do you also think Master is down?"
 Suppose:
@@ -12871,13 +12668,10 @@ Imagine:
 S1 S2 S3 S4 S5
 Network partition:
         S1 S2
-
          X X X
-
        S3 S4 S5
 Suppose S1/S2 can reach the Redis master but S3/S4/S5 cannot.
-If quorum is:
-2
+If quorum is: 2
 S3 + S4 can conclude:
 Master = ODOWN
 But they cannot necessarily obtain the required Sentinel majority depending on which side they're on.
@@ -12989,8 +12783,7 @@ ________________________________________
 14. Sentinel Epochs
 Now we're getting into deeper Sentinel internals.
 Sentinel uses epochs to identify failover generations.
-Think of an epoch as:
-failover version
+Think of an epoch as failover version
 Example:
 epoch 10
 Master failure occurs.
@@ -13010,7 +12803,6 @@ ________________________________________
 15. Step 3 — Select Which Replica Becomes Master
 Suppose:
 M 💀
-
 R1
 R2
 R3
@@ -13030,8 +12822,7 @@ For example:
 R1 priority = 100
 R2 priority = 50
 R3 priority = 200
-Sentinel would generally prefer:
-R2
+Sentinel would generally prefer: R2
 assuming the other selection conditions are acceptable.
 ________________________________________
 16. Why Replication Offset Matters
@@ -13081,14 +12872,10 @@ Sentinel instructs:
 R1 ---> become master
 Conceptually:
 Before:
-
 M
 ├── R1
 └── R2
-
-
 After:
-
 R1 = MASTER
 └── R2 = REPLICA
 The old master, if it comes back, must not simply resume as master.
@@ -13186,7 +12973,6 @@ Sentinel nodes:
     S1
     S2
     S3
-
 Master name:
     mymaster
 rather than:
@@ -13198,7 +12984,6 @@ ________________________________________
 24. What If One Sentinel Dies?
 Suppose:
 S1 💀
-
 S2
 S3
 Redis continues working.
@@ -13233,16 +13018,15 @@ General majority tolerance:
 floor((N - 1) / 2)
 So:
 Sentinels	Majority	Failures tolerated
-3	2	1
-5	3	2
-7	4	3
+3		2		1
+5		3		2
+7		4		3
 But don't blindly add Sentinels. More nodes also mean more operational complexity.
 ________________________________________
 26. Failure Domains Matter
 This is an excellent system-design interview point.
 Bad:
 Availability Zone A
-
 S1
 S2
 S3
@@ -13254,10 +13038,8 @@ EVERYTHING 💀
 Better:
              AZ-A
           S1 + Redis M
-
              AZ-B
           S2 + Redis R1
-
              AZ-C
           S3 + Redis R2
 Now a single AZ failure doesn't necessarily destroy your ability to make a decision.
@@ -13315,7 +13097,6 @@ replication
 failover
 Architecture:
           16,384 hash slots
-
        ┌──────┬──────┬──────┐
        ▼      ▼      ▼
       M1     M2     M3
@@ -13324,7 +13105,6 @@ Architecture:
 Different masters own different hash slots.
 So:
 Sentinel = HA for a Redis master/replica topology
-
 Cluster = distributed/sharded Redis
 This distinction is fundamental.
 ________________________________________
@@ -13332,9 +13112,8 @@ ________________________________________
 Let's examine the scary scenario.
 Suppose:
 S1 S2 | S3
-      |
-    network
-   partition
+            |
+   Network partition
 Both sides think the other side is unavailable.
 The entire point of quorum + majority is to prevent both sides from obtaining the authority required to perform conflicting failovers.
 You should remember:
@@ -13436,7 +13215,6 @@ t3: old Master is still accepting writes
 Now you potentially have:
 Old M:
 A = 10
-
 New M:
 A = 20
 This is where distributed systems become tricky.
@@ -13490,32 +13268,32 @@ RDB
 It only monitors and coordinates.
 This separation is worth remembering.
 ________________________________________
-36. A Good Mental Model
+36. A Good 
 Think of the whole system as three layers:
 ┌──────────────────────────────┐
-│          Application         │
-│                              │
-│ Sentinel-aware Redis client  │
+│          Application                                        │
+│                                                                          │
+│ Sentinel-aware Redis client                 │
 └──────────────┬───────────────┘
                │
                │ data
                ▼
 ┌──────────────────────────────┐
-│        Redis Layer            │
-│                              │
-│ Master ←→ Replicas            │
+│        Redis Layer                                        │
+│                                                                         │   
+│ Master ←→ Replicas                                │
 └──────────────┬───────────────┘
                │
                │ control
                ▼
 ┌──────────────────────────────┐
-│       Sentinel Layer          │
-│                              │
-│ Detection                    │
-│ Quorum                       │
-│ Election                     │
-│ Failover                     │
-│ Discovery                    │
+│       Sentinel Layer                                   │
+│                                                                        │
+│ Detection                                                 │
+│ Quorum                                                    │
+│ Election                                                    │
+│ Failover                                                     │
+│ Discovery                                                 │
 └──────────────────────────────┘
 Once this model clicks, Sentinel becomes much easier.
 ________________________________________
@@ -13538,7 +13316,6 @@ ________________________________________
 Q3
 What's the difference between quorum and majority?
 Quorum → determines ODOWN
-
 Majority → gives failover authorization
 ________________________________________
 Q4
@@ -13570,28 +13347,25 @@ For a production-style HA Redis setup:
              Sentinel-aware client
                        |
              ┌─────────┴─────────┐
-             │                   │
-          Sentinel            Sentinel
-             │                   │
+             │                                                 │
+          Sentinel                             Sentinel
+             │                                                │
              └─────────┬─────────┘
                        │
                     Sentinel
                        │
              ┌─────────┴─────────┐
-             │                   │
+             │                                                │
          Redis Master         Redis Replica
-             │                   │
-             └────── replication┘
+             │                                                │
+             └────── replication -----┘
 And mentally track four independent things:
 1. DATA
    Where are my writes?
-
 2. HEALTH
    Which nodes are alive?
-
 3. AUTHORITY
    Who is allowed to promote?
-
 4. DISCOVERY
    Where should clients send requests?
 Most Sentinel confusion disappears when you separate those four.
@@ -13602,7 +13376,7 @@ For a 6+ year Java developer, I want you to stop thinking:
 “Sentinel detects failure and promotes a replica.”
 Instead, think:
 Sentinel is a distributed state machine coordinating a controlled change of Redis topology under uncertainty.
-That mental model will help you enormously in system-design interviews.
+That  will help you enormously in system-design interviews.
 ________________________________________
 1. First, establish the topology
 Let's use this throughout:
@@ -13611,13 +13385,11 @@ Let's use this throughout:
                 Sentinel S2
                     |
                 Sentinel S3
-
                      |
                      v
-
               Redis Master M
-                /         \
-               /           \
+                /                        \
+               /                             \
           Replica R1     Replica R2
 Configuration conceptually:
 mymaster = M
@@ -13645,8 +13417,8 @@ What failover is happening?
 What epoch are you using?
 So there are really two communication planes:
              Sentinel
-             /      \
-            /        \
+             /               \
+            /                    \
        Redis          Sentinels
 ________________________________________
 3. Sentinel uses two important communication mechanisms
@@ -13738,11 +13510,8 @@ S2 ------------------- M
 S3 ------------------- M
 works perfectly.
 If S1 could immediately promote R1, we'd have:
-S1:
-"M is dead!"
-
-S2:
-"M is healthy!"
+S1: "M is dead!"
+S2: "M is healthy!"
 That's dangerous.
 Therefore:
 SDOWN ≠ failover
@@ -13750,11 +13519,8 @@ ________________________________________
 8. From SDOWN to ODOWN
 S1 needs agreement.
 Conceptually:
-S1 ---> S2
-       "Do you also think M is down?"
-
-S1 ---> S3
-       "Do you also think M is down?"
+S1 ---> S2   "Do you also think M is down?"
+S1 ---> S3   "Do you also think M is down?"
 Suppose:
 S1 = down
 S2 = down
@@ -13779,7 +13545,6 @@ Don't imagine:
 S1
 S2
 S3
-
 all magically update simultaneously.
 Distributed systems don't work that way.
 Each Sentinel has its own local state and receives information asynchronously.
@@ -13813,7 +13578,6 @@ ________________________________________
 11. Sentinel leader election
 Think of it as:
 Who gets to say:
-
 "I will coordinate this failover."
 Suppose S1 wins.
 Now:
@@ -13836,7 +13600,6 @@ Because distributed systems have delayed messages.
 Imagine:
 Old message:
 "Promote R2"
-
 New message:
 "Promote R1"
 A delayed old message could arrive after the new decision.
@@ -13847,24 +13610,16 @@ ________________________________________
 13. This is similar to terms/generations elsewhere
 You'll see this concept everywhere in distributed systems.
 For example:
-Redis Sentinel:
-    epoch
-
-Databases:
-    generation/version
-
-Distributed consensus systems:
-    term
-
-Optimistic concurrency:
-    version number
+Redis Sentinel:    epoch
+Databases:    generation/version
+Distributed consensus systems:    term
+Optimistic concurrency:    version number
 Different systems implement them differently, but the underlying idea is:
 A newer generation supersedes an older generation.
 ________________________________________
 14. Leader now chooses a replica
 We have:
 M 💀
-
 R1
 R2
 S1 asks:
@@ -13925,7 +13680,6 @@ Suppose Sentinel selects:
 R1
 Now:
 Before:
-
         M 💀
        /   \
       R1    R2
@@ -13951,8 +13705,7 @@ M
 +---- R2
 After:
 R1 = MASTER
-R2 cannot continue believing:
-master = M
+R2 cannot continue believing: master = M
 because M is no longer authoritative.
 So R2 needs to follow R1.
 Conceptually:
@@ -14006,8 +13759,7 @@ This is one of the most important things Sentinel does after failover.
 ________________________________________
 21. But there's an important timing window
 Suppose M comes back while the failover process is still happening.
-For some period:
-M
+For some period: M
 may not yet have been fully reconfigured.
 This is why:
 Failover isn't a single atomic operation.
@@ -14026,7 +13778,7 @@ promote
 reconfigure
   ↓
 converge
-That is the actual mental model.
+That is the actual .
 ________________________________________
 22. The Sentinel failover state machine
 Now let's formalize it.
@@ -14063,7 +13815,6 @@ ________________________________________
 This is where interviews get interesting.
 Suppose:
 M 💀
-
 R1 ❌
 R2 ❌
 Sentinel has no usable replica.
@@ -14098,8 +13849,8 @@ Consider:
              M
              |
        ┌─────┴─────┐
-       |           |
-      S1          S2
+       |                               |
+      S1                          S2
        |
        X
        |
@@ -14226,7 +13977,7 @@ instead of:
 INCR
 So Redis HA and application-level correctness are tightly connected.
 ________________________________________
-32. One very important correction to your mental model
+32. One very important correction to your 
 Don't think:
 Sentinel
    ↓
@@ -14253,9 +14004,7 @@ Sentinels:
 S1 — AZ1
 S2 — AZ2
 S3 — AZ3
-
 Redis:
-
 M  — AZ1
 R1 — AZ2
 R2 — AZ3
@@ -14298,11 +14047,9 @@ Instead:
 AZ1:
 M
 S1
-
 AZ2:
 R1
 S2
-
 AZ3:
 R2
 S3
@@ -14312,7 +14059,6 @@ S2 ❌
 Remaining:
 M
 S1
-
 R2
 S3
 The master is still alive.
@@ -14340,9 +14086,8 @@ S2 + R1
 
 S3 + R2
 Each side may have only one Sentinel.
-Neither side has majority of:
-3 Sentinels
-Therefore automatic failover authority becomes unavailable.
+Neither side has majority of: 3 Sentinels
+Therefore, automatic failover authority becomes unavailable.
 This is exactly why network topology matters as much as node count.
 ________________________________________
 36. What you should be able to draw in an interview
@@ -14351,34 +14096,27 @@ If an interviewer asks:
 You should be able to draw:
                     Application
                          |
-                 Sentinel-aware
-                      client
+                 Sentinel-aware client
                          |
-              ┌──────────┼──────────┐
+              ┌───┼────┐
               │          │          │
-             S1         S2         S3
+             S1         S2        S3
               │          │          │
-              └──────────┼──────────┘
+              └────┼───┘
                          |
               ┌──────────┴──────────┐
-              │                     │
-           Redis M                Redis R1
+              │                                                     │
+           Redis M                              Redis R1
               │
               │
            Redis R2
 Then explain:
 Replication → copies data
-
 Sentinel → detects failures
-
 Quorum → determines objective failure
-
 Majority → authorizes failover
-
 Leader → coordinates failover
-
 Replica selection → chooses promotion target
-
 Client discovery → finds new master
 That is a strong system-design answer.
 ________________________________________
@@ -14428,9 +14166,7 @@ Redis Cluster + Hash Slots — Lesson 1
 Imagine your application currently has:
                     Java Application
                           |
-                    Redis Primary
-                    64 GB RAM
-                    100K ops/sec
+   Redis Primary   64 GB RAM  100K ops/sec
 Eventually you hit one of these limits:
 Problem A — Memory
 Your Redis dataset becomes:
@@ -14450,13 +14186,10 @@ but your system needs:
 600K writes/sec
 Adding replicas doesn't solve this because writes still go to the primary.
 You need:
-             Redis Cluster
-
-        Primary A
-        Primary B
-        Primary C
-
-        200K      200K      200K
+             Redis Cluster 
+        Primary A    ->200K      
+        Primary B    ->200K      
+        Primary C   ->200K      
 Now writes can be distributed.
 ________________________________________
 Problem C — Single-node failure
@@ -14468,7 +14201,6 @@ Redis
 Your system is unavailable until recovery/failover happens.
 With Cluster:
               Redis Cluster
-
         P1          P2          P3
        /           /           /
      R1           R2          R3
@@ -14562,7 +14294,6 @@ P2 → slots 5461    - 10922
 P3 → slots 10923   - 16383
 So:
                  16,384 slots
-
 0 ---------------------------------------- 16383
 |                    |                       |
 |                    |                       |
@@ -14592,14 +14323,13 @@ The slots are an abstraction for distributing keys and moving partitions around.
 16,384 provides enough granularity without making cluster metadata unnecessarily large.
 For example:
 3 nodes:
-
 P1 → ~5461 slots
 P2 → ~5461 slots
 P3 → ~5462 slots
 You aren't assigning millions of individual keys to nodes manually.
 You're assigning slot ranges.
 ________________________________________
-6. The important mental model
+6. The important 
 Don't think:
 Redis Cluster:
 
@@ -14608,7 +14338,6 @@ Node 2 owns some keys
 Node 3 owns some keys
 Think:
 Redis Cluster:
-
               16384 HASH SLOTS
                     |
           +---------+---------+
@@ -14634,15 +14363,12 @@ Before:
 P1 → 0 - 5460
 P2 → 5461 - 10922
 P3 → 10923 - 16383
-
-
 After:
-
 P1 → 0 - 4095
 P2 → 4096 - 8191
 P3 → 8192 - 12287
 P4 → 12288 - 16383
-The exact redistribution can vary, but the principle is:
+The exact redistribution can vary, but the principale is:
 Move slots, not the entire keyspace.
 Only keys belonging to moved slots need to migrate.
 This is one of the biggest reasons the slot abstraction is useful.
@@ -14650,8 +14376,7 @@ ________________________________________
 8. What happens to a Java application?
 Here's where this becomes relevant to you.
 Suppose you're using:
-RedisTemplate
-or a Redis client such as Lettuce/Jedis.
+RedisTemplate  or a Redis client such as Lettuce/Jedis.
 Your application sends:
 GET user:101
 The client needs to know:
@@ -14682,8 +14407,7 @@ ________________________________________
 9. What if the client contacts the wrong node?
 This is another important mechanism.
 Suppose your client sends:
-GET user:101
-to P1.
+GET user:101 to P1.
 But slot 9182 actually belongs to P2.
 Redis can respond with a redirection such as:
 MOVED 9182 P2
@@ -14725,14 +14449,8 @@ Means:
 ASK
 Means roughly:
 "This particular request should temporarily be tried on the other node because this slot is currently being migrated."
-So:
-MOVED
-=
-topology changed
-
-ASK
-=
-migration in progress
+So:  MOVED = topology changed
+ASK = migration in progress
 This distinction matters when you study online resharding.
 ________________________________________
 11. Now let's discuss replicas
@@ -14766,11 +14484,9 @@ Solve:
 What happens if a primary fails?
 Together:
                  Redis Cluster
-
        P1              P2              P3
        |               |               |
        R1              R2              R3
-
     slots           slots           slots
    0-5460        5461-10922       10923-16383
 ________________________________________
@@ -14784,7 +14500,6 @@ P2 → another subset
 P3 → another subset
 For example:
 Total dataset = 300 GB
-
 P1 → 100 GB
 P2 → 100 GB
 P3 → 100 GB
@@ -14807,7 +14522,6 @@ Java services
      |
      v
 Redis Cluster
-
 P1
 P2
 P3
@@ -14844,18 +14558,15 @@ So:
 user:{123}
        ↓
       123
-
 user:{123}:profile
        ↓
       123
-
 user:{123}:cart
        ↓
       123
 All can land in the same slot.
 Therefore:
              slot 7421
-
       ┌─────────────────────┐
       │ user:{123}          │
       │ user:{123}:profile  │
@@ -14896,7 +14607,7 @@ but can introduce another:
 hotspot
 That's exactly the kind of tradeoff we care about in system design.
 ________________________________________
-15. Your mental model after today's lesson
+15. Your  after today's lesson
 You should be able to draw this from memory:
                     Java Application
                            |
@@ -14946,9 +14657,8 @@ orders:{123}
 same hash slot
 
 11. Redis Cluster — Resharding + Failover
-Before going further, keep this mental model:
+Before going further, keep this :
                     Redis Cluster
-
        P1                    P2                    P3
    slots 0–5460        slots 5461–10922      slots 10923–16383
        |                     |                     |
@@ -14975,14 +14685,10 @@ P3 → everything
 P4 → nothing
 Instead, you redistribute slots:
 Before:
-
 P1 → 0–5460
 P2 → 5461–10922
 P3 → 10923–16383
-
-
 After:
-
 P1 → 0–4095
 P2 → 4096–8191
 P3 → 8192–12287
@@ -14992,9 +14698,7 @@ The important thing:
 Redis moves slots, and therefore the keys belonging to those slots.
 ________________________________________
 11.2 What actually happens during resharding?
-Let's say:
-P1 owns slot 5000
-and we want to move slot 5000 to P4.
+Let's say: P1 owns slot 5000   and we want to move slot 5000 to P4.
 Initially:
 slot 5000 → P1
 Redis begins migration:
@@ -15008,8 +14712,7 @@ P1
  └── key D
 Those keys belong to slot 5000.
 They are gradually migrated:
-P1                 P4
-
+P1                                      P4
 key A ───────────→ key A
 key B ───────────→ key B
 key C ───────────→ key C
@@ -15032,7 +14735,6 @@ Some keys have moved:
 P1:
 key A
 key B
-
 P4:
 key C
 key D
@@ -15069,9 +14771,9 @@ instead.
 ________________________________________
 11.5 MOVED vs ASK
 This distinction is worth memorizing conceptually:
-Response	Meaning
-MOVED	Slot belongs to another node now
-ASK	Slot is currently being migrated
+Response	                                         Meaning
+MOVED	                                 Slot belongs to another node now
+ASK                                              	   Slot is currently being migrated
 Think:
 MOVED = permanent routing change
 ASK   = temporary migration routing
@@ -15124,10 +14826,8 @@ P3
  R3
 P2 crashes:
 P1       X       P3
- |               |
-R1              R3
-
-        R2
+ |                     |
+R1      R2       R3
 What happens to slots owned by P2?
 For example:
 P2 → slots 5461–10922
@@ -15139,14 +14839,10 @@ requests for slots 5461–10922
 But Redis Cluster has replicas.
 R2 can attempt to become the new primary.
 Before:
-
 P2
  |
 R2
-
-
 After failure:
-
      R2
       ↑
   new primary
@@ -15158,7 +14854,7 @@ This is where Redis Cluster's distributed coordination comes in.
 Redis nodes communicate with each other using the cluster bus.
 Conceptually:
 P1 ←──────→ P2
- ↕           ↕
+ ↕                          ↕
 P3 ←──────→ R2
 They exchange information about:
 •	node health 
@@ -15180,10 +14876,7 @@ P1 thinks:
 P2 = PFAIL
 But P1 doesn't necessarily have enough information to declare the whole cluster that P2 is definitely dead.
 Another node might still be able to communicate with P2.
-So:
-PFAIL
-=
-local suspicion
+So: PFAIL = local suspicion
 ________________________________________
 11.10 FAIL
 Eventually, enough cluster information can establish that the node is actually considered failed by the cluster.
@@ -15191,7 +14884,6 @@ Then:
 P2 = FAIL
 Think:
 PFAIL → local suspicion
-
 FAIL  → cluster-level failure state
 That distinction matters because distributed systems cannot safely assume:
 "I can't see node X, therefore X is dead."
@@ -15236,7 +14928,7 @@ where two different nodes accept writes for the same logical partition.
 Redis Cluster therefore needs coordination and voting rules around failover.
 ________________________________________
 11.13 Replica election
-A simplified mental model:
+A simplified :
 P2 fails
    |
    v
@@ -15372,13 +15064,9 @@ The cluster's authoritative state has changed.
 P2 is now effectively a node that needs to synchronize with the new topology/state.
 Conceptually:
 Old:
-
 P2 = primary
 R2 = replica
-
-
 After failover:
-
 R2 = primary
 P2 = old primary
 P2 can be reconfigured to replicate from the new primary.
@@ -15400,7 +15088,6 @@ At the same time, P1 fails.
 Now you have:
 P1
  X
-
 R1
 while some slots are:
 migrating
@@ -15449,11 +15136,8 @@ Your application doesn't know:
 Did Redis execute it?
 Possibilities:
 A) Redis never received it
-
 B) Redis received it but didn't execute it
-
 C) Redis executed it, but response was lost
-
 D) Redis executed it and response arrived too late
 If you blindly retry, the operation may execute twice.
 For a simple:
@@ -15481,22 +15165,16 @@ ASK	Slot currently migrating
 PFAIL	Local failure suspicion
 FAIL	Cluster considers node failed
 The most important distinction:
-Resharding
-    =
-"I need more/better capacity"
+Resharding    = "I need more/better capacity"
 
 
-Failover
-    =
-"I lost a primary"
+Failover    = "I lost a primary"
 ________________________________________
 11.23 One system-design scenario
 Suppose your company has:
 10 million users
-
 Redis dataset:
 200 GB
-
 Traffic:
 1 million requests/sec
 You design:
@@ -15506,7 +15184,6 @@ Why?
 6 primaries
     ↓
 horizontal capacity
-
 6 replicas
     ↓
 high availability
@@ -15529,13 +15206,13 @@ The complete picture:
                     Redis Cluster
                          |
               +----------+----------+
-              |                     |
+              |                                       |
           Partitioning          Availability
-              |                     |
+              |                                        |
           Hash Slots             Replicas
-              |                     |
+              |                                         |
           Resharding              Failover
-              |                     |
+              |                                     |
         Add/remove capacity    Replace failed primary
 And underneath:
 Key
@@ -15581,7 +15258,6 @@ Request A: withdraw 700
 Request B: withdraw 500
 Your naïve Java code might do:
 int balance = redis.get("balance:1001");
-
 if (balance >= amount) {
     redis.set("balance:1001", balance - amount);
 }
@@ -15655,9 +15331,7 @@ execute queued commands sequentially
 ________________________________________
 12.4 But here's the trap
 Coming from a relational database background, you might think:
-Redis MULTI/EXEC
-=
-SQL transaction
+Redis MULTI/EXEC = SQL transaction
 No.
 This is one of the most important things to understand.
 Redis transactions do not provide the same semantics as a typical database transaction with:
@@ -15668,13 +15342,9 @@ COMMIT
 Redis doesn't generally roll back previously executed commands if a later command fails.
 For example:
 MULTI
-
 SET user:name "Alex"
-
 INVALID_COMMAND
-
 SET user:age 30
-
 EXEC
 The commands are queued, and execution semantics are different from a database transaction that can roll back the whole transaction.
 Think of Redis transactions more as:
@@ -15703,7 +15373,6 @@ Because the problematic part happened before MULTI.
 Timeline:
 A: GET → 1000
 B: GET → 1000
-
 A: MULTI / SET 300 / EXEC
 B: MULTI / SET 500 / EXEC
 The transactions themselves execute atomically, but they don't know that the balance changed between the original reads.
@@ -15716,9 +15385,7 @@ Think of it like:
 "I'm going to make a decision based on this key. If somebody changes it before I commit my changes, abort my transaction."
 Example:
 WATCH balance:1001
-
 GET balance:1001
-
 MULTI
 SET balance:300
 EXEC
@@ -15772,25 +15439,18 @@ ________________________________________
 12.8 The Java retry loop
 Conceptually your Java code becomes:
 while (true) {
-
     redis.watch("balance:1001");
-
     int balance = redis.get("balance:1001");
-
     if (balance < amount) {
         redis.unwatch();
         return false;
     }
-
     int newBalance = balance - amount;
-
     redis.multi();
     redis.set("balance:1001", newBalance);
-
     if (redis.exec() != null) {
         return true;
     }
-
     // Someone modified the balance.
     // Retry.
 }
@@ -15821,7 +15481,6 @@ Redis WATCH follows a similar optimistic-concurrency idea.
 Conceptually:
 Database:
 version check
-
 Redis:
 WATCH
 Not identical internally, but the reasoning model is similar.
@@ -15895,29 +15554,23 @@ ________________________________________
 12.12 Our withdrawal example using Lua
 We want Redis to perform:
 balance = GET key
-
 if balance >= amount:
     balance = balance - amount
     SET key balance
     return success
-
 else:
     return failure
 A Lua script could look conceptually like:
 local balance = tonumber(redis.call('GET', KEYS[1]))
 local amount = tonumber(ARGV[1])
-
 if balance < amount then
     return 0
 end
-
 redis.call('SET', KEYS[1], balance - amount)
-
 return 1
 Java sends:
 KEYS:
     balance:1001
-
 ARGV:
     700
 Redis executes the entire script atomically.
@@ -15928,19 +15581,15 @@ A → withdraw 700
 B → withdraw 500
 Redis starts A's script:
 balance = 1000
-
 check:
 1000 >= 700
-
 SET:
 300
 Script finishes.
 Then B executes:
 balance = 300
-
 check:
 300 >= 500
-
 false
 B fails.
 Final:
@@ -16020,14 +15669,14 @@ Redis:
   write
 ________________________________________
 12.16 A practical comparison
-	MULTI/EXEC	WATCH	Lua
-Groups commands	Yes	Yes	Yes
-Detects concurrent changes	No	Yes	Not needed
-Server-side logic	No	No	Yes
-Retry required	Usually no	Often	Usually no
-Good for conditional logic	Limited	Yes	Excellent
-Java round trips	Multiple/queued	Multiple	Usually one request
-Atomic execution	Yes	Yes if EXEC succeeds	Yes
+					MULTI/EXEC		WATCH	Lua
+Groups commands			Yes			Yes		Yes
+Detects concurrent changes	No			Yes		Not needed
+Server-side logic			No			No		Yes
+Retry required			Usually no		Often		Usually no
+Good for conditional logic		Limited		Yes		Excellent
+Java round trips	    	Multiple/queued	     Multiple	      Usually one request
+Atomic execution			Yes		Yes if EXEC succeeds	Yes
 ________________________________________
 12.17 The round-trip difference matters
 Suppose Java performs:
@@ -16088,10 +15737,9 @@ ________________________________________
 12.19 This is an important system-design tradeoff
 You have three places where logic could happen:
                 Business logic
-
-       Java          Redis           DB
-        |              |              |
-        |              |              |
+       Java         	 Redis         	  DB
+        |            	  |          		    |
+        |            	  |        		    |
     flexible       atomic-ish      transactional
 Putting logic into Java:
 + easy to maintain
@@ -16149,7 +15797,6 @@ decrease stock
 add item to cart
 If these keys hash to different slots:
 stock:{product123} → P1
-
 cart:{user456} → P2
 you cannot simply make this one cluster-wide atomic Lua transaction.
 You need to rethink the data model or the consistency boundary.
@@ -16217,26 +15864,16 @@ Lua
 Problem 5 — Client may retry after ambiguous network failure
 Idempotency
 These are different problems.
-Don't use:
-"Lua"
-as a magic answer to everything.
+Don't use: "Lua" as a magic answer to everything.
 ________________________________________
-12.25 Final mental model
-                  Redis concurrency
-
-                         |
-          +--------------+--------------+
-          |              |              |
-       Simple          Grouped       Conditional
-       command         commands        logic
-          |              |              |
-        INCR         MULTI/EXEC        Lua
-                                         
-                         |
-                   Optimistic
-                   concurrency
-                         |
-                       WATCH
+12.25 Final 
+                 		           Redis concurrency
+                         	                                           |
+          +-----------------------------------+------------------------------+---------------------+
+          |                                                             |                                                   |                                      |
+Simple command      Grouped commands                  Conditional logic               Optimistic concurrency
+          |                                                             |				        |                         |
+        INCR        			 MULTI/EXEC        		   Lua                 WATCH
 And for Cluster:
 Java
  |
@@ -16285,12 +15922,12 @@ Java Application
        | TCP
        v
 +--------------------+
-|       Redis        |
-|                    |
-| Event loop         |
-|      ↓             |
+|       Redis                |
+|                                  |
+| Event loop          |
+|      ↓                        |
 | Command execution  |
-|      ↓             |
+|      ↓                                   |
 | In-memory data     |
 +--------------------+
 The important property historically associated with Redis is:
@@ -16301,8 +15938,7 @@ No lock
 No context switching between command-execution threads
 No concurrent mutation of the same data structure
 So a simple command such as:
-GET user:123
-can be extremely fast.
+GET user:123    can be extremely fast.
 ________________________________________
 13.2 Why doesn't Redis use 32 threads for commands?
 Suppose 32 threads simultaneously modify:
@@ -16322,8 +15958,7 @@ contention
 cache coherence
 context switching
 Redis instead historically chose:
-              Redis command execution
-
+       Redis command execution
 GET ──────┐
 SET ──────┤
 INCR ─────┤──→ Event loop → execute sequentially
@@ -16336,8 +15971,7 @@ This is one of the most important Redis performance concepts.
 ________________________________________
 13.3 The "CPU only 40%, but Redis is slow" problem
 Suppose your Redis has:
-8 CPU cores
-and Redis command execution is primarily using one core.
+8 CPU cores  and Redis command execution is primarily using one core.
 You observe:
 overall CPU = 12.5%
 You might think:
@@ -16389,8 +16023,7 @@ String
 A big key creates several problems.
 Memory
 Obviously:
-500 MB
-is significant.
+500 MB is significant.
 Network
 If you retrieve it:
 GET huge-value
@@ -16428,9 +16061,7 @@ String
 JSON parsing
 Your Redis might be fast internally, but the entire request path isn't.
 Remember the system-level latency:
-Total latency ≈
-
-Redis processing
+Total latency ≈  Redis processing
 + network
 + serialization
 + deserialization
@@ -16441,10 +16072,8 @@ Suppose Redis command execution takes:
 0.1 ms
 but your Java service and Redis are separated by:
 network RTT = 1 ms
-A single operation might be around:
-~1 ms
-not:
-~0.1 ms
+A single operation might be around:  ~1 ms
+not: ~0.1 ms
 Now suppose your code performs:
 GET
 GET
@@ -16455,8 +16084,7 @@ sequentially.
 You can end up paying:
 1 ms × 5 = ~5 ms
 just in network round trips.
-This leads us to:
-Pipelining
+This leads us to: Pipelining
 ________________________________________
 13.8 Pipelining
 Without pipelining:
@@ -16490,17 +16118,11 @@ pipeline
 with:
 MULTI/EXEC
 They are different.
-Pipeline
-Primarily about:
-network efficiency
-MULTI/EXEC
-About:
-transactional command grouping / atomic execution
+Pipeline Primarily about:  network efficiency
+MULTI/EXEC About: transactional command grouping / atomic execution
 You can think:
 Pipeline:
 "Send many things efficiently."
-
-
 Transaction:
 "Execute this group as a Redis transaction."
 They solve different problems.
@@ -16593,7 +16215,6 @@ better locality
 multi-key compatibility
 
 BUT
-
 hot entity
    ↓
 hot slot
@@ -16615,19 +16236,13 @@ It might be tiny:
 product:123 = "iPhone"
 but extremely popular.
 So:
-Big key
-=
-large data per key
-
-Hot key
-=
-high request frequency per key
+Big key = large data per key
+Hot key = high request frequency per key
 They are different problems.
 ________________________________________
 13.15 Why hot keys are dangerous in Redis Cluster
 Suppose:
 Redis Cluster
-
 P1
 P2
 P3
@@ -16678,11 +16293,8 @@ ________________________________________
 13.17 Memory: Redis stores more than your values
 This is another common beginner mistake.
 Suppose you calculate:
-10 million users × 100 bytes
-=
-1 GB
-You might assume Redis needs approximately:
-1 GB
+10 million users × 100 bytes = 1 GB
+You might assume Redis needs approximately: 1 GB
 Not necessarily.
 Redis memory includes overhead for:
 keys
@@ -16697,9 +16309,7 @@ client buffers
 temporary memory
 etc.
 So:
-logical dataset size
-        ≠
-actual Redis RSS
+logical dataset size        ≠ actual Redis RSS
 This matters enormously when sizing production Redis.
 ________________________________________
 13.18 Example
@@ -16872,13 +16482,8 @@ and:
 used_memory_rss
 can differ.
 Think:
-used_memory
-=
-Redis's view of allocated data
-
-RSS
-=
-memory actually resident from the OS perspective
+used_memory = Redis's view of allocated data
+RSS = memory actually resident from the OS perspective
 A large difference can indicate fragmentation or other process memory effects.
 ________________________________________
 13.25 Why fragmentation matters
@@ -16894,8 +16499,7 @@ Redis RSS = 12 GB
 Other processes = 3 GB
 You're already near the edge.
 Then a temporary memory spike occurs.
-Potentially:
-OOM
+Potentially: OOM
 So production Redis sizing needs headroom.
 Don't run:
 Redis maxmemory = 95% of physical RAM
@@ -16950,7 +16554,7 @@ dataset
 + persistence overhead
 + temporary operations
 + safety headroom
-That's a much better production mental model.
+That's a much better production .
 ________________________________________
 13.28 Serialization matters in Java
 Redis may be fast, but your Java application can still waste time.
@@ -17020,9 +16624,7 @@ ________________________________________
 At a high level:
 Throughput ≈ work / time
 But for a Redis request, latency comes from multiple components:
-Latency ≈
-
-queueing
+Latency ≈ queueing
 + network
 + Redis command execution
 + serialization/deserialization
@@ -17046,7 +16648,6 @@ Never evaluate Redis performance using only:
 average latency
 Suppose:
 Requests = 1,000,000
-
 Average = 2 ms
 P50     = 1 ms
 P95     = 3 ms
@@ -17141,13 +16742,13 @@ Think in these dimensions:
                     Redis Performance
                            |
        +-------------------+-------------------+
-       |                   |                   |
+       |                                  |                                |
     Command             Network             Memory
-       |                   |                   |
-   complexity          RTT                 big keys
+       |                                  |                              |
+   complexity              RTT                       big keys
    expensive ops       pipelines           fragmentation
-   Lua scripts         batching             eviction
-       |                   |                   |
+   Lua scripts             batching             eviction
+       |                                   |                               |
        +-------------------+-------------------+
                            |
                          Java
@@ -17158,11 +16759,11 @@ Think in these dimensions:
                   thread contention
 And at the cluster level:
                  Redis Cluster
-                      |
+                                  |
        +--------------+--------------+
-       |              |              |
+       |                          |                        |
     Hot key        Hot slot      Uneven slots
-       |              |              |
+       |                         |                         |
    one key        one primary    imbalance
 ________________________________________
 13.36 What I want you to remember
@@ -17193,9 +16794,9 @@ One architecture picture to keep
                          Java Service
                               |
                     +---------+---------+
-                    |                   |
+                    |                                        |
               Connection Pool       Serialization
-                    |                   |
+                    |                                        |
                     +---------+---------+
                               |
                            Network
@@ -17204,14 +16805,14 @@ One architecture picture to keep
                      Redis Cluster
                               |
           +-------------------+-------------------+
-          |                   |                   |
-         P1                  P2                  P3
-          |                   |                   |
-      slots A             slots B             slots C
-          |                   |                   |
+          |                                  |                                |
+         P1                              P2                           P3
+          |                                 |                                |
+      slots A                     slots B                  slots C
+          |                                |                                 |
       memory              memory              memory
-          |                   |                   |
-      replicas            replicas            replicas
+          |                                |                                |
+      replicas               replicas              replicas
 When performance goes bad, investigate each layer, not just Redis.
 14. Redis Failure Modes
 This is one of the most important topics in the entire Redis series.
@@ -17237,14 +16838,13 @@ When someone says:
 "Redis is down."
 That statement is too vague.
 There are many different situations:
-                    Redis failure
-                         |
-       +-----------------+------------------+
-       |                 |                  |
-    Hard down         Slow              Partial
-       |                 |                  |
-   connection        timeout           one node
-   refused           latency            failed
+                                                 Redis failure
+                                                               |
+       +-------------------------------+-----------------------+
+       |                                                      |                                        |
+    Hard down       	              Slow                             Partial
+       |                                                      |                                       |
+   connection refused     timeout latency      one node failed
 And they require different responses.
 For example:
 Redis completely unavailable
@@ -17299,7 +16899,6 @@ Database
 The application can potentially continue.
 Example:
 GET user:123
-
 Redis unavailable
        ↓
 fallback to DB
@@ -17312,9 +16911,7 @@ ________________________________________
 14.4 The database can suddenly become the victim
 Imagine:
 Normal traffic:
-
 1,000 req/sec
-
 Redis:
 900 cache hits
 100 DB requests
@@ -17519,8 +17116,7 @@ Consider:
 GET user:123
 A retry is often reasonable.
 But:
-INCR balance
-is different.
+INCR balance is different.
 Suppose:
 Java → INCR
 Redis executes it.
@@ -17667,7 +17263,6 @@ ________________________________________
 This is a much harder distributed-systems problem.
 Imagine:
           Network partition
-
       P1 --------X-------- P2
 P1 and P2 cannot communicate.
 But both machines are alive.
@@ -17683,7 +17278,6 @@ ________________________________________
 14.18 Why network partitions are dangerous
 Imagine:
 Application A → P1
-
 Application B → P2
 If the cluster cannot correctly coordinate ownership, you risk conflicting views of the system.
 Distributed systems have to answer:
@@ -17694,7 +17288,7 @@ This is where quorum and cluster failure rules matter.
 Redis Cluster is designed to prevent arbitrary independent masters from safely operating as if they were the same cluster partition indefinitely.
 ________________________________________
 14.19 Think in terms of authority
-A useful mental model:
+A useful :
 Who owns these slots?
         ↓
 Which node is primary?
@@ -17939,13 +17533,11 @@ Redis
 timeout
 you can use a circuit breaker concept:
              Redis healthy
-
 Request → Redis
 Request → Redis
 Request → Redis
 After repeated failures:
              Redis unhealthy
-
 Request
   |
   X
@@ -18084,7 +17676,6 @@ Your architecture:
                 Database
 Normal:
 10K req/sec
-
 Redis → 9K hits
 DB    → 1K requests
 Now Redis primary becomes unhealthy.
@@ -18232,7 +17823,7 @@ Can fallback handle the traffic?
     +-- NO → rate limit / load shed
     |
     +-- YES → continue
-That is the mental model I want you to develop.
+That is the  I want you to develop.
 ________________________________________
 14.39 The most important lessons
 1. Redis being "up" isn't enough
@@ -18266,23 +17857,17 @@ Redis failure
       ↓
 everything fails
 ________________________________________
-Your complete Redis mental model so far
+Your complete Redis  so far
 You now have:
 11. Cluster Resharding + Failover
              ↓
        distribute + survive
-
-
 12. Transactions + WATCH + Lua
              ↓
        concurrency + atomicity
-
-
 13. Performance + Memory
              ↓
        throughput + latency + capacity
-
-
 14. Failure Modes
              ↓
        contain failures
@@ -18343,21 +17928,16 @@ Read
 5. Return
 Pseudo-code:
 Product getProduct(long id) {
-
     Product cached = redis.get("product:" + id);
-
     if (cached != null) {
         return cached;
     }
-
     Product product = repository.findById(id);
-
     redis.set(
         "product:" + id,
         product,
         TTL
     );
-
     return product;
 }
 This pattern is extremely common because it is simple.
@@ -19111,11 +18691,11 @@ reprocessing
 than basic Pub/Sub.
 ________________________________________
 15.33 Pub/Sub vs Streams
-	Pub/Sub	Streams
-Durable history	❌	✅
-Consumer groups	❌	✅
-Replay	❌	✅
-Simple notifications	✅	More complex
+	                           Pub/Sub	Streams
+Durable history	❌		✅
+Consumer groups	❌		✅
+Replay			❌		✅
+Simple notifications	✅		More complex
 Cache invalidation	Excellent	Possible
 Event processing	Limited	Better
 Mental shortcut:
@@ -19136,10 +18716,10 @@ Let's build a realistic Java system:
              +--------------+--------------+
              |              |              |
           Caffeine        Redis          Kafka
-             |              |              |
-             |              |              |
-             |         PostgreSQL          |
-             |                             |
+             |           	          |                     |
+             |                         |                     |
+             |            PostgreSQL          |
+             |                                               |
              +-----------------------------+
 Redis might simultaneously handle:
 product cache
@@ -19153,15 +18733,10 @@ ________________________________________
 Use explicit naming.
 For example:
 cache:product:123
-
 session:user:456
-
 ratelimit:user:456
-
 idempotency:abc123
-
 lock:product:123
-
 counter:product:123
 This makes operations much easier to reason about.
 You can also configure different TTLs and policies conceptually around different workloads.
@@ -19198,10 +18773,8 @@ This is a very important production architecture consideration.
 Sometimes you isolate workloads:
 Redis Cluster A
 → cache
-
 Redis Cluster B
 → critical coordination/session
-
 Redis/Streams/Kafka
 → event processing
 Whether isolation is worth the operational cost depends on scale and criticality.
@@ -19288,7 +18861,7 @@ communicate events/messages
 Redis can support all three.
 But their failure semantics are completely different.
 ________________________________________
-15.40 Your senior-level mental model
+15.40 Your senior-level 
 Don't say:
 "Redis is our cache."
 Instead say:
@@ -19372,12 +18945,10 @@ If you remember only these:
 
 9. Idempotency
    → retries need operation identity
-
 10. Pub/Sub ≠ durable messaging
-
 11. Streams ≠ ordinary cache
-
 12. Redis workload isolation matters
+
 16. Production Redis Architecture
 This is the capstone of the Redis series.
 At this point, don't think:
@@ -19425,7 +18996,6 @@ ________________________________________
 For significant scale, we can distribute keys across multiple primaries.
 Conceptually:
                 Redis Cluster
-
        +----------+----------+----------+
        |          |          |          |
       P1         P2         P3         P4
@@ -19516,21 +19086,16 @@ AZ-A       AZ-B
 Now:
 AZ-A X
    ↓
-R1 survives
-and can potentially be promoted.
+R1 survives and can potentially be promoted.
 ________________________________________
 16.5 Think in failure domains
 Production architecture isn't:
 node survives
 It's:
 What if the node fails?
-
 What if the VM fails?
-
 What if the rack fails?
-
 What if the AZ fails?
-
 What if the region fails?
 Your replication topology should reflect the failures you want to survive.
 ________________________________________
@@ -19621,7 +19186,6 @@ ________________________________________
 For a cache-oriented Redis deployment, configure a memory limit appropriate to the workload.
 Conceptually:
 RAM = 128 GB
-
 Redis maxmemory
        ↓
 perhaps significantly below 128 GB
@@ -19645,7 +19209,6 @@ don't silently evict
 These are completely different requirements.
 So ask:
 What is stored in this Redis?
-
 Disposable cache?
 Session?
 Rate-limit state?
@@ -19681,10 +19244,8 @@ That's a dangerous blast radius.
 At sufficient scale, you might use:
 Redis Cluster A
 → cache
-
 Redis Cluster B
 → sessions / coordination
-
 Kafka or dedicated Streams deployment
 → event processing
 The decision is driven by:
@@ -20120,7 +19681,6 @@ cache hits
 cache misses
 Example:
 100K requests
-
 95K hits
 5K misses
 Hit ratio:
@@ -20244,7 +19804,6 @@ ________________________________________
 Let's simulate a serious incident.
 Normal:
 100K API req/sec
-
 Redis:
 300K ops/sec
 P99 = 2 ms
@@ -20393,9 +19952,7 @@ I'd start with:
 Then explain:
 Redis = performance layer
 PostgreSQL = source of truth
-
 Cache strategy = Cache-Aside
-
 Writes:
 DB transaction
    ↓
@@ -20451,7 +20008,7 @@ application never sees errors
 Distributed systems don't remove failure.
 They move failure boundaries and provide mechanisms to recover from them.
 ________________________________________
-16.42 The entire Redis course in one mental model
+16.42 The entire Redis course in one 
 You started with Redis fundamentals.
 Now connect everything:
                     REDIS
@@ -20490,7 +20047,7 @@ Now connect everything:
                  FAILURE
                     |
        +------------+------------+
-That is the Redis mental model you want at your experience level.
+That is the Redis  you want at your experience level.
 ________________________________________
 16.43 Final senior-level takeaway
 When designing Redis in production, don't start with:
@@ -20561,7 +20118,6 @@ High-scale Session System
 There you'll have to decide where Redis belongs, where it absolutely should not belong, and how Redis interacts with PostgreSQL, Kafka, Java services, load balancers, and distributed consistency.
 
 
-
 Cache Invalidation — Lesson 1
 Why invalidation is fundamentally difficult
 The key idea I want you to leave with is:
@@ -20594,7 +20150,6 @@ Application ────────────┤
                  └──────────────┘
 Now:
 User user = redis.get("user:123");
-
 if (user == null) {
     user = database.findUser(123);
     redis.set("user:123", user);
@@ -20602,7 +20157,6 @@ if (user == null) {
 The moment you do this, you've created a new reality:
 Database:
 user:123 -> name = "John"
-
 Redis:
 user:123 -> name = "John"
 There are now two copies.
@@ -20654,7 +20208,6 @@ There are several ways to accomplish that.
 Strategy A — Delete
 DB:
 user:123 = Mike
-
 Redis:
 delete user:123
 Next read:
@@ -20669,7 +20222,6 @@ Strategy B — Update cache
 Instead of deleting:
 DB:
 user:123 = Mike
-
 Redis:
 user:123 = Mike
 Strategy C — Mark/version it invalid
@@ -20678,7 +20230,6 @@ Redis:
 user:123
 value = John
 version = 5
-
 DB:
 user:123
 version = 6
@@ -20703,21 +20254,16 @@ Application
 Suppose we use:
 User getUser(long id) {
     User cached = redis.get("user:" + id);
-
     if (cached != null) {
         return cached;
     }
-
     User user = db.find(id);
-
     redis.set("user:" + id, user);
-
     return user;
 }
 And:
 void updateUser(User user) {
     db.update(user);
-
     redis.delete("user:" + user.id());
 }
 Looks perfect.
@@ -20736,19 +20282,15 @@ UPDATE DB user:123 = Mike
 DELETE Redis user:123
 Timeline:
 Time →
-
 A: GET Redis
               ↓
               gets "John"
-
 B: UPDATE DB
               ↓
               DB = "Mike"
-
 B: DELETE Redis
               ↓
               Redis = empty
-
 A: returns "John"
 We returned stale data.
 That alone isn't necessarily surprising.
@@ -20758,7 +20300,6 @@ ________________________________________
 Initial state:
 DB:
 John
-
 Redis:
 John
 Thread A wants to read.
@@ -20766,21 +20307,14 @@ Thread B updates the user.
 Imagine A has already obtained the old value from DB because Redis missed.
 Timeline:
              Thread A                  Thread B
-
-              DB read
-              John
-
-                                      DB update
-                                      Mike
-
-                                      Redis delete
-
+              DB read                   DB update
+             John                               Mike
+                                               Redis delete
               Redis set
               John
 Now:
 DB:
 Mike
-
 Redis:
 John   ← stale!
 This is much worse.
@@ -21025,7 +20559,7 @@ You invalidate JVM.
 Doesn't matter.
 CDN might still return:
 $100
-This leads to a very useful mental model:
+This leads to a very useful :
 Every cache layer creates another place where stale state can exist.
 ________________________________________
 15. Why "invalidate everything immediately" isn't trivial
@@ -21103,14 +20637,12 @@ Imagine three pieces of data.
 Product description
 DB:
 "iPhone 17 Pro"
-
 Cache:
 "iPhone 17 Pro"
 If it takes 10 seconds for an update to propagate, probably fine.
 Inventory
 DB:
 stock = 0
-
 Cache:
 stock = 1
 Now someone may purchase a product that doesn't exist.
@@ -21118,7 +20650,6 @@ Much more serious.
 Bank balance
 DB:
 $1,000
-
 Cache:
 $2,000
 Potentially catastrophic.
@@ -21215,12 +20746,12 @@ DB changed
    +--> What if another node still has a local copy?
 That is cache invalidation.
 ________________________________________
-22. One mental model I want you to keep
+22. One  I want you to keep
 Don't think:
 Cache invalidation = deleting Redis keys.
 Think:
 Cache invalidation = maintaining the trustworthiness of derived copies of mutable state.
-That mental model scales much better.
+That  scales much better.
 Then every design question becomes easier.
 For example:
 Local cache
@@ -21246,20 +20777,14 @@ ________________________________________
 You might initially write:
 public User getUser(long id) {
     String key = "user:" + id;
-
     User cached = redis.get(key);
-
     if (cached != null) {
         return cached;
     }
-
     User user = userRepository.findById(id);
-
     redis.set(key, user);
-
     return user;
 }
-
 public void updateUser(User user) {
     userRepository.update(user);
     redis.delete("user:" + user.id());
@@ -21477,22 +21002,17 @@ we say:
 "The moment the data changes, remove the cached copy."
 For example:
 public void updateProduct(Product product) {
-
     productRepository.update(product);
-
     redis.delete("product:" + product.id());
 }
 Timeline:
 10:00
 DB = ₹100
 Redis = ₹100
-
 10:01
 DB UPDATE → ₹120
-
 10:01 + tiny delay
 Redis DELETE
-
 10:01+
 Redis = MISS
 
@@ -21508,21 +21028,17 @@ Think of them like this.
 TTL
 Cache:
 "I don't know when the data changes."
-
 Therefore:
-
 "I'll stop trusting this after 5 minutes."
 Explicit invalidation
 Application:
 "I know the data changed."
-
 Therefore:
-
 "Delete/update the cache now."
 So:
 TTL                = uncertainty handled with time
 Explicit invalidation = uncertainty reduced through notification
-This is a much better mental model than memorizing definitions.
+This is a much better  than memorizing definitions.
 ________________________________________
 8. Why TTL is so attractive
 TTL has one huge advantage:
@@ -21587,16 +21103,12 @@ If a key is frequently accessed, you'll cause many more cache misses.
 For example:
 10:00:00
 cache populated
-
 10:00:01
 expires
-
 10:00:01.01
 request → DB
-
 10:00:02
 expires
-
 10:00:02.01
 request → DB
 You've lost much of the caching benefit.
@@ -21778,36 +21290,27 @@ ________________________________________
 18. A very common architecture
 A typical cache-aside design might look like:
 public Product getProduct(long id) {
-
     String key = "product:" + id;
-
     Product cached = redis.get(key);
-
     if (cached != null) {
         return cached;
     }
-
     Product product = database.find(id);
-
     redis.set(
         key,
         product,
         Duration.ofMinutes(10)
     );
-
     return product;
 }
 And:
 public void updateProduct(Product product) {
-
     database.update(product);
-
     redis.delete("product:" + product.id());
 }
 Notice both exist:
 READ:
     cache + TTL
-
 WRITE:
     explicit invalidation
 This gives:
@@ -21986,12 +21489,10 @@ ________________________________________
 27. A useful rule of thumb
 For ordinary cache-aside systems:
 WRITE:
-
 1. Update DB
 2. Invalidate cache
 And:
 READ:
-
 1. Read cache
 2. On miss → read DB
 3. Populate cache with TTL
@@ -22060,7 +21561,6 @@ cache architecture
 For example:
 Requirement:
 "Price changes must appear within 30 seconds."
-
 Possible strategy:
 explicit invalidation
 +
@@ -22068,7 +21568,6 @@ TTL <= 30 sec as safety net
 Versus:
 Requirement:
 "Product descriptions can be 15 minutes old."
-
 Possible strategy:
 TTL = 10 min
 The requirement drives the technology.
@@ -22127,7 +21626,7 @@ Fast invalidation
       +
 Safety net
 ________________________________________
-33. The key mental model
+33. The key 
 Don't memorize:
 TTL = expiration
 Explicit invalidation = delete
@@ -22162,22 +21661,16 @@ ________________________________________
 The hierarchy of understanding is:
 Level 1:
 TTL means expiration.
-
 Level 2:
 TTL controls how long cached data survives.
-
 Level 3:
 TTL is a bounded-staleness mechanism.
-
 Level 4:
 Explicit invalidation provides faster reaction to mutations.
-
 Level 5:
 Explicit invalidation can fail, so TTL can act as a safety net.
-
 Level 6:
 Neither mechanism by itself solves concurrent read/write races.
-
 Level 7:
 The real problem is maintaining consistency among
 multiple representations of the same logical state.
@@ -22398,22 +21891,17 @@ ________________________________________
 Suppose:
 @Transactional
 public void updateUser(User user) {
-
     userRepository.update(user);
-
     kafka.publish(new UserUpdated(user.id()));
 }
 Looks reasonable.
 But imagine:
 Step 1:
 DB transaction begins
-
 Step 2:
 DB UPDATE succeeds
-
 Step 3:
 Application crashes
-
 Step 4:
 Kafka event never gets published
 Transaction behavior may roll back the DB depending on where the crash happens, but if the DB commit has already become durable and the event isn't durably recorded, you've got a synchronization gap.
@@ -22434,19 +21922,17 @@ users
 id | name
 123 | Mike
 and:
+
 outbox
 --------------------------------
 event_id | type       | payload
 abc      | UserUpdate | {...}
 One DB transaction:
 BEGIN
-
 UPDATE users
 SET name = 'Mike'
-
 INSERT INTO outbox
 VALUES ('abc', 'UserUpdated', ...)
-
 COMMIT
 Now both are committed together.
              DB
@@ -22783,7 +22269,7 @@ event v43 == cache v43 → ignore
 This is another reason versioning is such a powerful pattern.
 ________________________________________
 24. Distributed invalidation is really state propagation
-This is the deeper mental model.
+This is the deeper .
 Don't think:
 "Kafka sends delete messages to Redis."
 Think:
@@ -22932,15 +22418,15 @@ Don't expect one mechanism to solve every failure mode.
 Instead, layer mechanisms.
 ________________________________________
 30. Let's build a failure matrix
-Failure	Possible solution
-Cache invalidation message lost	Durable event/outbox
-Consumer temporarily down	Replay
-Event delivered twice	Idempotent consumer
-Events arrive out of order	Versioning
-Consumer permanently misses event	TTL / reconciliation
-DB + event dual-write	Transactional outbox
-Cache update fails	Retry + TTL
-Consumer crashes during processing	Durable offset + idempotency
+Failure							Possible solution
+Cache invalidation message lost			Durable event/outbox
+Consumer temporarily down			Replay
+Event delivered twice				Idempotent consumer
+Events arrive out of order				Versioning
+Consumer permanently misses event		TTL / reconciliation
+DB + event dual-write				Transactional outbox
+Cache update fails					Retry + TTL
+Consumer crashes during processing		Durable offset + idempotency
 Notice something:
 We're no longer talking specifically about Redis.
 We're designing a distributed state propagation system.
@@ -23012,24 +22498,19 @@ ________________________________________
 Imagine Spring Boot + Kafka + Redis.
 Conceptually:
 public void updateUser(User user) {
-
     transactionTemplate.execute(status -> {
-
         userRepository.update(user);
-
         outboxRepository.insert(
             new UserUpdatedEvent(
                 user.id(),
                 user.version()
             )
         );
-
         return null;
     });
 }
 Then an outbox publisher:
 public void publishOutboxEvent(OutboxEvent event) {
-
     kafkaProducer.send(
         "user-events",
         event.userId(),
@@ -23039,9 +22520,7 @@ public void publishOutboxEvent(OutboxEvent event) {
 And consumers:
 @KafkaListener(topics = "user-events")
 public void handle(UserUpdatedEvent event) {
-
     redis.delete("user:" + event.userId());
-
     localCache.invalidate("user:" + event.userId());
 }
 The code is simple.
@@ -23205,7 +22684,7 @@ etc.
 They're mechanisms for propagating change.
 The underlying problem stays the same.
 ________________________________________
-41. One final mental model
+41. One final 
 Think of your database as saying:
 "I know the latest truth."
 The cache says:
@@ -24244,7 +23723,7 @@ Now put everything together.
              ↓             ↓
           Events          TTL
 ________________________________________
-43. The deepest mental model
+43. The deepest 
 Here's the one sentence I'd like you to remember from all four lessons:
 A cache is a replicated, disposable view of authoritative state, and cache invalidation is the mechanism by which that replica learns that its view may no longer be trusted.
 Then:
@@ -24288,7 +23767,7 @@ versioning / ordering
 reconciliation
 That's how you design the system from the problem downward, rather than from the technology upward.
 
-Consistent Hashing — Lesson 1
+Consistent Hashing - Lesson 1
 Why normal hashing fails when nodes change
 Let's start by deliberately not talking about consistent hashing.
 First, understand why ordinary hashing becomes painful in distributed systems.
@@ -24558,18 +24037,12 @@ Ideally:
 Before:
 
 A A A A B B B B C C C C
-
-
 After adding D:
-
 A A A D B B B D C C C D
 Not:
 Before:
-
 A A A A B B B B C C C C
-
 After:
-
 B C D A D B C A C D B A
 The second behavior is what modulo hashing can produce.
 The first behavior is what consistent hashing tries to achieve.
@@ -24607,14 +24080,14 @@ If:
 Node B dies
 we shouldn't remap everything.
 Only B's keys should need reassignment.
-Those requirements lead us toward a different mental model.
+Those requirements lead us toward a different .
 Instead of asking:
 "Which node does hash % N select?"
 we're going to ask:
 "Where does this key live in a circular hash space, and which node owns that region?"
 And that is the idea behind the hash ring.
 ________________________________________
-13. Your mental model after Lesson 1
+13. 
 Forget implementation for a moment.
 You should now have this model:
                   NORMAL HASHING
@@ -24639,7 +24112,6 @@ The problem:
         many keys move
 Consistent hashing changes the architecture to something conceptually like:
                   CONSISTENT HASHING
-
 key ──→ hash ──→ position in hash space
                        |
                        ↓
@@ -24669,7 +24141,6 @@ For roughly equal nodes, adding one node ideally causes around:
 of the keyspace to move.
 For example:
 3 → 4 nodes
-
 ~25% move
 ~75% stay
 instead of modulo hashing's behavior where the reassignment can be much more disruptive.
@@ -24684,7 +24155,7 @@ hash(key) % N
 Change N, and you potentially change the destination of almost every key.
 Consistent hashing breaks that coupling by introducing a stable hash space.
 
-Consistent Hashing — Lesson 2: Hash Ring Internals
+Consistent Hashing - Lesson 2: Hash Ring Internals
 Now we build consistent hashing from first principles.
 The goal is not to memorize:
 "A hash ring is a circular data structure."
@@ -24866,13 +24337,10 @@ K1 → A
 Likewise:
 K2 = 25
 25 → 50(B)
-
 K3 = 40
 40 → 50(B)
-
 K4 = 60
 60 → 80(C)
-
 K5 = 90
 90 → 20(A)  // wrap around
 Therefore:
@@ -24907,15 +24375,11 @@ Visual:
 Now examine ownership.
 Before:
 B owned:
-
 50 → 80
 After D arrives:
 B owns:
-
 50 → 65
-
 D owns:
-
 65 → 80
 Only that region changed ownership.
 This is the key insight.
@@ -24947,11 +24411,8 @@ It only changed the ownership of:
 65 → 80
 specifically:
 C's old region:
-
 50 → 80
-
 becomes:
-
 50 → 65 → D
 65 → 80 → C
 That's what we wanted.
@@ -25051,24 +24512,17 @@ ________________________________________
 16. Basic Java implementation
 The simplest implementation looks roughly like this:
 class ConsistentHashRing {
-
     private final TreeMap<Integer, Node> ring = new TreeMap<>();
-
     public void addNode(Node node) {
         int hash = hash(node.id());
         ring.put(hash, node);
     }
-
     public Node getNode(String key) {
         int hash = hash(key);
-
-        Map.Entry<Integer, Node> entry =
-                ring.ceilingEntry(hash);
-
+        Map.Entry<Integer, Node> entry =    ring.ceilingEntry(hash);
         if (entry == null) {
             entry = ring.firstEntry();
         }
-
         return entry.getValue();
     }
 }
@@ -25089,7 +24543,6 @@ ________________________________________
 17. Let's trace one request like the JVM would
 Suppose:
 Nodes:
-
 Redis-A → 20
 Redis-B → 50
 Redis-C → 80
@@ -25219,7 +24672,6 @@ That's consistent hashing at its core.
 ________________________________________
 22. The complete picture so far
                     HASH RING
-
                          50
                          ● B
                     ↗         ↘
@@ -25228,7 +24680,6 @@ ________________________________________
               ● A                  ● C
                  \               /
                     ↖         ↙
-
               Fixed hash space
                     0...MAX
 For a key:
@@ -25359,7 +24810,7 @@ A1
                     C2
       A3
                  B3
- C3
+                           C3
 Each physical server has many positions.
 These are called:
 Virtual Nodes
@@ -25371,7 +24822,6 @@ This distinction is extremely important.
 A virtual node is not another server.
 Suppose we have:
 Physical server:
-
 Redis-A
 We create logical ring positions:
 Redis-A#1
@@ -25542,11 +24992,9 @@ ring.put(
     new VirtualNode("Redis-A#17", redisA)
 );
 Lookup:
-Map.Entry<Integer, VirtualNode> entry =
-        ring.ceilingEntry(hash(key));
+Map.Entry<Integer, VirtualNode> entry =        ring.ceilingEntry(hash(key));
 Then:
-Node physicalNode =
-        entry.getValue().physicalNode();
+Node physicalNode =        entry.getValue().physicalNode();
 So the chain becomes:
 key
  ↓
@@ -25745,7 +25193,6 @@ TreeMap<hash, vnode>
 Why can a sorted map represent a circle?
 Because we handle the wraparound explicitly:
 var entry = ring.ceilingEntry(keyHash);
-
 if (entry == null) {
     entry = ring.firstEntry();
 }
@@ -25797,7 +25244,7 @@ many small regions
         ↓
 distributed across physical servers
 ________________________________________
-24. The complete mental model
+24. The complete 
 You should now be able to visualize a production-style basic ring like this:
                  A#7
                   ●
@@ -25807,14 +25254,11 @@ You should now be able to visualize a production-style basic ring like this:
        B#4                       A#2
          ●                         ●
 
-
     A#11                             C#8
       ●                                 ●
 
-
          C#1                        B#7
             ●                     ●
-
                   A#4
                     ●
 Each point is a virtual node.
@@ -25864,7 +25308,7 @@ That's much better than:
 "Virtual nodes improve load balancing."
 Because now you understand why.
 
-Consistent Hashing — Lesson 4: Node Addition, Removal & Redistribution
+Consistent Hashing - Lesson 4: Node Addition, Removal & Redistribution
 Now we move from "how the ring works" to the question that matters in production:
 What actually happens to data when a server joins or leaves?
 This is where many explanations become too theoretical. We'll follow the keys, ownership, network requests, and data movement step by step.
@@ -25955,7 +25399,6 @@ user:123
 So we temporarily have:
 Ring says:
 user:123 → D
-
 Physical reality:
 user:123 → B
 That is a migration window.
@@ -25993,7 +25436,6 @@ Suppose D adds 100 virtual nodes.
 Each new vnode captures a small interval from its successor.
 For example:
 Before:
-
 A -------- B ---------------- C
 D inserts:
 A ---- D -- B -------- D ---- C
@@ -26006,7 +25448,7 @@ rather than:
 one huge range
 ________________________________________
 7. Think in ranges, not individual keys
-This is an important upgrade to your mental model.
+This is an important upgrade to your .
 We usually talk about:
 key → node
 But a distributed database often thinks in terms of:
@@ -26028,7 +25470,6 @@ ________________________________________
 8. A concrete example
 Suppose:
 Node C owns:
-
 [400, 600)
 There are 100 million keys in that range.
 D joins and gets:
@@ -26335,9 +25776,7 @@ ________________________________________
 21. Let's walk through a failure
 Suppose:
 Replication factor = 3
-
 key123
-
 Primary → C
 Replica → A
 Replica → B
@@ -26523,7 +25962,6 @@ ________________________________________
 28. The actual algorithm at a high level
 When adding a node:
 NEW NODE JOINS
-
         ↓
 hash virtual-node IDs
         ↓
@@ -26542,7 +25980,6 @@ cut over ownership
 cleanup old copies
 When removing:
 NODE LEAVES
-
         ↓
 remove/disable its vnodes
         ↓
@@ -26678,7 +26115,7 @@ topology change
 localized ownership change
 That's the fundamental reason.
 ________________________________________
-35. Your complete mental model after Lesson 4
+35. Your complete  after Lesson 4
 If I gave you a blank whiteboard and asked:
 "Explain consistent hashing."
 You should be able to draw:
@@ -26696,30 +26133,19 @@ You should be able to draw:
                     ●       ●
 Then explain:
 1. Hash keys into a fixed hash space.
-
 2. Hash physical nodes multiple times to create
    virtual nodes.
-
 3. Find the first vnode clockwise from the key.
-
 4. That vnode maps to a physical server.
-
 5. When a server joins, its vnodes take small
    ranges from existing owners.
-
 6. Only those ranges need redistribution.
-
-7. When a server leaves, its ranges are reassigned
-   to surviving nodes.
-
-8. The ring determines ownership; it does not
-   itself move the data.
-
-9. Migration, replication and consistency are
-   separate mechanisms.
+7. When a server leaves, its ranges are reassigned  to surviving nodes.
+8. The ring determines ownership; it does not itself move the data.
+9. Migration, replication and consistency are  separate mechanisms.
 If you understand those nine points, you understand the core algorithm, not merely the terminology.
 
-Consistent Hashing — Lesson 5: Production Use
+Consistent Hashing - Lesson 5: Production Use
 Now let's connect everything we've built to real distributed systems.
 The goal of this lesson isn't to memorize:
 "Redis uses consistent hashing."
@@ -26729,8 +26155,7 @@ ________________________________________
 1. Start with the general problem
 Forget Redis and Cassandra for a moment.
 Imagine you have:
-10 million users
-and one server can't handle the data.
+10 million users and one server can't handle the data.
 You need:
                10M keys
                   |
@@ -26791,9 +26216,7 @@ CRC16
  ↓
 cluster node
 So:
-hash space
-=
-16384 fixed slots
+hash space = 16384 fixed slots
 Nodes own ranges of slots.
 For example:
 Redis-A → slots 0–5000
@@ -26824,7 +26247,7 @@ So the architecture becomes:
         slot ownership
               ↓
              node
-Notice how similar the mental model is to our ring:
+Notice how similar the  is to our ring:
              key
               ↓
           hash space
@@ -26919,12 +26342,9 @@ Node D
 it can acquire some token ranges:
 B:
 [0,100)
-
 becomes
-
 B:
 [0,50)
-
 D:
 [50,100)
 Only that range needs to move.
@@ -27177,9 +26597,7 @@ ________________________________________
 20. Another case: range queries
 This is a major limitation.
 Suppose your workload is:
-SELECT *
-FROM orders
-WHERE created_at BETWEEN '2026-01-01' AND '2026-01-31';
+SELECT * FROM orders WHERE created_at BETWEEN '2026-01-01' AND '2026-01-31';
 Hash partitioning gives excellent distribution:
 order_id
  ↓
@@ -27228,16 +26646,16 @@ There is no universally superior partitioning strategy.
 ________________________________________
 22. Consistent hashing vs ordinary hashing
 Let's put the whole thing side by side.
-Property	hash(key) % N	Consistent hashing
-Simple	Excellent	More complex
-Stable hash space	No	Yes
-Node addition	Large remapping	Localized
-Node removal	Large remapping	Localized
-Virtual nodes	No	Common
-Range queries	Poor	Poor
-Point lookup	Excellent	Excellent
-Dynamic clusters	Poor	Strong
-Implementation complexity	Low	Higher
+Property			hash(key) % N	Consistent hashing
+Simple			Excellent		More complex
+Stable hash space		No			Yes
+Node addition		Large remapping	Localized
+Node removal		Large remapping	Localized
+Virtual nodes			No			Common
+Range queries		Poor			Poor
+Point lookup			Excellent		Excellent
+Dynamic clusters		Poor			Strong
+Implementation complexity	 Low			Higher
 The reason to pay the complexity cost is primarily:
 dynamic membership
 +
@@ -27431,7 +26849,7 @@ small ranges affected
 data redistribution
        ↓
 replica repair
-That's the production mental model.
+That's the production .
 ________________________________________
 31. The interview-level answer
 If an interviewer asks:
@@ -27458,7 +26876,7 @@ And the real system-design question becomes:
 "Given this workload, which partitioning strategy should I choose?"
 That's much more valuable than memorizing consistent hashing.
 ________________________________________
-Your Consistent Hashing mental model
+Your Consistent Hashing 
 You can now compress the entire topic into this chain:
 1. hash(key) % N
         ↓
@@ -27492,7 +26910,8 @@ Consistent hashing isn't primarily about hashing.
 It's about minimizing the amount of state that must change when the topology changes.
 That same principle will show up again and again in distributed systems.
 
-Distributed Systems — Next Course: Partitioning & Sharding
+
+Distributed Systems – Lesson 1: Partitioning & Sharding
 You now understand consistent hashing. The natural next question is:
 If I have 1 billion records and 100 machines, how do I decide which machine owns which records?
 That is the fundamental problem of partitioning.
@@ -27528,13 +26947,11 @@ ________________________________________
 2. Vertical scaling
 Make the machine bigger:
 DB Server
-
 8 CPU
 32 GB RAM
 1 TB SSD
 becomes:
 DB Server
-
 64 CPU
 512 GB RAM
 20 TB SSD
@@ -27573,7 +26990,6 @@ ________________________________________
 4. Partitioning is really an ownership problem
 Suppose we have:
 Users:
-
 1
 2
 3
@@ -27608,13 +27024,9 @@ User 123
    └── DB-C
 That's replication.
 So:
-Partitioning
-=
-Who owns which data?
+Partitioning = Who owns which data?
 while:
-Replication
-=
-How many copies of that data exist?
+Replication= How many copies of that data exist?
 Production distributed databases usually need both.
 ________________________________________
 6. A simple partitioning strategy
@@ -27641,7 +27053,6 @@ hash(userId) % 4
 Almost every key may change owner.
 Example:
 user 10:
-
 10 % 3 = 1
 10 % 4 = 2
 So:
@@ -27682,10 +27093,7 @@ created_at
 user_id
 amount
 Suppose you frequently ask:
-SELECT *
-FROM orders
-WHERE created_at >= '2026-08-01'
-  AND created_at < '2026-09-01';
+SELECT * FROM orders WHERE created_at >= '2026-08-01'  AND created_at < '2026-09-01';
 With hash partitioning:
 August records
  ↓
@@ -27712,7 +27120,6 @@ ________________________________________
 10. But range partitioning has a nasty problem
 Imagine this:
 user IDs:
-
 1
 2
 3
@@ -27760,8 +27167,7 @@ This is one of the most important trade-offs in distributed database design.
 ________________________________________
 12. Now let's introduce the word "shard"
 Suppose:
-Database
-is logically split into:
+Database is logically split into:
 Shard 1
 Shard 2
 Shard 3
@@ -27777,7 +27183,7 @@ So:
 A shard is a partition of the dataset.
 And:
 Sharding is the practice of distributing those partitions across machines.
-The terminology varies between systems, but that's the mental model.
+The terminology varies between systems, but that's the .
 ________________________________________
 13. The important architecture
 A sharded system often looks like:
@@ -27826,8 +27232,7 @@ ________________________________________
 Suppose you have:
 orders
 and choose:
-country
-as the shard key.
+country as the shard key.
 You might get:
 India      → 60%
 USA        → 20%
@@ -27924,9 +27329,7 @@ You may need to query:
 0..99
 and merge results.
 So again:
-better writes
-=
-more complicated reads
+better writes= more complicated reads
 Distributed systems is full of these trade-offs.
 ________________________________________
 20. The shard key should usually answer this question
@@ -27982,16 +27385,12 @@ A good shard key can reduce distributed queries by keeping related data together
 ________________________________________
 22. This introduces the next major problem: cross-shard queries
 Suppose:
-SELECT *
-FROM orders
-WHERE user_id = 123;
+SELECT * FROM orders WHERE user_id = 123;
 If user_id determines the shard:
 user 123 → Shard B
 easy.
 But now:
-SELECT *
-FROM orders
-WHERE amount > 1000;
+SELECT * FROM orders WHERE amount > 1000;
 What shard owns:
 amount > 1000
 Potentially all of them.
@@ -28054,15 +27453,14 @@ Think:
                     PARTITIONING
                          |
        ┌─────────┬───────┼────────┬──────────┐
-       ↓         ↓       ↓        ↓          ↓
-     Hash      Range   Consistent Slots   Directory
-                      hashing
+       ↓                 ↓       		↓       	            	 ↓        		  ↓
+     Hash      Range   Consistent hashing 	 Slots   		Directory
+                      
 ________________________________________
 26. Why we needed consistent hashing
 Now your previous lesson becomes much clearer.
 Suppose:
 Partitioning strategy:
-
 hash(key) % N
 Problem:
 N changes
@@ -28183,15 +27581,11 @@ new ownership
 while the system remains operational.
 Conceptually:
 Old:
-
 A → range 1
 B → range 2
 C → range 3
 D → range 4
-
-
 New:
-
 A → range 1
 B → range 2
 C → range 3a
@@ -28225,7 +27619,7 @@ Consistency
 what happens while it moves?
 It's the same fundamental distributed-systems problem appearing in different forms.
 ________________________________________
-33. Your mental model should now be
+33. Your  should now be
 Don't memorize:
 "Sharding means splitting a database."
 Instead think:
@@ -28275,7 +27669,7 @@ rebalance?
 repair?
 If you can answer these three, you can understand a surprising amount of a distributed database's architecture.
 
-Partitioning & Sharding — Lesson 2: Choosing the Shard Key
+Partitioning & Sharding - Lesson 2: Choosing the Shard Key
 This is one of the most important lessons in distributed database design.
 A lot of engineers learn:
 "We need sharding → hash the ID."
@@ -28316,8 +27710,8 @@ A good shard key usually tries to satisfy several competing goals:
                 Good shard key
                      |
        ┌─────────────┼──────────────┐
-       ↓             ↓              ↓
-  distribution    locality       scalability
+       ↓             		↓         		     ↓
+  distribution    	locality      	 scalability
        |
        ↓
  avoid hotspots
@@ -28354,7 +27748,6 @@ ________________________________________
 4. Why low cardinality is dangerous
 Imagine only 4 values:
 country
-
 India → 60%
 USA   → 25%
 UK    → 10%
@@ -28404,9 +27797,7 @@ has:
 1 billion values
 Great.
 But your application's main query is:
-SELECT *
-FROM orders
-WHERE country = 'India';
+SELECT * FROM orders WHERE country = 'India';
 Your shard key is:
 user_id
 Now India orders are scattered everywhere.
@@ -28782,8 +28173,8 @@ So shard-key design has two dimensions:
                     SHARD KEY
                         |
               ┌─────────┴─────────┐
-              ↓                   ↓
-         data locality       load distribution
+              ↓                   		     ↓
+         data locality      		 load distribution
 You need both.
 ________________________________________
 25. Read hotspots vs write hotspots
@@ -28949,8 +28340,8 @@ ________________________________________
 Suppose:
 orders
 and we consider:
-Candidate	Distribution	Query locality	Hotspot risk
-country	Poor if skewed	Good for country queries	High
+Candidate	Distribution			Query locality			Hotspot risk
+country	Poor if skewed		Good for country queries	High
 created_at	Poor with range writes	Great for time ranges	High
 order_id	Usually good with hashing	Great for order lookup	Low/medium
 user_id	Usually good	Great for user-centric queries	Can hotspot big users
@@ -29040,7 +28431,7 @@ you're saying:
 "Time ranges are the natural unit of locality."
 So choosing a shard key is fundamentally an application architecture decision, not just a database configuration decision.
 
-Distributed Systems — Lesson 3: Hot Partitions & Data Skew
+Distributed Systems - Lesson 3: Hot Partitions & Data Skew
 This is one of those topics where a system can look perfect on paper and still fall over in production.
 We already learned:
 key
@@ -29057,7 +28448,6 @@ ________________________________________
 1. The ideal world
 Suppose we have:
 4 shards
-
 Shard A
 Shard B
 Shard C
@@ -29361,8 +28751,7 @@ ________________________________________
 14. Another solution: replicate hot data
 Sometimes you don't need to split the key.
 Suppose:
-post:123
-is read 1M times/sec but almost never written.
+post:123 is read 1M times/sec but almost never written.
 Instead of:
 one copy
 we can create:
@@ -29724,12 +29113,9 @@ Partition
 Key
 For example:
 Cluster: 500K req/s
-
 Node C: 220K req/s   🔥
-
 Partition 732:
   200K req/s          🔥
-
 Key post:123:
   180K req/s          🔥
 Now you can identify the root cause.
@@ -29942,8 +29328,7 @@ bucket selection
  ↓
 partition
 Then periodically:
-total =
-sum(bucket0...bucket99)
+total = sum(bucket0...bucket99)
 Now we've exchanged:
 single hot write target
 for:
@@ -29952,7 +29337,7 @@ distributed writes
 aggregation
 That's a classic distributed-systems trade-off.
 ________________________________________
-42. The mental model I want you to retain
+42. The  I want you to retain
 When someone says:
 "Our database is sharded."
 Don't stop there.
@@ -29989,7 +29374,7 @@ cache?
 salt?
 That's the real system-design thinking.
 
-Distributed Systems — Rebalancing & Data Migration
+Distributed Systems – Lesson 4: Rebalancing & Data Migration
 This is where sharding stops being a diagram and becomes a real distributed-systems problem.
 So far we said:
 key
@@ -30028,14 +29413,10 @@ Node B → ~1.5 TB
 Node C → ~1.5 TB
 So we move some partitions:
 Before:
-
 A: P1 P2 P3
 B: P4 P5 P6 P7 P8
 C: P9 P10 P11
-
-
 After:
-
 A: P1 P2 P3 P4
 B: P5 P6 P7
 C: P8 P9 P10 P11
@@ -30115,7 +29496,6 @@ ________________________________________
 Node B takes a consistent view of P5.
 For example:
 P5 contains:
-
 R1
 R2
 R3
@@ -30123,7 +29503,6 @@ R4
 R5
 Copy:
 B                         C
-
 R1 ─────────────────────→ R1
 R2 ─────────────────────→ R2
 R3 ─────────────────────→ R3
@@ -30144,17 +29523,14 @@ R3 → R3'
 Timeline:
 10:00
 snapshot starts
-
 10:01
 R1 copied
 R2 copied
 
 10:02
 R3 updated on B
-
 10:03
 R3 copied from old snapshot
-
 10:04
 migration finishes
 Node C now has:
@@ -30172,9 +29548,9 @@ Think of it as:
                     Migration
                        |
              ┌─────────┴─────────┐
-             ↓                   ↓
+             ↓               		    ↓
         Initial snapshot      Changes
-             ↓                   ↓
+             ↓                 		  ↓
           bulk copy          catch-up
 This pattern appears everywhere in distributed systems.
 ________________________________________
@@ -30356,7 +29732,6 @@ ________________________________________
 Eventually:
 Source:
 LSN = 5,000,000
-
 Destination:
 LSN = 5,000,000
 The destination is caught up.
@@ -30416,13 +29791,10 @@ This produces a very short write pause.
 For example:
 10:00:00.000
 stop writes
-
 10:00:00.020
 final changes applied
-
 10:00:00.025
 ownership switches
-
 10:00:00.030
 writes resume
 Only ~30 ms of interruption.
@@ -30576,7 +29948,7 @@ version
 timestamp
 depending on the database/system.
 ________________________________________
-29. A useful mental model: the destination is "behind"
+29. A useful : the destination is "behind"
 During migration:
 Source:
 1000
@@ -31040,7 +30412,7 @@ This is why migration isn't merely a storage problem.
 It affects consistency semantics.
 ________________________________________
 51. The three clocks of migration
-A useful mental model is that there are three things moving:
+A useful  is that there are three things moving:
 1. Data copy
 2. Change stream
 3. Routing metadata
@@ -31149,7 +30521,7 @@ Let's write it in one picture:
                        |
                        ↓
                DELETE B COPY
-That's the mental model I want you to remember.
+That's the  I want you to remember.
 ________________________________________
 56. Now connect this with everything you've learned
 You started with caching.
@@ -31216,11 +30588,4 @@ How do we fence the old owner?
 What happens if anything fails?
 When can old data be deleted?
 That is distributed-systems thinking.
-________________________________________
-Next: Replication — Why Copies Exist
-Now that we understand moving ownership, the natural ne
-
-
-
-
-
+_____________________________________+__
