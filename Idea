@@ -59,6 +59,7 @@ gk-security-platform
 ├── gk-provider-auth0
 │
 ├── gk-rbac
+|---gk-abac
 ├── gk-mfa
 │
 ├── gk-audit
