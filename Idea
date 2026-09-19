@@ -1,0 +1,332 @@
+
+GK Security Platform
+Production-ready security starter for Spring Boot applications.
+
+Features
+
+✅ JWT Authentication
+
+✅ OAuth2 / OpenID Connect
+
+✅ Azure AD Integration
+
+✅ Keycloak Integration
+
+✅ AWS Cognito Integration
+
+✅ Authentication Audit Logs
+
+✅ OpenTelemetry Tracing
+
+✅ Micrometer Metrics
+
+✅ Grafana Dashboards
+
+✅ Multi Factor Authentication
+
+✅ Fine-Grained Permissions
+
+✅ Zero Boilerplate
+
+Quick Start
+
+Add dependency
+
+com.gk gk-security-starter
+Configure
+
+gk: security: provider: jwt
+
+Run
+
+mvn spring-boot:run
+
+Done.
+
+
+Architecture
+
+gk-security-platform
+│
+├── gk-auth-core
+├── gk-auth-jwt
+├── gk-auth-oauth2
+│
+├── gk-provider-keycloak
+├── gk-provider-azure
+├── gk-provider-cognito
+├── gk-provider-okta
+├── gk-provider-auth0
+│
+├── gk-rbac
+├── gk-mfa
+│
+├── gk-audit
+├── gk-observability
+│
+├── gk-admin-api
+├── gk-admin-ui
+│
+└── gk-spring-boot-starter
+
+
+Internal Architecture
+
+                      ┌─────────────┐
+                      │ React UI    │
+                      └──────┬──────┘
+                             │
+                             ▼
+
+                 ┌───────────────────────┐
+                 │ Security Filter Chain │
+                 └───────────┬───────────┘
+                             │
+                             ▼
+
+                 ┌───────────────────────┐
+                 │ Authentication Layer  │
+                 └───────────┬───────────┘
+
+                             │
+    ┌────────────┬───────────┼──────────┬───────────────┐
+    ▼            ▼           ▼          ▼               ▼
+
+  JWT       Keycloak      Azure     Cognito       Custom Provider
+
+                             │
+                             ▼
+
+                 ┌───────────────────────┐
+                 │ Authorization Layer   │
+                 │ RBAC / Permissions    │
+                 └───────────┬───────────┘
+                             │
+                             ▼
+
+                 ┌───────────────────────┐
+                 │ Method Security       │
+                 │ @PreAuthorize         │
+                 └───────────┬───────────┘
+                             │
+                             ▼
+
+                 ┌───────────────────────┐
+                 │ Audit Logging         │
+                 └───────────┬───────────┘
+                             │
+                             ▼
+
+                 ┌───────────────────────┐
+                 │ Metrics + Tracing     │
+                 └───────────────────────┘
+
+
+Database Design
+
+USERS
+
+id
+username
+email
+password
+status
+
+----------------
+
+ROLES
+
+id
+name
+
+----------------
+
+PERMISSIONS
+
+id
+name
+
+----------------
+
+USER_ROLES
+
+user_id
+role_id
+
+----------------
+
+ROLE_PERMISSIONS
+
+role_id
+permission_id
+
+----------------
+
+REFRESH_TOKENS
+
+id
+token
+expires_at
+
+----------------
+
+AUDIT_LOGS
+
+id
+action
+user
+ip
+timestamp
+
+----------------
+
+MFA_SETTINGS
+
+user_id
+secret
+enabled
+
+Example Usage
+
+<dependency>
+   <groupId>com.gk</groupId>
+   <artifactId>gk-security-starter</artifactId>
+   <version>1.0.0</version>
+</dependency>
+
+gk:
+  security:
+    provider: azure
+
+  mfa:
+    enabled: true
+
+  audit:
+    enabled: true
+
+
+Roadmap
+V1
+
+JWT Authentication
+RBAC
+Refresh Tokens
+Audit Log
+MFA(TOTP)
+OpenTelemetry
+Micrometer
+
+V2
+Azure AD
+Keycloak
+Google Login
+GitHub Login
+
+V3
+AWS Cognito
+Auth0
+Okta
+
+V4
+Multi Tenancy
+LDAP
+SSO
+SAML
+
+# GK Security Platform
+
+Production-ready security starter
+for Spring Boot applications.
+
+Features
+
+✅ JWT Authentication
+
+✅ OAuth2 / OpenID Connect
+
+✅ Azure AD Integration
+
+✅ Keycloak Integration
+
+✅ AWS Cognito Integration
+
+✅ Authentication Audit Logs
+
+✅ OpenTelemetry Tracing
+
+✅ Micrometer Metrics
+
+✅ Grafana Dashboards
+
+✅ Multi Factor Authentication
+
+✅ Fine-Grained Permissions
+
+✅ Zero Boilerplate
+
+Quick Start
+
+Add dependency
+
+<dependency>
+    <groupId>com.gk</groupId>
+    <artifactId>gk-security-starter</artifactId>
+</dependency>
+
+Configure
+
+gk:
+  security:
+    provider: jwt
+
+Run
+
+mvn spring-boot:run
+
+Done.
+
+
+
+
+
+
+The first release would provide:
+✅ JWT
+✅ Refresh Tokens
+✅ RBAC
+✅ Permissions
+✅ Audit Logs
+✅ Correlation IDs
+✅ OpenTelemetry
+✅ Micrometer
+✅ Prometheus Metrics
+✅ Grafana Dashboards
+✅ Google/Microsoft Authenticator MFA
+✅ Spring Security Auto Configuration
+
+Then Version 2:
+✅ Azure AD
+✅ Keycloak
+✅ Google OAuth
+✅ GitHub OAuth
+
+Then Version 3:
+
+✅ Cognito
+✅ Auth0
+✅ Okta
+✅ LDAP
+✅ SAML
+
+
+
+
+
+
+
+
+
+
+
+
+
