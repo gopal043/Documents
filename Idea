@@ -867,7 +867,61 @@ Assume enterprise-grade coding standards.
 
 
 
+Prerequisites for You
 
+Since you're already a Java Full Stack Developer, learn these deeply:
+
+Spring Security
+
+Must know:
+
+Plain Text
+1
+Authentication Manager
+2
+Security Filter Chain
+3
+OAuth2
+4
+JWT
+5
+Method Security
+6
+Custom Providers
+Show more lines
+OAuth2 & OIDC
+
+Most important topic.
+
+Understand:
+Authorization Code Flow
+Client Credentials
+PKCE
+Refresh Token
+ID Token
+Access Token
+Claims
+
+Identity Providers:
+Keycloak
+Azure AD / Entra ID
+AWS Cognito
+Auth0
+Okta
+
+Security:
+OWASP Top 10
+CSRF
+XSS
+SQL Injection
+Session Hijacking
+Token Leakage
+
+Observability:
+OpenTelemetry
+Micrometer
+Prometheus
+Grafana
 
 
 
