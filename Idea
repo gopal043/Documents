@@ -871,29 +871,15 @@ Prerequisites for You
 
 Since you're already a Java Full Stack Developer, learn these deeply:
 
-Spring Security
-
-Must know:
-
-Plain Text
-1
+Spring Security:
 Authentication Manager
-2
 Security Filter Chain
-3
 OAuth2
-4
 JWT
-5
 Method Security
-6
 Custom Providers
-Show more lines
-OAuth2 & OIDC
 
-Most important topic.
-
-Understand:
+OAuth2 & OIDC:
 Authorization Code Flow
 Client Credentials
 PKCE
