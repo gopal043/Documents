@@ -322,7 +322,547 @@ Then Version 3:
 
 
 
+Act as a Principal Security Architect, Principal Java Architect, Spring Security Expert, IAM Architect, and Product Architect.
 
+Your goal is to design and implement a production-grade commercial security platform named:
+
+GK Security Platform
+
+This is NOT a sample application.
+
+This is NOT a starter project.
+
+This is NOT a demo.
+
+This is a reusable enterprise security framework that will be published as multiple Maven artifacts and used by external Spring Boot applications.
+
+=====================================================
+PRODUCT VISION
+=====================================================
+
+Mission:
+
+Enable Spring Boot teams to achieve production-grade authentication, authorization, audit logging, policy enforcement, observability, MFA, and identity-provider integration with minimal configuration.
+
+Principles:
+
+- Secure by Default
+- Deny by Default
+- Observable by Default
+- Framework Independent
+- Cloud Agnostic
+- Enterprise Ready
+- Extensible by Design
+- Backward Compatible
+
+=====================================================
+ARCHITECTURE PRINCIPLES
+=====================================================
+
+Follow:
+
+- Hexagonal Architecture
+- Ports & Adapters
+- DDD where useful
+- Clean Architecture
+- Open/Closed Principle
+- SOLID Principles
+
+Critical Rule:
+
+Core module MUST NOT depend on:
+
+- Spring Security
+- Spring Data JPA
+- Hibernate
+- JWT libraries
+- Azure SDK
+- Keycloak SDK
+- AWS SDK
+- Cognito SDK
+
+Core must contain only:
+
+- Domain Models
+- Contracts
+- Interfaces
+- Contexts
+- Events
+- Exceptions
+- Policy Engine
+
+=====================================================
+MODULES
+=====================================================
+
+Generate COMPLETE implementation for:
+
+gk-security-parent
+
+gk-security-core
+
+gk-security-persistence-api
+
+gk-security-persistence-jpa
+
+gk-security-jwt
+
+gk-security-rbac
+
+gk-security-abac
+
+gk-security-audit
+
+gk-security-observability
+
+gk-security-mfa
+
+gk-security-starter
+
+sample-application
+
+=====================================================
+CORE REQUIREMENTS
+=====================================================
+
+User must support dynamic attributes.
+
+Example:
+
+public class User {
+
+    String id;
+
+    String username;
+
+    Set<String> roles;
+
+    Set<String> permissions;
+
+    Map<String,Object> attributes;
+}
+
+Resource must support:
+
+public class Resource {
+
+    String id;
+
+    String type;
+
+    Map<String,Object> attributes;
+}
+
+No hardcoded business fields.
+
+Support customer-defined attributes.
+
+=====================================================
+AUTHENTICATION REQUIREMENTS
+=====================================================
+
+Implement:
+
+AuthenticationProvider
+
+AuthenticationManager
+
+IdentityProvider
+
+TokenProvider
+
+SecurityContext
+
+Support:
+
+- Username Password Authentication
+- JWT Authentication
+- Refresh Tokens
+- Token Rotation
+- Token Revocation
+- Account Locking
+- Password Expiry
+- MFA Integration
+
+=====================================================
+AUTHORIZATION REQUIREMENTS
+=====================================================
+
+Implement:
+
+PolicyEngine
+
+Policy
+
+PolicyContext
+
+PolicyDecision
+
+PolicyRepository
+
+PolicyStore
+
+Support:
+
+RBAC
+
+ABAC
+
+Evaluation Order:
+
+1. RBAC
+2. ABAC
+3. Custom Policies
+
+Rule:
+
+DENY overrides PERMIT
+
+No match:
+DENY
+
+Failure:
+DENY
+
+=====================================================
+ABAC REQUIREMENTS
+=====================================================
+
+Enterprise-grade ABAC.
+
+Policy examples:
+
+user.department ==
+resource.department
+
+user.country ==
+resource.country
+
+resource.owner ==
+user.username
+
+Support:
+
+Subject Attributes
+
+Resource Attributes
+
+Environment Attributes
+
+Request Attributes
+
+Time-Based Rules
+
+=====================================================
+OBSERVABILITY REQUIREMENTS
+=====================================================
+
+Implement:
+
+Correlation IDs
+
+Trace IDs
+
+Span IDs
+
+Micrometer
+
+OpenTelemetry
+
+Prometheus
+
+Grafana
+
+Requirements:
+
+Every request must have:
+
+Correlation ID
+
+Every authentication event must produce metrics.
+
+Every authorization decision must produce metrics.
+
+=====================================================
+AUDIT REQUIREMENTS
+=====================================================
+
+Audit log everything.
+
+Examples:
+
+LOGIN_SUCCESS
+
+LOGIN_FAILURE
+
+PASSWORD_CHANGED
+
+ROLE_ASSIGNED
+
+POLICY_DENIED
+
+POLICY_GRANTED
+
+MFA_ENABLED
+
+TOKEN_REVOKED
+
+Support:
+
+Database Audit
+
+Kafka Audit
+
+Custom Audit Publisher
+
+Audit schema must include:
+
+Correlation ID
+
+Trace ID
+
+Timestamp
+
+Attributes
+
+=====================================================
+MFA REQUIREMENTS
+=====================================================
+
+Implement:
+
+Google Authenticator
+
+Microsoft Authenticator
+
+TOTP
+
+Backup Codes
+
+SMS Provider SPI
+
+Email Provider SPI
+
+Do not hardcode providers.
+
+=====================================================
+PERSISTENCE REQUIREMENTS
+=====================================================
+
+Do NOT force customer schema.
+
+Support two modes:
+
+Mode 1:
+
+Internal storage
+
+Framework-managed tables.
+
+Mode 2:
+
+External storage
+
+Customer provides:
+
+UserStore
+
+RoleStore
+
+PermissionStore
+
+PolicyStore
+
+Framework works with custom entities.
+
+=====================================================
+JWT REQUIREMENTS
+=====================================================
+
+Implement:
+
+Access Tokens
+
+Refresh Tokens
+
+Claims
+
+Token Validation
+
+Token Rotation
+
+Token Blacklist
+
+Clock Skew Handling
+
+Graceful Expiration
+
+Custom Claims
+
+=====================================================
+SECURITY REQUIREMENTS
+=====================================================
+
+Implement protections for:
+
+CSRF
+
+Session Hijacking
+
+Token Leakage
+
+Brute Force Attacks
+
+Rate Limiting
+
+Account Locking
+
+Password Policies
+
+Security Headers
+
+CSP
+
+=====================================================
+DATABASE
+=====================================================
+
+Use:
+
+PostgreSQL
+
+Flyway
+
+Optimistic Locking
+
+Indexes
+
+JSONB support
+
+Soft Deletes
+
+Create migrations.
+
+Do not use ddl-auto.
+
+=====================================================
+SPRING BOOT STARTER
+=====================================================
+
+Goal:
+
+User should only add:
+
+<dependency>
+   <groupId>com.gk</groupId>
+   <artifactId>gk-security-starter</artifactId>
+</dependency>
+
+and:
+
+gk:
+  security:
+     enabled: true
+
+Everything auto-configures.
+
+Generate:
+
+@Configuration
+
+@AutoConfiguration
+
+Conditional Beans
+
+Properties
+
+Actuator Endpoints
+
+=====================================================
+PROVIDER ARCHITECTURE
+=====================================================
+
+Design future-ready support for:
+
+Azure AD
+
+Entra ID
+
+Keycloak
+
+AWS Cognito
+
+Auth0
+
+Okta
+
+Google
+
+GitHub
+
+Do NOT implement yet.
+
+Create contracts and extension points.
+
+=====================================================
+DELIVERABLE FORMAT
+=====================================================
+
+Generate EVERYTHING.
+
+For every module provide:
+
+1. Folder structure
+
+2. pom.xml
+
+3. Complete source code
+
+4. Complete entities
+
+5. Interfaces
+
+6. Implementations
+
+7. Configuration
+
+8. Auto-configurations
+
+9. Flyway migrations
+
+10. Tests
+
+11. README
+
+12. Architecture diagrams
+
+13. Sequence diagrams
+
+14. ER diagrams
+
+15. Examples
+
+Output file-by-file.
+
+Never use placeholders.
+
+Never write:
+"implement later"
+
+Never write:
+"TODO"
+
+Generate production-ready code.
+
+Assume Java 21.
+
+Assume Spring Boot 3.x.
+
+Assume Maven.
+
+Assume PostgreSQL.
+
+Assume enterprise-grade coding standards.
 
 
 
