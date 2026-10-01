@@ -1,12 +1,8 @@
-Distributed Communication — Message Queues
-Think of a message queue as a mechanism that changes this:
-Synchronous
-
-Producer ────────request────────> Consumer
-          <──────response────────
-into this:
-Asynchronous
-
+Distributed Communication - Message Queues
+Think of a message queue as a mechanism that changes
+ this: Synchronous
+Producer ────────request────────> Consumer   <──────response────────
+into this: Asynchronous
 Producer ──message──> Broker/Queue ──message──> Consumer
                          │
                          ├── persists message
@@ -43,15 +39,10 @@ Suppose the user places an order.
 A naive implementation might do:
 placeOrder() {
     saveOrder();
-
     paymentService.charge();
-
     inventoryService.reserve();
-
     notificationService.sendEmail();
-
     analyticsService.record();
-
     return SUCCESS;
 }
 This creates a very important dependency:
@@ -78,7 +69,7 @@ Even if analytics isn't important to completing the order.
 You could parallelize:
              ┌── Payment ─────── 100ms
              |
-Order ───────┼── Inventory ───── 50ms
+Order ────Inventory ───── 50ms
              |
              ├── Notification ── 200ms
              |
@@ -116,7 +107,7 @@ but the consumer can process only:
 2,000 messages/sec
 Without a queue:
 Producer ─────────> Consumer
-10K/sec              2K/sec
+10K/sec                              2K/sec
 The consumer becomes a bottleneck.
 With a queue:
 Producer
@@ -141,11 +132,8 @@ This is a subtle but extremely important distributed-systems concept.
 Suppose:
 Producer = 10,000 msg/sec
 Consumer = 2,000 msg/sec
-Then queue growth is:
-10,000 - 2,000
-= 8,000 messages/sec
-Eventually:
-Queue capacity → exhausted
+Then queue growth is: 10,000 - 2,000 = 8,000 messages/sec
+Eventually: Queue capacity → exhausted
 So queues provide:
 Temporal decoupling, not infinite capacity.
 This is why production systems monitor:
@@ -212,27 +200,23 @@ ________________________________________
 Let's now look underneath the abstraction.
 A simplified queue:
 +------------------------------------------------+
-|                 Message Broker                 |
-|                                                |
-|  Queue                                         |
-|                                                |
-|  [M1] [M2] [M3] [M4] [M5] [M6] [M7]           |
-|   ^                                             |
-|   |                                             |
-|  head                                           |
-|                                                |
-|                         tail ---------------->  |
+|                 Message Broker                               |
+|                                                                                 |
+|                          Queue                                         |
+|                                                                                 |
+|  [M1] [M2] [M3] [M4] [M5] [M6] [M7]       |
+|   ^                                                                           |
+|  head                                                                   |
+|                                 tail ---------------->          |
 +------------------------------------------------+
 Conceptually we have:
 head
   ↓
 [M1][M2][M3][M4][M5]
-                   ↑
-                  tail
-Producer:
-append(M6)
-Consumer:
-read(M1)
+                 	            ↑
+                                       tail
+Producer: append(M6)
+Consumer: read(M1)
 But real distributed queues are considerably more complicated.
 ________________________________________
 8. Queue ≠ necessarily an in-memory data structure
@@ -288,18 +272,15 @@ enqueue()
  |
 dequeue()
 Once consumed successfully, the message may be removed.
-This is close to the mental model of:
-FIFO queue
+This is close to the mental model of: FIFO queue
 ________________________________________
 Log-based messaging
 A system such as Kafka is better understood as a distributed append-only log.
 Conceptually:
 Offset:
-
 0    1    2    3    4    5
 |    |    |    |    |    |
 v    v    v    v    v    v
-
 [M0] [M1] [M2] [M3] [M4] [M5]
 A consumer has a position:
 Consumer offset = 3
@@ -328,9 +309,7 @@ Log:
 The data can remain.
 Multiple consumers can independently maintain positions:
 Log:
-
 [M0][M1][M2][M3][M4][M5][M6][M7]
-
 Consumer A
              ^
             offset 3
@@ -412,9 +391,7 @@ Consumer Client
 Application Handler
 For example:
 Message message = consumer.receive();
-
 process(message);
-
 consumer.ack(message);
 The ordering of those operations is incredibly important.
 ________________________________________
@@ -488,8 +465,7 @@ happens again.
 Therefore, the consumer should often be idempotent.
 For example:
 messageId = 12345
-Maintain:
-ProcessedMessages
+Maintain: ProcessedMessages
 -----------------
 12345
 Then:
@@ -498,7 +474,6 @@ if (alreadyProcessed(message.id())) {
 }
 
 process(message);
-
 markProcessed(message.id());
 But even this has a transaction-ordering problem, which we'll explore later.
 ________________________________________
@@ -550,7 +525,6 @@ M3
 M4
 You might expect:
 Consumer receives:
-
 M1
 M2
 M3
@@ -574,9 +548,7 @@ M4
 M3
 Even if the queue itself preserves enqueue order.
 So we must distinguish:
-message ordering
-from
-processing/completion ordering
+message ordering from processing/completion ordering
 ________________________________________
 19. Partitioning solves some ordering problems
 Suppose we have orders:
@@ -590,10 +562,8 @@ hash(orderId) % 3
 Result:
 Partition 0
 [A1][A2][A3]
-
 Partition 1
 [B1][B2]
-
 Partition 2
 [C1][C2][C3]
 Within one partition:
@@ -616,18 +586,14 @@ Producer
    |
    v
 Broker
-Producer sends:
-M1
-Broker responds:
-SUCCESS
+Producer sends: M1
+Broker responds: SUCCESS
 Then broker crashes.
-Question:
-Is M1 still there?
+Question: Is M1 still there?
 Depends on what "SUCCESS" meant.
 ________________________________________
 In-memory queue
 RAM:
-
 [M1][M2][M3]
 Broker crashes:
 RAM → lost
@@ -692,17 +658,17 @@ This is a recurring distributed-system trade-off.
 ________________________________________
 22. Failure matrix
 Let's build the mental model you should use in system-design interviews.
-Failure	Possible consequence
-Producer crashes before send	Message never exists
-Network fails during send	Producer doesn't know whether broker received it
-Broker crashes before persistence	Message may be lost
-Broker crashes after persistence	Message can recover
+Failure	Possible				 consequence
+Producer crashes before send		Message never exists
+Network fails during send		Producer doesn't know whether broker received it
+Broker crashes before persistence		Message may be lost
+Broker crashes after persistence		Message can recover
 Consumer crashes before processing	Redelivery
-Consumer crashes after processing, before ACK	Duplicate processing
-Consumer is slow	Queue/lag grows
-Consumer permanently fails	Messages accumulate
-Network partition	Delivery/ack uncertainty
-Broker replica fails	Depends on replication policy
+Consumer crashes after processing, before ACK		Duplicate processing
+Consumer is slow				Queue/lag grows
+Consumer permanently fails		Messages accumulate
+Network partition				Delivery/ack uncertainty
+Broker replica fails				Depends on replication policy
 That one table captures much of the reason messaging systems are difficult.
 ________________________________________
 23. The most important ambiguity
@@ -777,13 +743,10 @@ User Service
   v
 SMTP Provider
 SMTP provider sometimes takes:
-2–5 seconds
-and sometimes is unavailable for 30 seconds.
+2–5 seconds and sometimes is unavailable for 30 seconds.
 Requirement
-User registration should normally complete in:
-< 200 ms
-but the welcome email can arrive:
-within 1 minute
+User registration should normally complete in: < 200 ms
+but the welcome email can arrive: within 1 minute
 Design the communication path.
 Don't immediately jump to Kafka.
 Think from requirements.
@@ -945,7 +908,7 @@ Then answer:
 Send me your design—even if it's wrong. I'll review it like a university distributed-systems design exercise, point out the failure cases, and then we'll move into the actual queue internals: partitions, offsets, logs, memory/disk, replication, consumer groups, backpressure, and broker failure recovery.
 
 
-Lesson 2 — Queue Internals
+Lesson 2 - Queue Internals
 Now let's go one level deeper.
 At your experience level, don't think of a message queue as:
 BlockingQueue<Message>
@@ -958,16 +921,16 @@ ________________________________________
 A simplified broker looks like this:
                     Message Broker
               ┌─────────────────────────┐
-Producer ────>│ Network Layer           │
-              │        ↓                │
-              │ Message Handling        │
-              │        ↓                │
-              │ Queue / Log             │
-              │        ↓                │
-              │ Storage                 │
-              │        ↓                │
-              │ Replication             │
-              │                         │
+Producer ──>│ Network Layer               │
+              │                         ↓                                │
+              │             Message Handling        │
+              │                          ↓                               │
+              │               Queue / Log                   │
+              │                           ↓                             │
+              │                    Storage                        │
+              │                           ↓                             │
+              │                 Replication                  │
+              │                                                            │
 Consumer <────│ Delivery / Fetch        │
               └─────────────────────────┘
 There are five things you should mentally separate:
@@ -1002,11 +965,10 @@ Producer
    | enqueue
    v
 +-----------------------------+
-| Queue                       |
-|                             |
-| M1 M2 M3 M4 M5 M6           |
-| ^                           |
-| head                        |
+|             Queue                       |
+| M1 M2 M3 M4 M5 M6     |
+| ^                                              |
+| head                                      |
 +-----------------------------+
 Consumer asks:
 give me next message
@@ -1038,7 +1000,6 @@ Consumer gets M1.
 Now:
 AVAILABLE:
 M2 M3 M4
-
 IN-FLIGHT:
 M1
 The broker might maintain:
@@ -1067,18 +1028,13 @@ M1 is invisible to other consumers for 30 seconds.
 So:
 t = 0 sec
 M1 delivered
-
 t = 10 sec
 still processing
-
 t = 20 sec
 still processing
-
 t = 30 sec
 no ACK
-
         ↓
-
 M1 becomes visible again
 Then:
 Consumer 2 → M1
@@ -1089,8 +1045,7 @@ But introduces another problem:
 What if processing legitimately takes longer than the visibility timeout?
 Then the message can be redelivered while Consumer 1 is still processing it.
 Hence systems may support:
-extend visibility timeout
-or leases.
+extend visibility timeout or leases.
 ________________________________________
 6. Lease-based thinking
 A useful abstraction is:
@@ -1101,7 +1056,7 @@ For example:
 M1
  |
  +---- lease ----> Consumer A
-                    expires in 30 sec
+                         expires in 30 sec
 Consumer can finish and ACK:
 Consumer A
     |
@@ -1123,13 +1078,11 @@ This distinction becomes very important in distributed systems.
 ________________________________________
 7. Now let's move to log-based queues
 This is where systems like Kafka become conceptually different.
-Instead of thinking:
-enqueue → dequeue → delete
-think:
-append → read by position
+Instead of thinking: enqueue → dequeue → delete
+think: append → read by position
+
 Example:
 Offset:
-
 0      1      2      3      4
 ↓      ↓      ↓      ↓      ↓
 [M0]   [M1]   [M2]   [M3]   [M4]
@@ -1186,14 +1139,12 @@ consumer
 ACK M1
 
 M2 M3 M4
-Message lifecycle is centered around:
-delivery → acknowledgement → removal
+Message lifecycle is centered around: delivery → acknowledgement → removal
 Log
 M1 M2 M3 M4
        ^
      offset
-Message lifecycle is centered around:
-append → retain → consumer position
+Message lifecycle is centered around: append → retain → consumer position
 This difference affects:
 •	replay
 •	multiple consumers
@@ -1241,7 +1192,7 @@ P1 → Consumer B
 P2 → Consumer C
 P3 → Consumer D
 Now you have four parallel processing streams.
-             ┌── Consumer A
+                                ┌── Consumer A
 P0 ──────────┤
              │
 P1 ──────────┼── Consumer B
@@ -1280,9 +1231,7 @@ You might partition by:
 orderId
 Then:
 hash(orderId) % numberOfPartitions
-So all events for order 123 go to the same partition:
-Order 123
-
+So all events for order 123 go to the same partition: Order 123
 Created
    ↓
 Paid
@@ -1334,8 +1283,7 @@ P1 → C2
 P2 → C3
 P3 → C4
 Each message is processed by one consumer within that group.
-This gives:
-Work sharing.
+This gives: Work sharing.
 ________________________________________
 17. Multiple consumer groups
 Now suppose you have:
@@ -1348,9 +1296,9 @@ Use separate consumer groups:
                   Topic
                     |
        ┌────────────┼─────────────┐
-       ↓            ↓             ↓
- Analytics       Fraud        Notification
-   Group          Group           Group
+       ↓            	          ↓                                 ↓
+ Analytics     	       Fraud               Notification
+   Group                   Group                  Group
 Each group maintains its own consumption position.
 So the same event can be independently processed by all three.
 This is one of the biggest conceptual differences between a durable log and a destructive queue.
@@ -1377,7 +1325,6 @@ ________________________________________
 19. Append-only log
 Imagine:
 Disk
-
 [M0][M1][M2][M3][M4][M5][M6]
                      ↑
                     append
@@ -1478,7 +1425,6 @@ Partition P0
 Broker A
 we can have:
 Partition P0
-
 Broker A  ← leader
 Broker B  ← replica
 Broker C  ← replica
@@ -1588,10 +1534,10 @@ At this point, you should visualize a messaging system roughly like this:
                     v
               +-----------+
               | Broker    |
-              |           |
+              |                    |
               | Partition |
-              |    |      |
-              |    v      |
+              |    |              |
+              |    v              |
               |  Append   |
               +----+------+
                    |
@@ -1626,10 +1572,8 @@ Consumer position
 For example:
 Producer sent:
 M0 M1 M2 M3 M4 M5
-
 Broker committed:
 M0 M1 M2 M3 M4
-
 Consumer processed:
 M0 M1 M2
 So:
@@ -1641,9 +1585,7 @@ ________________________________________
 31. Design Exercise — Build a notification platform
 Now let's apply today's lesson.
 You have:
-10 million users
-and your system generates:
-500,000 notification events/sec
+10 million users and your system generates: 500,000 notification events/sec
 Each event looks like:
 {
   "userId": 123,
@@ -1710,7 +1652,6 @@ But the broker cannot directly observe:
 PROCESS
 It only knows things such as:
 "I sent M1 to Consumer A."
-
 "Consumer A acknowledged M1."
 Therefore we introduce an explicit acknowledgement:
 Broker ── M1 ──> Consumer
@@ -1735,9 +1676,7 @@ ________________________________________
 3. The dangerous implementation
 Imagine:
 Message message = consumer.receive();
-
 consumer.ack(message);
-
 process(message);
 This looks efficient.
 But consider:
@@ -1759,9 +1698,7 @@ ________________________________________
 4. The opposite implementation
 Now do:
 Message message = consumer.receive();
-
 process(message);
-
 consumer.ack(message);
 Better.
 Sequence:
@@ -1809,10 +1746,7 @@ processing never occurs
 Message is lost.
 So:
 At-most-once
-
-No duplicates
-but
-possible loss
+No duplicates but possible loss
 This can be acceptable for things like:
 •	metrics
 •	non-critical telemetry
@@ -1841,7 +1775,6 @@ and redelivers:
 M1 → Consumer
 So:
 At-least-once
-
 Possible duplicates
 but
 message loss is minimized
@@ -1862,9 +1795,7 @@ paymentId = PAY-123
 Consumer:
 if paymentAlreadyProcessed("PAY-123"):
     return;
-
 processPayment();
-
 markProcessed("PAY-123");
 Now duplicate delivery doesn't necessarily produce a duplicate business effect.
 Therefore a very common architecture is:
@@ -1873,8 +1804,7 @@ At-least-once delivery
 Idempotent consumer
 ________________________________________
 8. Exactly-once
-People often describe exactly-once as:
-Message processed exactly once
+People often describe exactly-once as:  Message processed exactly once
 But this statement hides enormous complexity.
 Consider:
 Broker
@@ -1922,9 +1852,7 @@ commit database
 ack message
 as one indivisible transaction.
 But these are typically separate systems:
-Broker transaction
-        ≠
-Database transaction
+Broker transaction         ≠  Database transaction
 So consider:
 Step 1: receive M1
 Step 2: update DB
@@ -1964,11 +1892,8 @@ ProcessedPayments
 doesn't exist.
 Consumer performs:
 BEGIN TRANSACTION
-
 INSERT paymentId=123 into ProcessedPayments
-
 UPDATE order SET status='PAID'
-
 COMMIT
 Now:
 ProcessedPayments
@@ -2002,9 +1927,7 @@ For example:
 paymentId = 123
 Then:
 process payment 123
-means:
-apply operation 123 exactly once
-from the application's perspective.
+means: apply operation 123 exactly once from the application's perspective.
 ________________________________________
 13. Redelivery
 Let's look at how redelivery can happen.
@@ -2040,8 +1963,7 @@ ________________________________________
 14. Redelivery doesn't necessarily mean failure
 This is a subtle point.
 Suppose:
-Consumer A receives M1
-and takes 20 seconds.
+Consumer A receives M1 and takes 20 seconds.
 Broker's visibility timeout:
 10 seconds
 At t=10:
@@ -2150,16 +2072,16 @@ Architecture:
                 Consumer
                     |
               ┌─────┴─────┐
-              |           |
+              |          		 |
            success       failure
-              |           |
-             ACK          |
-                          retry
-                            |
-                         max attempts
-                            |
-                            v
-                         DLQ
+              |           		|
+             ACK         	 |
+                          	          retry
+                         		 |
+                         	      max attempts
+                                             |
+                                            v
+                                       DLQ
 DLQ lets operators investigate:
 Why did this message fail?
 without blocking normal processing.
@@ -2248,8 +2170,7 @@ Even if Kafka supports sophisticated transactional semantics, imagine the consum
 sendSMS()
 to an external provider.
 Now:
-SMS Provider
-is another system.
+SMS Provider is another system.
 You cannot casually claim:
 Kafka transaction
 +
@@ -2354,15 +2275,11 @@ Architecture:
                Payment DB
 Worker:
 receive(message)
-
 paymentId = message.paymentId
-
 result = paymentProvider.charge(
     idempotencyKey = paymentId
 )
-
 saveResult(result)
-
 ACK(message)
 Suppose worker crashes after charge:
 charge SUCCESS
@@ -2405,7 +2322,6 @@ Order 100
     |
     v
 Partition 7
-
 M1
 M2
 M3
@@ -2495,18 +2411,18 @@ more storage
 This is exactly how you should reason in system design.
 ________________________________________
 32. The failure table you should be able to explain
-Scenario	Result
-ACK before processing	Possible message loss
-Processing before ACK	Possible duplicate
-Consumer crashes before ACK	Redelivery
-ACK lost	Redelivery
-Producer response lost	Producer retry / duplicate
-Processing takes longer than lease	Possible concurrent redelivery
-Permanent processing error	DLQ after retry policy
-Consumer slower than producer	Growing lag
-Broker loses unreplicated data	Possible message loss
-Partition failure	Depends on replication/failover
-Duplicate message	Requires idempotent handling
+Scenario					Result
+ACK before processing			Possible message loss
+Processing before ACK			Possible duplicate
+Consumer crashes before ACK		Redelivery
+ACK lost					Redelivery
+Producer response lost			Producer retry / duplicate
+Processing takes longer than lease		Possible concurrent redelivery
+Permanent processing error			DLQ after retry policy
+Consumer slower than producer		Growing lag
+Broker loses unreplicated data		Possible message loss
+Partition failure				Depends on replication/failover
+Duplicate message				Requires idempotent handling
 If you can explain why each happens, you're beyond memorizing messaging terminology.
 ________________________________________
 33. Design Exercise — Payment Queue
@@ -2617,8 +2533,7 @@ Producer
    |
    v
 +----------------------+
-| Queue                |
-|                      |
+| Queue                         |
 | M1 M2 M3 M4 M5 M6    |
 +----------------------+
    |
@@ -2637,7 +2552,7 @@ ________________________________________
 2. Add multiple consumers
 You might try:
                   ┌── Consumer 1
-Queue ────────────┼── Consumer 2
+Queue ──── Consumer 2
                   ├── Consumer 3
                   └── Consumer 4
 Now the broker distributes messages:
@@ -2685,14 +2600,10 @@ ________________________________________
 4. Business ordering is usually narrower
 Fortunately, most systems don't need global ordering.
 Consider orders:
-Order A:
-Created → Paid → Shipped
+Order A: Created → Paid → Shipped
 
-Order B:
-Created → Paid → Shipped
-
-Order C:
-Created → Paid → Shipped
+Order B: Created → Paid → Shipped
+Order C:  Created → Paid → Shipped
 Do we really require:
 A.Created
 A.Paid
@@ -2882,8 +2793,7 @@ P1 → C2
 P2 → C3
 P3 → C5
 or some other allocation.
-This redistribution is called a:
-Rebalance
+This redistribution is called a: Rebalance
 ________________________________________
 14. Why rebalancing exists
 Consumers can dynamically appear/disappear.
@@ -2896,8 +2806,7 @@ C1
 C2 ❌
 C3
 Its partitions need reassignment.
-Otherwise:
-P1
+Otherwise: P1
 would have nobody processing it.
 So the group coordinator detects membership changes and performs a rebalance.
 Conceptually:
@@ -3088,7 +2997,7 @@ If ordering matters, don't introduce parallel processing inside a partition with
 ________________________________________
 24. Partition count is a capacity decision
 Suppose you create:
-2 partitions
+2 partitions 
 today.
 Later:
 Traffic = 1 million msg/sec
@@ -3107,8 +3016,7 @@ So there is a capacity-planning trade-off.
 ________________________________________
 25. A useful sizing equation
 At a simplified level:
-Required consumer parallelism
-≈ incoming throughput / per-consumer throughput
+Required consumer parallelism ≈ incoming throughput / per-consumer throughput
 Example:
 Incoming = 100,000 msg/sec
 One consumer = 5,000 msg/sec
@@ -3123,7 +3031,6 @@ ________________________________________
 Suppose:
 P0:
 A1 A2 A3
-
 P1:
 B1 B2 B3
 Guaranteed:
@@ -3148,7 +3055,6 @@ ________________________________________
 Let's apply everything.
 Requirements:
 100 million accounts
-
 Each account generates:
 Deposit
 Withdrawal
@@ -3228,7 +3134,6 @@ But what happens to messages C2 was processing?
 Suppose:
 P1:
 M10 M11 M12 M13
-
 C2:
 processing M12
 C2 crashes before acknowledging/committing its progress.
@@ -3252,7 +3157,7 @@ You should now be able to mentally model a scalable event system like this:
                 +------------------------+
                 |       Message Broker   |
                 |                        |
-                | Topic                  |
+                |            Topic                  |
                 |                        |
                 | P0 P1 P2 P3 P4 P5      |
                 +------------------------+
@@ -3401,7 +3306,7 @@ We'll study:
 That lesson will connect messaging directly to the distributed-systems concepts of consensus, quorum, failure detection, and consistency.
 
 
-Lesson 5 — Durability, Replication & Broker Failure
+Lesson 5 - Durability, Replication & Broker Failure
 Now we're moving from "how do messages move?" to a much deeper question:
 What does it actually mean for a message to be safe?
 This is where messaging systems meet core distributed-systems concepts:
@@ -3441,18 +3346,16 @@ ________________________________________
 2. Replicated broker
 Instead:
                 ┌── Broker A
-Producer ───────┼── Broker B
+Producer ── Broker B
                 └── Broker C
 All three maintain copies.
 For example:
 Partition P0
-
 A: M1 M2 M3
 B: M1 M2 M3
 C: M1 M2 M3
 Now if A fails:
 A ❌
-
 B ✓
 C ✓
 we still have the data.
@@ -3462,18 +3365,15 @@ ________________________________________
 3. Replication factor
 If:
 Replication Factor = 3
-we have:
-3 copies
+we have: 3 copies
 For example:
 P0
-
 Broker A → copy
 Broker B → copy
 Broker C → copy
 RF=3 is common in distributed systems because it can tolerate some failures while maintaining redundancy.
 But replication has a cost.
-If you write:
-1 GB
+If you write: 1 GB
 with RF=3:
 ~3 GB of storage
 plus replication network traffic.
@@ -3485,12 +3385,10 @@ ________________________________________
 Usually we don't let all replicas independently accept writes for the same partition.
 Instead:
 Partition P0
-
 Broker A = Leader
 Broker B = Follower
 Broker C = Follower
-Producer sends to:
-A
+Producer sends to:  A
 Leader coordinates the write.
 Conceptually:
 Producer
@@ -3523,7 +3421,6 @@ A:
 100 M1
 101 M2
 102 M3
-
 B:
 100 M1
 101 M2
@@ -3580,9 +3477,7 @@ A ❌
 B/C have M1.
 Better durability.
 But latency increases:
-Network round trip
-+
-replication
+Network round trip + replication
 So:
 Durability ↑
 Latency ↑
@@ -3592,8 +3487,7 @@ ________________________________________
 Suppose:
 N = 3 replicas
 You could require:
-2 replicas
-to confirm a write.
+2 replicas to confirm a write.
 That's a quorum.
 A ✓
 B ✓
@@ -3617,17 +3511,13 @@ majority:
 floor(3/2) + 1 = 2
 For:
 N = 5
-majority:
-3
-Generally:
-quorum = floor(N / 2) + 1
+majority: 3
+Generally: quorum = floor(N / 2) + 1
 This ensures that two different majorities must overlap in at least one replica.
 For example:
 N = 5
-
 Quorum A:
 A B C
-
 Quorum B:
 C D E
 They overlap at:
@@ -3695,7 +3585,6 @@ Start:
 A = Leader
 B = Follower
 C = Follower
-
 A: M1 M2 M3
 B: M1 M2 M3
 C: M1 M2 M3
@@ -3761,7 +3650,6 @@ but they independently assign different histories.
 For example:
 A:
 M1 M2 M3 M10
-
 B:
 M1 M2 M3 M11
 Now the replicas disagree about history.
@@ -3781,9 +3669,7 @@ B/C side has:
 2 nodes
 If leadership requires a majority:
 majority = 2
-then:
-A
-cannot legitimately form a majority.
+then: A cannot legitimately form a majority.
 But:
 B + C
 can.
@@ -3834,7 +3720,7 @@ Broker
 Broker safely stores:
 M1
 Great.
-But consumer receives:
+But consumer receives: 
 M1
 and crashes before processing.
 The broker may still have M1.
@@ -3876,19 +3762,19 @@ That's the real distributed system.
 ________________________________________
 22. Failure matrix
 Let's build a more advanced one.
-Failure	Possible result
-Producer crashes before send	No message
-Producer retry after timeout	Duplicate possible
-Leader crashes before replication	Message may be lost
-Leader crashes after quorum commit	Message should survive
-Follower crashes	Usually continue with reduced redundancy
-Consumer crashes before processing	Redelivery
-Consumer crashes after processing	Duplicate
-ACK lost	Redelivery
-Network partition	Failover / availability trade-off
-No quorum	Writes may need to stop
-Disk failure	Replica can take over
-Consumer group rebalance	Previously uncommitted work may be replayed
+Failure	Possible 					result
+Producer crashes before send			No message
+Producer retry after timeout				Duplicate possible
+Leader crashes before replication			Message may be lost
+Leader crashes after quorum commit		Message should survive
+Follower crashes				Usually continue with reduced redundancy
+Consumer crashes before processing		Redelivery
+Consumer crashes after processing		Duplicate
+ACK lost						Redelivery
+Network partition					Failover / availability trade-off
+No quorum						Writes may need to stop
+Disk failure						Replica can take over
+Consumer group rebalance	Previously 		uncommitted work may be replayed
 This is how you should reason about a production messaging system.
 ________________________________________
 23. Durability levels
@@ -3938,19 +3824,14 @@ Therefore many architectures use:
 Local synchronous replication
 +
 Asynchronous cross-region replication
-Example:
-Region A
-
+Example: Region A
 A1 ← leader
 A2 ← replica
 A3 ← replica
-
         |
         | async
         v
-
 Region B
-
 B1
 B2
 B3
@@ -3990,8 +3871,7 @@ careful commit semantics
 idempotency
 Analytics
 Maybe:
-RPO = several minutes
-is acceptable.
+RPO = several minutes is acceptable.
 You might choose:
 asynchronous replication
 +
@@ -4005,7 +3885,6 @@ ________________________________________
 Let's test your understanding.
 We have:
 Replication factor = 3
-
 A = Leader
 B = Follower
 C = Follower
@@ -4091,9 +3970,9 @@ Let's put the last three lessons together.
               Payment Topic
                       |
              +--------+--------+
-             |        |        |
-             A        B        C
-           leader   replica  replica
+             |       	 |     	   |
+             A       	 B       	 C
+           leader   replica   replica
              |
              v
        committed log
@@ -4249,7 +4128,7 @@ We'll study:
 •	queue capacity calculations
 And we'll design a 100K events/sec notification system where the downstream provider suddenly drops from 50K/sec → 2K/sec, and reason through what happens to the entire system.
 
-Lesson 6 — Backpressure, Retries, Poison Messages & Dead-Letter Queues
+Lesson 6 - Backpressure, Retries, Poison Messages & Dead-Letter Queues
 This lesson is extremely important for production system design.
 So far, we've mostly asked:
 "How do we move messages reliably?"
@@ -4272,12 +4151,8 @@ Incoming:
 100,000/sec
 Processing:
 20,000/sec
-Therefore backlog grows:
-100,000 - 20,000
-= 80,000 messages/sec
-After 1 minute:
-80,000 × 60
-= 4.8 million messages
+Therefore backlog grows:  100,000 - 20,000 = 80,000 messages/sec
+After 1 minute: 80,000 × 60 = 4.8 million messages
 Your queue is now carrying millions of messages.
 This is consumer lag.
 ________________________________________
@@ -4336,8 +4211,7 @@ to:
 You haven't solved the throughput mismatch.
 You've only delayed the failure.
 Eventually:
-1 billion messages
-will also be consumed too slowly.
+1 billion messages will also be consumed too slowly.
 So the first question should be:
 Why is the consumer slower?
 Possibilities:
@@ -4366,9 +4240,7 @@ So:
       C1         C2         C3
       ...
       C20
-can theoretically handle:
-20 × 5,000
-= 100,000 msg/sec
+can theoretically handle: 20 × 5,000 = 100,000 msg/sec
 But don't design exactly at the limit.
 You need headroom.
 Maybe:
@@ -4385,8 +4257,7 @@ Consumers = 30
 Only roughly 10 consumers can actively own partitions within that consumer group.
 So:
 Consumer scaling
-requires sufficient:
-Partition parallelism
+requires sufficient: Partition parallelism
 This is why partition count is also a throughput-design decision.
 ________________________________________
 7. The more dangerous problem: downstream dependency
@@ -4404,8 +4275,7 @@ But the SMS provider only allows:
 5,000/sec
 Then increasing consumers is actually harmful.
 You might create:
-20 consumers
-all hammering the provider.
+20 consumers all hammering the provider.
 Result:
 SMS Provider
      ↓
@@ -4650,7 +4520,6 @@ Retries exhausted
 DLQ
 So:
 Retry queue = "try again later"
-
 DLQ = "normal processing failed; investigate"
 ________________________________________
 18. Delayed retry architecture
@@ -5133,7 +5002,8 @@ For the next 10 minutes, explain what happens to:
 The key thing I want you to discover yourself is:
 If you simply retry failed messages aggressively, recovery can cause a second outage even after the provider becomes healthy.
 That leads directly into the next lesson:
-Lesson 7 — Delivery Semantics & Exactly-Once Illusion
+
+Lesson 7 - Delivery Semantics & Exactly-Once Illusion
 We'll go deep into:
 At-most-once
 At-least-once
@@ -5393,15 +5263,11 @@ You receive:
 Payment(P123, ₹1000)
 Transaction:
 BEGIN
-
 if P123 already exists:
     return success
-
 INSERT P123 into processed_payments
-
 UPDATE account
 SET balance = balance + 1000
-
 COMMIT
 Now the deduplication record and business change happen in the same database transaction.
 That's powerful.
@@ -5422,8 +5288,7 @@ If ACK fails:
 redelivery
 No problem.
 The second execution sees:
-P123 already processed
-and safely returns.
+P123 already processed and safely returns.
 So:
 At-least-once delivery
 +
@@ -5529,9 +5394,7 @@ ________________________________________
 17. Why "just use a transaction" doesn't solve everything
 You might think:
 BEGIN DB TRANSACTION
-
 charge external API
-
 UPDATE DB
 
 COMMIT
@@ -5616,11 +5479,8 @@ DB
 Broker
 we write both business data and an outbox event into the same database transaction.
 BEGIN
-
 INSERT order
-
 INSERT outbox_event
-
 COMMIT
 Database:
 orders
@@ -5702,11 +5562,8 @@ processed_messages
 M123
 in the same transaction as the business operation.
 BEGIN
-
 INSERT processed_messages(M123)
-
 UPDATE business_table
-
 COMMIT
 If M123 arrives again:
 INSERT M123
@@ -5740,10 +5597,9 @@ Service A
    | local transaction
    ↓
 ┌─────────────────┐
-│ Business DB     │
-│                 │
-│ orders          │
-│ outbox_events   │
+│ Business DB             │
+│ orders                           │
+│ outbox_events         │
 └────────┬────────┘
          |
          v
@@ -5767,8 +5623,7 @@ Now every boundary has a durable state transition.
 ________________________________________
 26. Let's examine a complete failure
 Suppose:
-Order O123
-is created.
+Order O123 is created.
 Transaction:
 orders ✓
 outbox ✓
@@ -5846,7 +5701,6 @@ Whenever you design a system, draw the transaction boundaries.
 For example:
 ┌─────────────────────────────┐
 │ Database transaction        │
-│                             │
 │ Order + Outbox              │
 └─────────────────────────────┘
               |
@@ -5920,16 +5774,16 @@ process
 unless you're intentionally choosing at-most-once semantics.
 ________________________________________
 32. Delivery semantics decision table
-Requirement	Typical approach
-Loss acceptable	At-most-once
-Loss unacceptable	At-least-once
-Duplicate harmless	Idempotent consumer
-Duplicate harmful	Idempotency key / deduplication
-DB + event must stay consistent	Transactional outbox
+Requirement						Typical approach
+Loss acceptable					At-most-once
+Loss unacceptable					At-least-once
+Duplicate harmless					Idempotent consumer
+Duplicate harmful					Idempotency key / deduplication
+DB + event must stay consistent			Transactional outbox
 Consumer operation must be deduplicated	Inbox / idempotency table
-External API retry	Provider idempotency key
-Kafka → Kafka processing	Transactional/EOS mechanisms can help
-External side effect	Explicit idempotency/compensation
+External API retry					Provider idempotency key
+Kafka → Kafka processing			Transactional/EOS mechanisms can help
+External side effect					Explicit idempotency/compensation
 ________________________________________
 33. Design Exercise — Payment Processing
 Now let's do the university-level exercise.
@@ -5976,11 +5830,8 @@ ________________________________________
 Exercise 2 — Database transaction
 Now consider:
 BEGIN
-
 INSERT processed_payment(P999)
-
 UPDATE payment_status = SUCCESS
-
 COMMIT
 Where should the gateway call happen?
 And why is this problematic?
@@ -6137,7 +5988,7 @@ We'll study:
 And we'll design a complete Amazon-style order workflow with failures at every step.
 
 
-Lesson 8 — Distributed Transactions & the Saga Pattern
+Lesson 8 - Distributed Transactions & the Saga Pattern
 Now we move from messaging reliability into a much harder problem:
 How do multiple independent services complete one business operation without a single ACID transaction?
 This is where system design becomes genuinely distributed.
@@ -6154,8 +6005,7 @@ Order Service
   +----> Inventory Service
   |
   +----> Shipping Service
-Business requirement:
-"Place an order."
+Business requirement: "Place an order."
 But internally that's several operations:
 1. Create order
 2. Reserve inventory
@@ -6171,24 +6021,19 @@ ________________________________________
 2. Why one giant transaction doesn't work
 In a monolith you might do:
 BEGIN;
-
 INSERT order;
-
 UPDATE inventory;
-
 INSERT payment;
-
 INSERT shipment;
-
 COMMIT;
 If anything fails:
 ROLLBACK;
 Easy.
 But in microservices:
 Order DB       Payment DB       Inventory DB
-    |               |                |
+    |                             |                                  |
     +---------------+----------------+
-                    |
+                                |
               different systems
 You cannot simply do:
 BEGIN
@@ -6353,32 +6198,26 @@ Order Service
   Broker
     |
     +------------------+
-    |                  |
-    v                  v
+    |                                |
+    v                               v
 Inventory          Payment
-    |                  |
-InventoryReserved  PaymentCompleted
-    |                  |
-    +--------+---------+
-             |
-             v
-         Shipping
+    |                                |
+InventoryReserved      PaymentCompleted
+    |                                                         |
+    +--------------------+------------+
+                                         |
+                                         v
+                                 Shipping
 No central coordinator necessarily controls the whole workflow.
 Services publish events and respond to events.
 ________________________________________
 11. Choreography example
-Order service:
-OrderCreated
-Inventory service receives it:
-reserve inventory
-Then publishes:
-InventoryReserved
-Payment service consumes:
-InventoryReserved
-and publishes:
-PaymentCompleted
-Shipping consumes:
-PaymentCompleted
+Order service: OrderCreated
+Inventory service receives it: reserve inventory
+Then publishes:  InventoryReserved
+Payment service consumes: InventoryReserved
+and publishes: PaymentCompleted
+Shipping consumes: PaymentCompleted
 and creates shipment.
 This is event-driven choreography.
 ________________________________________
@@ -6519,7 +6358,6 @@ After restart:
 You don't want the workflow to restart from zero blindly.
 So persist workflow state:
 Saga DB
-
 orderId | state
 --------|---------------------
 O123    | PAYMENT_COMPLETED
@@ -6762,16 +6600,16 @@ compensation/cancellation
 depending on business requirements.
 ________________________________________
 26. Choreography vs orchestration
-	Choreography	Orchestration
-Central coordinator	No	Yes
-Coupling	Event-based	Command/workflow-based
-Workflow visibility	Harder	Easier
-Simple workflows	Excellent	Fine
-Complex workflows	Can become messy	Better
-Debugging	Harder	Easier
-Central bottleneck	No coordinator	Possible
-State machine	Distributed	Explicit
-Failure handling	Distributed	Centralized
+					Choreography	Orchestration
+Central coordinator			No			Yes
+Coupling				Event-based		Command/workflow-based
+Workflow 				visibility		Harder	Easier
+Simple workflows			Excellent		Fine
+Complex workflows			Can become messy	Better
+Debugging				Harder			Easier
+Central bottleneck			No coordinator	Possible
+State machine			Distributed		Explicit
+Failure handling			Distributed		Centralized
 Neither is universally superior.
 A useful rule:
 Simple event reactions → choreography can work well. Complex business workflows → orchestration often becomes easier to reason about.
@@ -7038,7 +6876,7 @@ We'll follow this sequence:
 10.	Kafka Performance + Production Architecture
 We'll start with the most important mental model.
 ________________________________________
-Lesson 1 — Kafka Architecture
+Lesson 1 - Kafka Architecture
 1. First: What problem is Kafka actually solving?
 Forget the word "queue" for a moment.
 A traditional queue looks like:
@@ -7083,10 +6921,10 @@ Consumer C → offset 5
 Each consumer has its own position.
 Therefore the same Kafka data can be consumed independently by multiple applications.
 For example:
-                  Kafka
-                    |
+                	  Kafka
+                   	     |
           ┌─────────┼─────────┐
-          ↓         ↓         ↓
+          ↓         	     ↓                        ↓
        Payment    Analytics  Search
        Service     Service   Indexer
 All can consume the same events.
@@ -7104,10 +6942,10 @@ Producer│                            │
         │             └── Topic C    │
         │                            │
         └────────────────────────────┘
-                       |
-              ┌────────┴────────┐
-              ↓                 ↓
-         Consumer Group A   Consumer Group B
+                     	             |
+              ┌──────--──┴────────┐
+              ↓             		    ↓
+         Consumer Group A   	Consumer Group B
 The major concepts you'll need are:
 •	Broker
 •	Topic
@@ -7137,10 +6975,10 @@ A broker is responsible for things such as:
 •	storing partition data
 •	replicating partition data
 •	participating in cluster metadata/leadership management
-Don't think of a broker as:
-"the queue."
+Don't think of a broker as: "the queue."
 A cluster contains many partitions distributed across brokers.
-________________________________________
+
+
 5. Topic
 A topic is a logical stream/category of records.
 For example:
@@ -7154,9 +6992,7 @@ But internally, Kafka doesn't store "orders" as one giant sequential structure.
 It is divided into partitions.
 ________________________________________
 6. Partition
-Suppose:
-orders
-has 3 partitions:
+Suppose:  orders has 3 partitions:
 orders
  ├── partition 0
  ├── partition 1
@@ -7164,7 +7000,6 @@ orders
 Each partition is an ordered append-only log.
 For example:
 Partition 0:
-
 offset
   0 → O100
   1 → O103
@@ -7180,13 +7015,11 @@ offset
   0 → O102
   1 → O104
   2 → O110
-Important:
-Ordering is guaranteed within a partition, not across the entire topic.
+Important: Ordering is guaranteed within a partition, not across the entire topic.
 We'll spend an entire lesson on why.
 ________________________________________
 7. Why partitions exist
-The obvious question:
-Why not have one giant partition?
+The obvious question: Why not have one giant partition?
 Because one partition fundamentally limits your ability to distribute work.
 Imagine:
 Topic
@@ -7212,10 +7045,8 @@ This is one of Kafka's most important design decisions.
 ________________________________________
 8. Topic ≠ Partition
 This distinction is critical.
-A topic is:
-logical stream
-A partition is:
-physical ordered log
+A topic is: logical stream
+A partition is: physical ordered log
 So:
 Topic
    |
@@ -7226,8 +7057,7 @@ Topic
    +── Partition 2
 When you say:
 "Kafka guarantees ordering."
-The correct statement is:
-Kafka guarantees ordering within a partition.
+The correct statement is: Kafka guarantees ordering within a partition.
 ________________________________________
 9. Record
 A Kafka record might conceptually look like:
@@ -7246,7 +7076,6 @@ For example:
 Kafka assigns it an offset within its partition.
 Example:
 Partition 1
-
 offset 100 → customer-123 / OrderCreated
 offset 101 → customer-456 / OrderCreated
 offset 102 → customer-123 / PaymentCompleted
@@ -7254,7 +7083,6 @@ ________________________________________
 10. Offset
 An offset identifies a record's position within a partition.
 Partition 0
-
 0
 1
 2
@@ -7267,16 +7095,13 @@ This:
 P0 offset 100
 is different from:
 P1 offset 100
-A record is conceptually identified by:
-(topic, partition, offset)
-For example:
-(orders, 3, 100)
+A record is conceptually identified by: (topic, partition, offset)
+For example: (orders, 3, 100)
 ________________________________________
 11. Kafka doesn't normally "delete after consumption"
 This is one of the biggest conceptual differences from traditional queues.
 Suppose:
 P0:
-
 0
 1
 2
@@ -7361,7 +7186,6 @@ customer-123
      |
      v
 Partition 2
-
 100 OrderCreated
 101 PaymentCompleted
 102 ShipmentCreated
@@ -7435,7 +7259,6 @@ orders
  └── P3
 Consumer group:
 Order Processor Group
-
 Consumer A
 Consumer B
 Consumer C
@@ -7478,28 +7301,21 @@ Now:
                  Kafka
                    |
         ┌──────────┼──────────┐
-        ↓          ↓          ↓
+        ↓          	↓        		  ↓
      Group A     Group B    Group C
-       |            |          |
+       |            	|          		|
     Payment      Analytics   Search
 Each group tracks its own position.
-For example:
+For example: 
 orders / P0
-
-Payment Group:
-offset = 100
-
-Analytics Group:
-offset = 80
-
-Search Group:
-offset = 97
+Payment Group: offset = 100
+Analytics Group: offset = 80
+Search Group: offset = 97
 Therefore each application can consume the same stream independently.
 ________________________________________
 21. This is the key Kafka mental model
 Put everything together:
                          Kafka Cluster
-
                  ┌──────────────────────┐
 Producer ───────>│ Topic: orders        │
                  │                      │
@@ -7530,9 +7346,7 @@ A partition isn't just an abstract array.
 Kafka stores partition data as files on disk.
 Conceptually:
 Kafka Broker
-
 /data/kafka/
-
 orders-0/
 orders-1/
 payments-0/
@@ -7540,12 +7354,10 @@ payments-1/
 Within a partition, Kafka maintains log segments.
 Conceptually:
 Partition 0
-
 Segment 0
  ├── records
  ├── index
  └── ...
-
 Segment 1
  ├── records
  ├── index
@@ -7607,9 +7419,7 @@ Application buffer
 Socket buffer
  ↓
 Consumer
-the operating system can use mechanisms such as:
-sendfile
-to transfer file data more efficiently.
+the operating system can use mechanisms such as: sendfile to transfer file data more efficiently.
 Conceptually:
 Disk
   |
@@ -7627,7 +7437,6 @@ ________________________________________
 26. Kafka cluster distribution
 Suppose:
 3 brokers
-
 B1
 B2
 B3
@@ -7657,7 +7466,6 @@ ________________________________________
 27. Replication
 Suppose P0 has replication factor 3:
 P0
-
 Leader   → B1
 Follower → B2
 Follower → B3
@@ -7712,14 +7520,14 @@ Partition
 ________________________________________
 29. Kafka vs traditional queue
 This distinction is worth memorizing.
-Traditional Queue	Kafka
+Traditional Queue				Kafka
 Message consumed → often removed	Record retained according to retention
-Queue-centric	Log-centric
-Consumer receives work	Consumer tracks position
+Queue-centric				Log-centric
+Consumer receives work			Consumer tracks position
 Usually one consumer gets message	Multiple consumer groups can independently read
-Ordering often queue-level	Ordering is partition-level
-Replay often secondary	Replay is fundamental
-Scaling via workers	Scaling via partitions + consumers
+Ordering often queue-level			Ordering is partition-level
+Replay often secondary			Replay is fundamental
+Scaling via workers				Scaling via partitions + consumers
 Kafka can absolutely be used for queue-like workloads, but its underlying abstraction is a distributed append-only log.
 ________________________________________
 30. Why replay is so powerful
@@ -7815,12 +7623,8 @@ Reason from the requirement:
 What entity's ordering actually matters?
 ________________________________________
 34. Design Exercise #2 — Consumer scaling
-You have:
-orders topic
-= 12 partitions
-and:
-Consumer Group
-= 20 consumers
+You have:  orders topic = 12 partitions
+and:  Consumer Group = 20 consumers
 Questions:
 1.	How many consumers can actively consume simultaneously?
 2.	What happens to the remaining consumers?
@@ -7846,7 +7650,6 @@ Don't remember Kafka as:
 Producer → Queue → Consumer
 Replace that mental model with:
                  DISTRIBUTED LOG
-
         Topic
           |
     ┌─────┼─────┐
@@ -7913,7 +7716,7 @@ and understand:
 •	Why partitions are effectively the unit of Kafka parallelism
 Then we'll do a partition sizing + partition-key design exercise based on a realistic production workload.
 
-Lesson 2 — Kafka Topic + Partition Internals
+Lesson 2 - Kafka Topic + Partition Internals
 This lesson is where Kafka starts becoming interesting from a systems-engineering perspective.
 The key question is:
 What actually exists on disk when I create a Kafka topic with 3 partitions?
@@ -7921,8 +7724,7 @@ We’ll go from logical topic → partition → log segment → record batch →
 ________________________________________
 1. Topic is a logical abstraction
 Suppose you create:
-orders
-with 3 partitions:
+Orders with 3 partitions:
 orders
  ├── P0
  ├── P1
@@ -7932,11 +7734,9 @@ Instead, Kafka has three independent ordered logs.
 P0:  0 → 1 → 2 → 3 → 4
 P1:  0 → 1 → 2 → 3
 P2:  0 → 1 → 2 → 3 → 4 → 5
-This immediately gives us two properties:
-Ordering
-Kafka can guarantee:
-P0:
-100 → 101 → 102 → 103
+This immediately gives us two properties: Ordering
+Kafka can guarantee: 
+P0: 100 → 101 → 102 → 103
 But cannot guarantee:
 P0 offset 100
 before
@@ -7955,7 +7755,6 @@ ________________________________________
 Imagine broker 1 owns partition 0.
 Conceptually, its storage might look like:
 Kafka data directory
-
 orders-0/
 orders-1/
 payments-0/
@@ -7965,7 +7764,6 @@ orders-0
 Kafka doesn't necessarily keep everything in one enormous file.
 It divides the partition into log segments.
 orders-0/
-
 Segment 1
 Segment 2
 Segment 3
@@ -8010,13 +7808,10 @@ means:
 base offset = 100000
 So:
 Partition P0
-
 Segment A
 base offset = 0
-
 Segment B
 base offset = 100000
-
 Segment C
 base offset = 200000
 ________________________________________
@@ -8024,9 +7819,7 @@ ________________________________________
 The .log file contains the actual Kafka record batches.
 Conceptually:
 Segment
-
 .log
-
 ┌─────────────────────────────┐
 │ RecordBatch                  │
 │ RecordBatch                  │
@@ -8083,13 +7876,10 @@ Kafka assigns:
 103
 Conceptually:
 Existing:
-
 97
 98
 99
-
 New batch:
-
 100
 101
 102
@@ -8103,12 +7893,9 @@ ________________________________________
 8. Important subtlety: offset is not a byte position
 This is a common misunderstanding.
 You might think:
-offset 100
-=
-byte 100
+offset 100 =byte 100
 No.
-Offset:
-100
+Offset: 100
 means:
 the logical record position in that partition.
 The physical byte position could be something like:
@@ -8137,7 +7924,6 @@ index[5000]
 Instead, Kafka uses a sparse index.
 Conceptually:
 Offset       Physical position
-
 1000   →     0
 1100   →     12000
 1200   →     24500
@@ -8222,10 +8008,8 @@ ________________________________________
 Suppose:
 Segment A
 base = 0
-
 Segment B
 base = 100,000
-
 Segment C
 base = 200,000
 Consumer asks:
@@ -8242,7 +8026,6 @@ One segment is normally the active segment.
 New records are appended there.
 Conceptually:
 P0
-
 Segment 0    CLOSED
 Segment 1    CLOSED
 Segment 2    CLOSED
@@ -8253,11 +8036,8 @@ append
 Segment 3
 Once the segment reaches configured limits, Kafka rolls to a new segment:
 Before:
-
 Segment 3 ACTIVE
-
 After:
-
 Segment 3 CLOSED
 Segment 4 ACTIVE
 ________________________________________
@@ -8269,9 +8049,7 @@ Conceptually:
 if segment too large
       ↓
 roll
-
 or
-
 if segment too old
       ↓
 roll
@@ -8279,9 +8057,8 @@ This matters enormously for retention.
 Because Kafka generally operates on segments, not individual records, for physical deletion.
 ________________________________________
 17. Retention
-Suppose retention is:
-7 days
-and your partition contains:
+Suppose retention is:  7 days
+and your partition contains :
 Day 1
 Day 2
 Day 3
@@ -8296,7 +8073,6 @@ Day 2 segment → delete
 while keeping newer segments.
 Conceptually:
 Partition
-
 oldest
   ↓
 [Day 1] ❌
@@ -8336,13 +8112,10 @@ With compaction, Kafka can eventually retain the latest value for a key:
 user-123 → name=Charlie
 Conceptually:
 Before:
-
 user-123 → Alice
 user-123 → Bob
 user-123 → Charlie
-
 After compaction:
-
 user-123 → Charlie
 This is useful for topics representing current state.
 ________________________________________
@@ -8384,7 +8157,6 @@ Kafka doesn't replicate an entire topic as one object.
 It replicates individual partitions.
 Suppose:
 Topic: orders
-
 P0
 P1
 P2
@@ -8399,9 +8171,7 @@ Suppose we have:
 Broker 1
 Broker 2
 Broker 3
-and:
-orders
-6 partitions
+and: orders 6 partitions
 replication factor = 3
 A simplified conceptual layout might be:
              Leader   Replica Replica
@@ -8524,7 +8294,6 @@ hash(orderId)
 partition
 Therefore:
 Order 123
-
 Created   → P7
 Paid      → P7
 Shipped   → P7
@@ -8698,7 +8467,7 @@ We'll dive into:
 •	what actually happens when the broker is slow
 And we'll finish with a Java producer performance/debugging exercise where you'll diagnose why a producer is only achieving 20% of the expected throughput.
 
-Lesson 3 — Kafka Producer Internals
+Lesson 3 - Kafka Producer Internals
 Now we're going inside the Java Kafka producer.
 You should think of the producer not as:
 producer.send(message)
@@ -8925,9 +8694,7 @@ R2 → network
 R3 → network
 R4 → network
 the producer can accumulate them:
-P0 batch:
-
-[R1 R2 R3 R4]
+P0 batch: [R1 R2 R3 R4]
 Then send them together.
 ________________________________________
 10. Why batches are partition-specific
@@ -9114,10 +8881,8 @@ For example:
 Broker 1:
   P0 batch
   P3 batch
-
 Broker 2:
   P1 batch
-
 Broker 3:
   P2 batch
 The producer can therefore have multiple requests in flight.
@@ -9155,7 +8920,6 @@ Producer
    | send
    v
 Kafka
-
 Producer doesn't wait for broker acknowledgement.
 Very low latency, but weakest delivery assurance.
 ________________________________________
@@ -9836,8 +9600,7 @@ The exact implementation has evolved across Kafka versions, but this conceptual 
 ________________________________________
 4. What happens when you call poll()?
 Suppose:
-ConsumerRecords<String, Order> records =
-        consumer.poll(Duration.ofMillis(1000));
+ConsumerRecords<String, Order> records =  consumer.poll(Duration.ofMillis(1000));
 Don't think:
 poll()
  ↓
@@ -9867,12 +9630,10 @@ P0
 P1
 The consumer can issue fetch requests such as:
 FetchRequest:
-
 P0 → offset 1000
 P1 → offset 2500
 Broker responds:
 FetchResponse:
-
 P0:
 1000
 1001
@@ -9956,14 +9717,11 @@ fetch.min.bytes = larger value
 can encourage larger responses.
 Conceptually:
 Without batching:
-
 fetch → 1 KB
 fetch → 1 KB
 fetch → 1 KB
 fetch → 1 KB
-
 With larger fetch:
-
 fetch → 64 KB
 This can improve throughput.
 ________________________________________
@@ -10065,9 +9823,7 @@ ________________________________________
 14. Why consumers poll?
 Now let's look at the Java API:
 while (true) {
-    ConsumerRecords<String, Order> records =
-        consumer.poll(Duration.ofMillis(1000));
-
+    ConsumerRecords<String, Order> records =  consumer.poll(Duration.ofMillis(1000));
     for (ConsumerRecord<String, Order> record : records) {
         process(record);
     }
@@ -10234,7 +9990,6 @@ P2 → Worker/Consumer C
 Then:
 P0:
 100 → 101 → 102
-
 P1:
 200 → 201 → 202
 can process concurrently while each partition remains ordered.
@@ -10295,7 +10050,6 @@ ________________________________________
 26. What happens when a consumer crashes?
 Suppose:
 Group:
-
 Consumer A → P0
 Consumer B → P1
 Consumer C → P2
@@ -10311,13 +10065,10 @@ rebalance
 assigned to A or C
 For example:
 Before:
-
 A → P0
 B → P1
 C → P2
-
 After:
-
 A → P0,P1
 C → P2
 We'll study this in depth in Consumer Groups.
@@ -10687,15 +10438,11 @@ We'll answer:
 •	How to design a 100-partition / 20-consumer system
 And we'll do a failure simulation:
 P0 P1 P2 P3 P4 P5
-
 C1 → P0 P1
 C2 → P2 P3
 C3 → P4 P5
-
        ↓ C2 crashes
-
        ???
-
 You'll work out the new assignment before I explain the coordinator's behavior.
 
 Lesson 5 — Kafka Consumer Groups
@@ -10707,7 +10454,6 @@ ________________________________________
 1. Start with the simplest model
 Suppose:
 Topic: orders
-
 P0
 P1
 P2
@@ -10739,7 +10485,6 @@ Partition → one consumer
 at a given point in time.
 For example:
 Group A
-
 P0 → C1
 P1 → C1
 P2 → C2
@@ -10758,7 +10503,6 @@ ________________________________________
 3. Multiple groups are different
 Now consider:
 Topic: orders
-
 P0 P1 P2
 Group A:
 C1 → P0
@@ -11011,7 +10755,6 @@ ________________________________________
 16. Failure example
 Before failure:
 Group
-
 C1 → P0 P1
 C2 → P2 P3
 C3 → P4 P5
@@ -11095,7 +10838,6 @@ ________________________________________
 20. Why duplicate processing can happen
 Suppose:
 P0:
-
 100
 101
 102
@@ -11135,7 +10877,6 @@ ________________________________________
 Suppose:
 Partitions:
 P0 P1 P2 P3 P4 P5
-
 Consumers:
 C1 C2
 A range-style assignment might produce:
@@ -11162,7 +10903,6 @@ ________________________________________
 Now we introduce an important production concern.
 Suppose:
 Before:
-
 C1 → P0 P1
 C2 → P2 P3
 C3 joins.
@@ -11568,7 +11308,7 @@ We'll go deep into:
 •	How to design a reliable Java consumer
 And we'll derive exactly where message loss and duplicate processing occur rather than memorizing "at-least-once."
 
-Lesson 6 — Kafka Offset Management
+Lesson 6 - Kafka Offset Management
 This is one of the most important Kafka lessons.
 If you understand offsets deeply, you'll understand why Kafka consumers can provide:
 •	at-most-once
@@ -11584,7 +11324,6 @@ ________________________________________
 1. First: What exactly is an offset?
 Consider a partition:
 P0
-
 offset
   0 → Order A
   1 → Order B
@@ -11635,7 +11374,6 @@ ________________________________________
 This is the heart of today's lesson.
 Suppose:
 P0:
-
 100
 101
 102
@@ -11668,7 +11406,6 @@ ________________________________________
 4. Why commit offset 103 after processing record 102?
 Imagine:
 P0:
-
 100 → A
 101 → B
 102 → C
@@ -11686,7 +11423,6 @@ means:
 100 ✓
 101 ✓
 102 ✓
-
 resume → 103
 So think:
 Commit the next record you want to process.
@@ -11707,7 +11443,6 @@ commit offset 102
 Meaning:
 processed:
 100, 101
-
 resume from:
 102
 ________________________________________
@@ -11747,7 +11482,6 @@ ________________________________________
 8. Consumer restart
 Suppose:
 P0:
-
 100
 101
 102
@@ -11868,7 +11602,6 @@ process
 Failure:
 commit ✓
 process 💥
-
 → LOST
 At-least-once
 record
@@ -11879,7 +11612,6 @@ commit
 Failure:
 process ✓
 commit 💥
-
 → RETRY
 So:
 at-most-once
@@ -11937,11 +11669,9 @@ Conceptually:
 while (true) {
     ConsumerRecords<String, Order> records =
         consumer.poll(Duration.ofMillis(1000));
-
     for (ConsumerRecord<String, Order> record : records) {
         process(record);
     }
-
     consumer.commitSync();
 }
 Now the lifecycle is explicit:
@@ -12056,7 +11786,6 @@ P0:
 100
 101
 102
-
 P1:
 200
 201
@@ -12076,7 +11805,6 @@ ________________________________________
 23. Out-of-order processing creates an offset problem
 Suppose:
 P0:
-
 100
 101
 102
@@ -12104,7 +11832,6 @@ ________________________________________
 24. The "contiguous prefix" principle
 For ordered processing, think:
 P0:
-
 100 ✓
 101 ✓
 102 ✓
@@ -12133,7 +11860,6 @@ Every Kafka order should be persisted exactly once in PostgreSQL.
 Naive code:
 process(record) {
     database.insert(order);
-
     consumer.commitSync();
 }
 Looks good.
@@ -12155,7 +11881,6 @@ ________________________________________
 26. The opposite ordering is worse
 Suppose:
 consumer.commitSync();
-
 database.insert(order);
 Failure:
 Kafka commit ✓
@@ -12298,7 +12023,6 @@ ________________________________________
 34. Design exercise — crash analysis
 Consider:
 P0:
-
 100
 101
 102
@@ -12307,14 +12031,10 @@ Committed:
 100
 Consumer executes:
 poll()
-
 process(100) ✓
 process(101) ✓
-
 commit(102) ✓
-
 process(102) ✓
-
 💥 CRASH
 After restart:
 Which record is processed again?
@@ -12322,15 +12042,11 @@ Think carefully about the committed next position.
 ________________________________________
 35. Design exercise — commit too early
 Committed offset = 100
-
 poll()
-
 commit(103)
-
 process(100) ✓
 process(101) ✓
 process(102) 💥
-
 CRASH
 After restart:
 resume from 103
@@ -12407,14 +12123,11 @@ For a simple sequential consumer, a strong starting model is:
 consumer.subscribe(List.of("orders"));
 
 while (running) {
-
     ConsumerRecords<String, Order> records =
             consumer.poll(Duration.ofMillis(1000));
-
     for (ConsumerRecord<String, Order> record : records) {
         process(record);
     }
-
     consumer.commitSync();
 }
 The important semantic ordering is:
@@ -12540,7 +12253,7 @@ Broker 1        Broker 2        Broker 3
               What happens now?
 That lesson is where Kafka starts becoming a distributed replicated log, rather than just a messaging system.
 
-Lesson 7 — Kafka Replication + ISR
+Lesson 7 - Kafka Replication + ISR
 Now we move from consumer-side reliability to broker-side reliability.
 So far, we've seen:
 Producer
@@ -12556,7 +12269,6 @@ ________________________________________
 1. Why replication exists
 Suppose you have:
 Broker 1
-
 orders-P0
 -----------
 100
@@ -12574,10 +12286,8 @@ That's unacceptable for important data.
 So Kafka can store multiple replicas:
 Broker 1
   P0 replica
-
 Broker 2
   P0 replica
-
 Broker 3
   P0 replica
 Conceptually:
@@ -12609,7 +12319,6 @@ For each partition, one replica is the leader.
 The others are followers.
 Example:
 P0
-
 Broker 1 → Leader
 Broker 2 → Follower
 Broker 3 → Follower
@@ -12651,7 +12360,6 @@ ________________________________________
 5. Think of a partition as a replicated log
 Suppose:
 P0 leader:
-
 100
 101
 102
@@ -12662,13 +12370,11 @@ Broker 1:
 101
 102
 103
-
 Broker 2:
 100
 101
 102
 103
-
 Broker 3:
 100
 101
@@ -12686,7 +12392,6 @@ to leader:
 Broker 1
 Leader appends it to its local log:
 P0:
-
 100
 Followers fetch/replicate the leader's log.
 Eventually:
@@ -12695,7 +12400,6 @@ Broker 1:
 
 Broker 2:
 100 ✓
-
 Broker 3:
 100 ✓
 Now multiple brokers have the record.
@@ -12723,7 +12427,6 @@ ________________________________________
 8. Leader's log
 Suppose leader has:
 P0:
-
 100
 101
 102
@@ -12731,7 +12434,6 @@ P0:
 104
 Follower is behind:
 P0:
-
 100
 101
 102
@@ -12751,11 +12453,9 @@ ________________________________________
 9. What does "in sync" mean?
 Now we reach one of Kafka's most important concepts:
 ISR — In-Sync Replicas
-ISR stands for:
-In-Sync Replicas
+ISR stands for: In-Sync Replicas
 Suppose:
 P0
-
 Broker 1 → Leader
 Broker 2 → Follower
 Broker 3 → Follower
@@ -12768,10 +12468,8 @@ ________________________________________
 Suppose Broker 3 becomes slow.
 Broker 1:
 100 101 102 103 104 105
-
 Broker 2:
 100 101 102 103 104 105
-
 Broker 3:
 100 101 102
 Broker 3 is far behind.
@@ -12842,10 +12540,8 @@ But the followers might not have replicated it yet.
 Potential failure:
 Leader:
 100 ✓
-
 Follower:
 100 ✗
-
 Leader 💥
 If the record had only been on the leader and the leader fails, durability depends on what replica becomes leader and what data it has.
 So:
@@ -12889,21 +12585,18 @@ Normal state:
 B1 → Leader
 B2 → ISR
 B3 → ISR
-
 ISR count = 3
 Fine.
 Now B3 fails:
 B1 → Leader
 B2 → ISR
 B3 → dead
-
 ISR count = 2
 Still okay.
 Now B2 also fails:
 B1 → Leader
 B2 → dead
 B3 → dead
-
 ISR count = 1
 Now:
 1 < min.insync.replicas=2
@@ -13008,7 +12701,6 @@ ________________________________________
 22. The dangerous scenario
 Now imagine:
 B1 → leader
-
 B2 → follower, caught up
 B3 → follower, caught up
 Then B2 and B3 both become unavailable.
@@ -13061,21 +12753,16 @@ Clean election
 Choose a replica that was in the ISR.
 ISR:
 B2 B3
-
 B1 dies
-
 → B2 becomes leader
 Good for consistency/durability.
 Unclean election
 Choose a replica outside ISR because no ISR replica is available.
 ISR:
 B2
-
 B1 dies
 B2 unavailable
-
 B3 = alive but stale
-
 → B3 becomes leader
 Now some previously acknowledged records may no longer exist on the new leader.
 So:
@@ -13114,22 +12801,18 @@ Kafka considers these replicas sufficiently caught up and eligible for certain d
 A follower can temporarily lag and then catch up.
 Example:
 t1:
-
 B1: 100 101 102
 B2: 100 101
 B3: 100 101 102
-
 ISR = B1 B2 B3
 Then B2 falls behind:
 t2:
-
 B1: 100 101 102 103 104
 B2: 100 101
 B3: 100 101 102 103 104
 Kafka can remove B2 from ISR.
 Later:
 t3:
-
 B2 catches up
 and can rejoin ISR.
 So ISR is dynamic.
@@ -13144,7 +12827,6 @@ Later it restarts.
 It may be behind:
 Leader B1:
 100 101 102 103 104 105 106
-
 B3:
 100 101 102
 B3 needs to catch up.
@@ -13258,7 +12940,6 @@ ________________________________________
 You have:
 3 brokers
 RF = 3
-
 P0:
 B1 → Leader
 B2 → Follower
@@ -13317,11 +12998,8 @@ Record:
 offset 500
 Timeline:
 B1 append 500 ✓
-
 B2 append 500 ✓
-
 B3 hasn't replicated yet
-
 Producer gets ACK
 Question:
 Under what configuration/replication condition can the producer receive the acks=all acknowledgement?
@@ -13495,17 +13173,12 @@ Next we'll go much deeper into the failure path.
 We'll simulate:
 3 brokers
 RF = 3
-
 B1 → Leader
 B2 → ISR follower
 B3 → ISR follower
-
         ↓
-
        B1 💥
-
         ↓
-
 Who detects it?
 Who elects the new leader?
 How does B2 become leader?
@@ -13531,7 +13204,7 @@ We'll also cover:
 •	3-broker cluster failure simulation
 That lesson is where you'll really start seeing Kafka as a distributed consensus/replication system, rather than simply a message broker.
 
-Lesson 8 — Kafka Leader Election + Failure Recovery
+Lesson 8 - Kafka Leader Election + Failure Recovery
 This is the lesson where Kafka becomes a real distributed-systems case study.
 You already know:
 Topic
@@ -13568,7 +13241,6 @@ And:
 ISR = {B1, B2, B3}
 Visualize:
                     orders-P0
-
              ┌─────────────────────┐
              │     logical log     │
              └─────────────────────┘
@@ -13619,9 +13291,7 @@ still have replicas.
 So Kafka needs to choose a new leader.
 Conceptually:
 B1 💥
-
        ↓
-
 Partition P0
        ↓
 leader election
@@ -13678,15 +13348,9 @@ orders-P0 leader = B2
 Then it can send future records to B2.
 Conceptually:
 Before:
-
 Producer → B1
-
-
 B1 💥
-
-
 After:
-
 Producer → B2
 This is why Kafka producers maintain cluster metadata.
 ________________________________________
@@ -13716,9 +13380,7 @@ leader epoch = 11
 Conceptually:
 Epoch 10:
 B1 → leader
-
        ↓ failure
-
 Epoch 11:
 B2 → leader
 The leader epoch helps Kafka distinguish:
@@ -13739,9 +13401,7 @@ Meanwhile the cluster has elected B2:
 Now you have a potentially dangerous situation:
        B1
     "I'm leader"
-
        ↕
-
        B2
    "I'm leader"
 This is the classic distributed-systems split-brain problem.
@@ -13778,7 +13438,6 @@ instead of the older ZooKeeper-based architecture.
 KRaft introduces a Kafka metadata quorum.
 Conceptually:
 Kafka Cluster
-
        Controller quorum
        ┌──────┬──────┐
        │      │      │
@@ -13804,7 +13463,6 @@ This distinction is extremely useful.
 Data-plane state
 The actual records:
 orders-P0:
-
 100
 101
 102
@@ -13910,7 +13568,6 @@ But B1's local log may be behind.
 Example:
 B2:
 100 101 102 103 104 105
-
 B1:
 100 101 102 103
 B1 cannot simply declare:
@@ -13973,10 +13630,8 @@ ________________________________________
 20. What if B1 comes back with stale data?
 Suppose:
 B2 → current leader
-
 B2:
 100 101 102 103 104 105
-
 B1:
 100 101 102
 B1 is stale.
@@ -13988,7 +13643,6 @@ ________________________________________
 Normal Kafka behavior prefers a leader from the ISR.
 Example:
 ISR:
-
 B1
 B2
 B3
@@ -13998,10 +13652,8 @@ B2
 Good.
 Now imagine:
 ISR:
-
 B1
 B2
-
 B3 = stale
 B1 dies.
 B2 is unavailable.
@@ -14022,7 +13674,6 @@ data completeness
 Potentially:
 B1 had:
 100 101 102 103 104
-
 B3 had:
 100 101 102
 B3 becomes leader.
@@ -14171,14 +13822,12 @@ ________________________________________
 Let's put everything together.
 Initial:
 RF = 3
-
              P0
               │
        ┌──────┼──────┐
        ↓      ↓      ↓
       B1     B2     B3
     Leader  ISR    ISR
-
 ISR = {B1,B2,B3}
 Record:
 500
@@ -14224,13 +13873,10 @@ ________________________________________
 32. Design Exercise — trace the failure
 Start:
 RF = 3
-
 P0:
-
 B1 → Leader
 B2 → Follower
 B3 → Follower
-
 ISR = {B1,B2,B3}
 Then:
 B3 becomes slow
@@ -14320,10 +13966,7 @@ Leader
 Followers
    ↓
 ISR
-
-
               Leader failure
-
 Leader 💥
    ↓
 detect failure
@@ -14335,10 +13978,7 @@ new leader
 clients refresh metadata
    ↓
 continue processing
-
-
               Old broker recovery
-
 old broker returns
    ↓
 stale replica
@@ -14400,7 +14040,7 @@ commit consumed offset
 How do we make all of this atomic?
 That is where Kafka's transaction model becomes really interesting.
 
-Lesson 9 — Kafka Exactly-Once Semantics & Transactions
+Lesson 9 - Kafka Exactly-Once Semantics & Transactions
 This is one of the most important Kafka lessons because "exactly once" is frequently misunderstood.
 The first thing to understand is:
 Kafka cannot magically make an arbitrary distributed workflow exactly-once.
@@ -14450,13 +14090,10 @@ A cannot know from the timeout alone.
 Possible reality:
 Case 1:
 request never arrived
-
 Case 2:
 request arrived but processing failed
-
 Case 3:
 processing succeeded but ACK was lost
-
 Case 4:
 processing succeeded and ACK arrived but response was corrupted/lost
 This is why:
@@ -14470,7 +14107,6 @@ Producer ID = 42
 and tracks sequence numbers.
 For example:
 Producer 42
-
 sequence 0 → Order A
 sequence 1 → Order B
 sequence 2 → Order C
@@ -14493,12 +14129,8 @@ Kafka recognizes:
 Instead of appending another copy, Kafka can treat the retry as a duplicate.
 Conceptually:
 First request:
-
 42:10 → append
-
-
 Retry:
-
 42:10 → duplicate
           ↓
        don't append again
@@ -14695,7 +14327,6 @@ This means:
 Only return records from committed transactions.
 Conceptually:
 Kafka log
-
 A       ← normal
 B       ← committed transaction
 C       ← aborted transaction
@@ -14844,7 +14475,6 @@ PostgreSQL
 Instead of directly trying to atomically update DB + Kafka, write both the business state and an outbox event in the same DB transaction.
 Example:
 PostgreSQL transaction
-
 ┌─────────────────────────────┐
 │ update orders               │
 │                             │
@@ -14874,14 +14504,8 @@ and:
 OrderCreated event
 DB transaction:
 BEGIN
-
-INSERT INTO orders
-    order_id=100
-
-INSERT INTO outbox
-    event_type='OrderCreated'
-    order_id=100
-
+INSERT INTO orders     order_id=100
+INSERT INTO outbox event_type='OrderCreated'  order_id=100
 COMMIT
 Now either:
 orders + outbox
@@ -15066,36 +14690,21 @@ Conceptually:
 producer.initTransactions();
 
 while (true) {
-
-    ConsumerRecords<String, Order> records =
-        consumer.poll(...);
-
+    ConsumerRecords<String, Order> records = consumer.poll(...);
     producer.beginTransaction();
-
     try {
-
         for (ConsumerRecord<String, Order> record : records) {
-
-            PaymentRequested result =
-                process(record.value());
-
-            producer.send(
-                new ProducerRecord<>(
-                    "payments",
-                    result
+            PaymentRequested result =                process(record.value());
+            producer.send(                new ProducerRecord<>(
+                    "payments",                    result
                 )
             );
         }
-
-        producer.sendOffsetsToTransaction(
-            offsets,
+        producer.sendOffsetsToTransaction(  offsets,
             consumerGroupMetadata
         );
-
         producer.commitTransaction();
-
     } catch (Exception e) {
-
         producer.abortTransaction();
     }
 }
@@ -15281,7 +14890,6 @@ ________________________________________
 36. The mental model to remember
 Keep this diagram:
                   Kafka
-
 Producer
    │
    │ idempotence
@@ -15404,7 +15012,7 @@ We'll cover:
 •	Design exercise: payment/event platform with failure requirements
 That final lesson will turn the individual Kafka concepts into an actual production system-design architecture.
 
-Lesson 10 — Kafka Performance + Production Architecture
+Lesson 10 - Kafka Performance + Production Architecture
 This is the final Kafka lesson in our sequence. Now we stop looking at Kafka feature-by-feature and answer the system-design question:
 How would you design and size Kafka for a real production workload?
 The important part isn't memorizing configuration values. It's understanding where Kafka gets throughput from, where bottlenecks appear, and how failures affect performance.
@@ -15451,14 +15059,12 @@ ________________________________________
 2. Why append-only logs are fast
 Consider a database doing random updates:
 Disk:
-
 [record A] [record B] [record C] [record D]
                ↑
              update
 The storage system may need random positioning.
 Kafka instead does:
 Partition log:
-
 A → B → C → D → E → F → G
                          ↑
                        append
@@ -15546,7 +15152,6 @@ send(record3)
 with every record effectively requiring independent network overhead.
 Better:
 Batch:
-
 record1
 record2
 record3
@@ -15628,7 +15233,6 @@ lz4
 zstd
 Conceptually:
 Producer
-
 100 MB records
       ↓
 compression
@@ -15810,7 +15414,6 @@ consumer committed/processed offset
 Example:
 Latest offset = 1,000,000
 Consumer offset = 900,000
-
 Lag = 100,000
 This tells you the consumer is behind.
 ________________________________________
@@ -15963,7 +15566,6 @@ ________________________________________
 Kafka partitions are divided into log segments.
 Conceptually:
 orders-P0
-
 segment-0001.log
 segment-0002.log
 segment-0003.log
@@ -16604,7 +16206,7 @@ We’ll go in this order:
 Then we'll finish with end-to-end system-design exercises, such as:
 Design an order-processing system using RabbitMQ that handles 50K orders/sec, guarantees no lost orders, tolerates broker-node failures, retries failed payments, and prevents duplicate order fulfillment.
 ________________________________________
-Part 1 — RabbitMQ Broker Architecture
+Part 1 - RabbitMQ Broker Architecture
 Let's start with the most important mental model.
 1. What problem is RabbitMQ solving?
 Suppose you have:
@@ -16653,26 +16255,26 @@ ________________________________________
 At a high level:
                   RabbitMQ Broker
 ┌──────────────────────────────────────────────────────┐
-│                                                      │
-│   Producer                                            │
-│      │                                               │
-│      │ publish(exchange, routingKey, message)       │
-│      ▼                                               │
-│   ┌──────────────┐                                   │
-│   │   Exchange   │                                   │
-│   └──────┬───────┘                                   │
-│          │                                            │
-│          │ routing                                    │
-│          ▼                                            │
-│   ┌──────────────┐                                   │
-│   │    Queue     │                                   │
-│   └──────┬───────┘                                   │
-│          │                                            │
-│          │ delivery                                   │
-│          ▼                                            │
-│      Consumer                                         │
-│                                                      │
-└──────────────────────────────────────────────────────┘
+│                                     						                 │
+│   				            Producer                                            │
+│      					  │                                               │
+│      		│ publish(exchange, routingKey, message)       │
+│      					▼                                               │
+│   			  	┌───────────┐                                   │
+│   				│   Exchange   │                                   │
+│   				└────┬──-──┘                                   │
+│         				            │                                                  │
+│                                                                    │ routing                                    │
+│                                                                    ▼                                                 │
+│                                                  ┌──────────────┐                                   │
+│                                                       │    Queue     │                                       │
+│   			      └──────┬───────┘                                   │
+│          				         │                                                      │
+│                                                                  │ delivery                                   │
+│                                                                 ▼                                                 │
+│                                                         Consumer                                         │
+│                                                                                                                         │
+└─────────────────────────────────────────────────┘
 There are four concepts you absolutely need to distinguish:
 Producer
    ↓
@@ -16706,14 +16308,14 @@ So:
                   BROKER
                     │
           ┌─────────┴─────────┐
-          │                   │
-      Exchange A          Exchange B
-          │                   │
-      ┌───┴───┐           ┌───┴───┐
-      │       │           │       │
-    Queue1  Queue2      Queue3  Queue4
-      │       │           │       │
-      C1      C2          C3      C4
+          │                 			  │
+      Exchange A         		 Exchange B
+          │                   		│
+      ┌───┴───┐         	    ┌───┴───┐
+      │                   │                  │                    │
+    Queue1   Queue2      Queue3   Queue4
+      │       	│      	     │    		   │
+      C1               C2              C3                     C4
 The broker manages all of these.
 ________________________________________
 4. Connection vs Channel
@@ -16729,10 +16331,10 @@ Inside that connection you create channels.
                 TCP Connection
                      |
         ┌────────────┼────────────┐
-        │            │            │
-     Channel 1    Channel 2    Channel 3
-        │            │            │
-    publishing    consuming    publishing
+        │           	          │                                │
+     Channel 1         Channel 2         Channel 3
+        │                              │                              │
+    publishing      consuming        publishing
 This distinction is important.
 Connection
 A physical/network connection.
@@ -16773,11 +16375,7 @@ This becomes relevant when designing high-throughput producers.
 ________________________________________
 6. What actually happens when you publish?
 Suppose your Java application executes something conceptually like:
-channel.basicPublish(
-    "orders",
-    "order.created",
-    message
-);
+channel.basicPublish("orders", "order.created", message);
 The conceptual path is:
 Java Application
       |
@@ -16823,7 +16421,7 @@ Instead:
                   /      |       \
                  /       |        \
                 v        v         v
-          payment-q  inventory-q  notification-q
+          payment-q   inventory-q   notification-q
 The producer only knows:
 orders.exchange
 It doesn't need to know who consumes the event.
@@ -16835,23 +16433,14 @@ You can think of a binding as:
 "Connect this queue to this exchange according to these routing rules."
 For example:
 Exchange: orders
-
 Queue: payment
-Binding:
-    routing key = order.created
-
+Binding:  routing key = order.created
 Queue: inventory
-Binding:
-    routing key = order.created
-
+Binding: routing key = order.created
 Queue: analytics
-Binding:
-    routing key = #
+Binding: routing key = #
 Then:
-publish(
-    exchange = orders,
-    routingKey = order.created
-)
+publish(  exchange = orders, routingKey = order.created)
 could result in:
                  orders exchange
                        |
@@ -16859,7 +16448,7 @@ could result in:
              /    |     \
             /     |      \
            v      v       v
-      payment  inventory analytics
+      payment   inventory   analytics
 One message can therefore be routed to multiple queues.
 That is how RabbitMQ supports fan-out style event distribution.
 ________________________________________
@@ -16900,13 +16489,11 @@ ________________________________________
 A message can be designed to survive broker restart.
 Very roughly:
 Transient message
-
 RAM
  |
  +--> message
 versus:
 Persistent message
-
 RAM
  |
  +--> message
@@ -16936,9 +16523,9 @@ A useful conceptual model is:
                     RabbitMQ
                        |
               ┌────────┴────────┐
-              │                 │
-           Metadata          Messages
-              │                 │
+              │                 		│
+           Metadata       	         Messages
+              │                		 │
        exchanges/queues      queue storage
        bindings/etc.
 And message storage itself can involve memory and disk.
@@ -17097,20 +16684,20 @@ The conceptual lifecycle is:
               ┌────────────────┐
               │ RabbitMQ Node  │
               │                │
-              │   Connection   │
-              │       │        │
-              │     Channel    │
-              │       │        │
-              │       v        │
-              │    Exchange    │
-              │       │        │
-              │   routing      │
-              │       │        │
-              │       v        │
-              │     Queue      │
-              │       │        │
-              │     storage    │
-              │       │        │
+              │   	Connection   │
+              │       	   │                    │
+              │     	Channel       │
+              │       	   │                 │
+              │                v                 │
+              │            Exchange    │
+              │              │                   │
+              │           routing         │
+              │              │                 │
+              │             v                 │
+              │           Queue      │
+              │            │                 │
+              │            storage    │
+              │           │                  │
               └───────┼────────┘
                       |
                       v
@@ -17128,8 +16715,7 @@ Consumer
    v
 RabbitMQ
 
-RabbitMQ:
-    "This delivery has been successfully handled."
+RabbitMQ: "This delivery has been successfully handled."
 At that point the broker can remove the message from the set of outstanding/unacknowledged deliveries.
 ________________________________________
 17. The key failure question
@@ -17317,7 +16903,7 @@ Before moving to Exchange Types, make sure these are crystal clear:
 If those five ideas are solid, the rest of RabbitMQ becomes much easier.
 Next module: Exchange Types — we'll go deeply into direct vs fanout vs topic vs headers, including how the broker actually evaluates bindings, the default exchange, wildcard matching, routing complexity, and when each exchange is appropriate in a production system.
 
-Module 2 — RabbitMQ Exchange Types
+Module 2 - RabbitMQ Exchange Types
 Now we move from “how RabbitMQ is structured” to the most important question:
 When a producer publishes a message, how does RabbitMQ decide which queue(s) should receive it?
 The answer is the exchange.
@@ -17361,7 +16947,6 @@ Exchange: orders
 Binding:
     Queue = payment.q
     Key   = order.created
-
 Binding:
     Queue = inventory.q
     Key   = order.created
@@ -17458,9 +17043,7 @@ Multiple consumers on one queue generally compete for messages.
 So:
 Queue:
 M1 M2 M3 M4 M5 M6
-
 Consumers:
-
 A → M1 M3 M5
 B → M2 M4 M6
 Conceptually, that's work distribution.
@@ -17619,10 +17202,10 @@ Conceptually:
                      Event Exchange
                            |
         ┌──────────────────┼───────────────────┐
-        |                  |                   |
-        v                  v                   v
-  Indian Orders       All Orders         Payment Monitor
- order.*.india          order.#             payment.#
+        |                		            |                                                |
+        v                                             v                                                v
+  Indian Orders      	 All Orders        	 Payment Monitor
+ order.*.india          	 order.#            		 payment.#
 This gives you much more expressive routing than direct exchange.
 ________________________________________
 13. Topic exchange is not a database query engine
@@ -17648,18 +17231,17 @@ order.created.india
 routing can be based on message headers.
 For example:
 headers:
-
 type = order
 region = india
 priority = high
 A binding can specify header matching rules.
 Conceptually:
 Message
-┌──────────────────────┐
+┌──────────────┐
 │ type = order         │
 │ region = india       │
 │ priority = high      │
-└──────────┬───────────┘
+└──────────┬-──┘
            |
            v
      Headers Exchange
@@ -17754,12 +17336,12 @@ For example:
                   application.events
                          |
                 ┌────────┴────────┐
-                |                 |
+                |                                              |
           order.events       payment.events
-                |                 |
+                |                                            |
            ┌────┴────┐       ┌────┴────┐
-           v         v       v         v
-        analytics   audit  fraud    metrics
+           v                        v        v                        v
+        analytics      audit    fraud         metrics
 This can be powerful, but again:
 Don't create a topology so complex that nobody can understand where a message goes.
 ________________________________________
@@ -17818,28 +17400,25 @@ Let's put the concepts together.
                  | exchange + routing key
                  v
         ┌──────────────────┐
-        │     Exchange     │
-        │                  │
-        │ routing decision │
+        │                  Exchange     │
+        │                                            │
+        │         routing decision │
         └────────┬─────────┘
                  |
           ┌──────┼───────┐
-          |      |       |
-          v      v       v
-        Queue  Queue   Queue
-          |      |       |
-          v      v       v
-         C1     C2      C3
+          |                 |                    |
+          v               v                    v
+        Queue   Queue   Queue
+          |      	|                  |
+          v      	v                 v
+         C1             C2              C3
 Different exchange types change only the routing decision:
 Direct:
     exact key
-
 Fanout:
     everyone
-
 Topic:
     pattern matching
-
 Headers:
     header matching
 ________________________________________
@@ -18066,9 +17645,7 @@ Queue
    ↓
 Consumer
 You can initially imagine:
-Queue:
-
-M1 → M2 → M3 → M4 → M5
+Queue: M1 → M2 → M3 → M4 → M5
 Consumer takes:
 M1
 then:
@@ -18082,7 +17659,6 @@ READY
   M2
   M3
   M4
-
 UNACKNOWLEDGED
   M5 → Consumer A
   M6 → Consumer B
@@ -18134,19 +17710,13 @@ M1 = delivered but not acknowledged
 When the consumer/channel/connection disappears, RabbitMQ can requeue/recover the unacknowledged delivery for another consumer.
 Conceptually:
 Before crash:
-
 READY:
 M2 M3
-
 UNACKED:
 M1 → Consumer A
-
-
 Consumer A crashes
 
-
 After recovery:
-
 READY:
 M1 M2 M3
 This is the foundation of at-least-once delivery.
@@ -18157,21 +17727,13 @@ BlockingQueue<Message>
 RabbitMQ queues are much more complicated.
 A production broker needs to answer:
 Can I accept another message?
-
 Where should this message be stored?
-
 Which consumer should receive it?
-
 Has the consumer acknowledged it?
-
 Should it be redelivered?
-
 Can I release this memory?
-
 Does this message need durable storage?
-
 What happens if the node crashes?
-
 What happens if another node needs to take over?
 So think of the queue as a state machine + storage engine + dispatch mechanism, rather than a simple list.
 ________________________________________
@@ -18232,7 +17794,6 @@ Why?
 Because consumers complicate the picture.
 Suppose:
 Queue
-
 M1
 M2
 M3
@@ -18361,7 +17922,6 @@ Queue
  |
  v
 Consumer
-
 Maximum outstanding unacked work ≈ 10
 The consumer gets:
 M1 ... M10
@@ -18398,7 +17958,6 @@ messages outstanding.
 If processing is slow, you can get:
 Queue:
 1,000,000 ready
-
 Consumers:
 10,000 unacked
 Potential problems:
@@ -18438,7 +17997,6 @@ RabbitMQ prefetch is conceptually similar:
 They're not the same mechanism internally, but the analogy helps.
 TCP:
 sender → [in-flight bytes] → receiver
-
 RabbitMQ:
 queue → [unacked messages] → consumer
 Both are mechanisms for controlling outstanding work.
@@ -18486,7 +18044,6 @@ or backlog.
 Suppose:
 Incoming:
 20,000 msg/sec
-
 Processing:
 18,000 msg/sec
 Then:
@@ -18521,9 +18078,7 @@ Queue B may be much more dangerous.
 Therefore:
 Backlog size must be interpreted relative to processing rate.
 A particularly useful metric is:
-estimated drain time
-=
-queue depth / processing rate
+estimated drain time = queue depth / processing rate
 Example:
 queue depth = 900,000
 processing = 30,000/sec
@@ -18533,8 +18088,7 @@ versus:
 queue depth = 900,000
 processing = 1,000/sec
 
-drain time = 900 sec
-          = 15 minutes
+drain time = 900 sec  = 15 minutes
 ________________________________________
 18. Memory vs disk
 Now we reach the storage layer.
@@ -18543,9 +18097,9 @@ Conceptually:
                    Queue
                      |
              ┌───────┴───────┐
-             |               |
-           Memory           Disk
-             |               |
+             |                                          |
+           Memory      	     Disk
+             |                                          |
          fast access      persistent storage
 RabbitMQ can keep message data in memory when appropriate, while also using disk-backed mechanisms for persistence and paging.
 The exact internal behavior depends on queue implementation and RabbitMQ version/configuration, so avoid thinking:
@@ -18594,7 +18148,6 @@ ________________________________________
 Historically, RabbitMQ's classic queues are primarily node-local queue structures.
 Conceptually:
 RabbitMQ Node A
-
 payment.q
   |
   +-- messages
@@ -18630,7 +18183,6 @@ ________________________________________
 23. Quorum doesn't mean "3 copies forever"
 A common misunderstanding is:
 "Quorum queue = every message is always synchronously stored on every node."
-Don't use that mental model.
 Quorum queues use a replicated log / Raft-based mechanism with a leader and followers.
 The relevant concept is:
 majority
@@ -18655,7 +18207,6 @@ Which side should continue accepting writes?
 If both sides accept writes independently:
 A:
 M1 M2 M3
-
 B+C:
 M4 M5 M6
 you risk divergent state.
@@ -19044,7 +18595,7 @@ We'll go deep into the hardest practical RabbitMQ problem:
 "My consumer received the message, performed the business operation, and then crashed. What exactly happens?"
 We'll cover manual vs automatic ACK, ACK timing, NACK vs reject, requeue=true/false, infinite retry loops, delayed retries, exponential backoff, poison messages, DLX/DLQ, retry queues, idempotency, and the difference between broker-level retry and application-level retry.
 
-Module 4 — ACK, NACK, Retry & Dead-Lettering
+Module 4 - ACK, NACK, Retry & Dead-Lettering
 This is arguably the most important RabbitMQ module for production system design.
 If you understand only one thing deeply, understand this:
 RabbitMQ can reliably deliver a message, but it cannot know whether your business operation succeeded.
@@ -19080,12 +18631,11 @@ With manual acknowledgements, the lifecycle is approximately:
            DONE       NACK/REJECT
                            |
                     ┌──────┴──────┐
-                    |             |
+                    |                                   |
                  requeue       no requeue
-                    |             |
-                    v             v
-                  READY       dead-letter/
-                               discard
+                    |                                   |
+                    v                                 v
+                  READY       dead-letter/discard
 This is the mental model to keep throughout this module.
 ________________________________________
 2. What exactly is an ACK?
@@ -19362,10 +18912,10 @@ Conceptually:
                  Consumer
                   /     \
                success   failure
-                 |          |
-                ACK         |
-                            v
-                          DLQ
+                 |                     |
+                ACK              |
+                                       v
+                                  DLQ
 The DLQ allows operators or another process to inspect/reprocess failed messages.
 This is a quarantine mechanism.
 ________________________________________
@@ -19479,7 +19029,6 @@ More formally, something like:
 delay = min(maxDelay, base × 2^attempt)
 For example:
 base = 1 second
-
 attempt 1 → 1 sec
 attempt 2 → 2 sec
 attempt 3 → 4 sec
@@ -19752,10 +19301,8 @@ database transaction?
 The payment gateway and your database are separate systems.
 You can't simply do:
 BEGIN TRANSACTION
-
 DB INSERT
 Payment Gateway charge
-
 COMMIT
 unless you have a distributed transaction protocol spanning both systems.
 Usually you don't.
@@ -19895,13 +19442,13 @@ RabbitMQ → @RabbitListener → ACK
 ________________________________________
 34. Failure matrix
 Let's make the scenarios explicit.
-Failure	What RabbitMQ knows	Typical strategy
-Consumer crashes before processing	No ACK	Redelivery
-Consumer crashes during processing	No ACK	Redelivery
-Processing succeeds, ACK lost	No ACK	Redelivery → idempotency
-Temporary downstream outage	Consumer failure	Retry/backoff
-Permanent invalid message	Consumer failure	DLQ
-Poison message	Repeated failure	Bounded retries + DLQ
+Failure						What RabbitMQ knows	Typical strategy
+Consumer crashes before processing	No ACK			Redelivery
+Consumer crashes during processing	No ACK			Redelivery
+Processing succeeds, ACK lost		No ACK	           Redelivery → idempotency
+Temporary downstream outage		Consumer failure		Retry/backoff
+Permanent invalid message			Consumer failure		DLQ
+Poison message				Repeated failure	  Bounded retries + DLQ
 Broker accepts publication but producer loses response	Producer uncertain	Publisher confirms + idempotency
 DB commit succeeds, ACK lost	RabbitMQ uncertain	Redelivery + idempotent DB operation
 Notice the recurring theme:
@@ -19988,9 +19535,9 @@ For example:
                    DLQ
                     |
           ┌─────────┼─────────┐
-          |         |         |
-       inspect   classify   alert
-          |         |         |
+          |       	      |                         |
+       inspect     classify              alert
+          |                        |                          |
           └─────────┴─────────┘
                     |
               replay / fix
@@ -20038,19 +19585,14 @@ ________________________________________
 For something like payment processing, a reasonable conceptual policy might be:
 Attempt 1:
     immediate
-
 Attempt 2:
     10 seconds
-
 Attempt 3:
     1 minute
-
 Attempt 4:
     5 minutes
-
 Attempt 5:
     30 minutes
-
 Attempt > 5:
     DLQ
 But don't blindly copy these numbers.
@@ -20224,32 +19766,15 @@ That combination is the foundation of reliable RabbitMQ consumers.
 ________________________________________
 What you should now know
 You should be comfortable explaining:
-ACK
-  = "I successfully handled this delivery."
-
-NACK(requeue=true)
-  = "I failed; make it available again."
-
-NACK(requeue=false)
-  = "I failed; don't put it back into normal processing."
-
-DLX
-  = dead-letter exchange.
-
-DLQ
-  = queue where dead-lettered messages can be held.
-
-Retry
-  ≠ immediate requeue.
-
-Retry
-  = controlled re-attempt, ideally with backoff.
-
-At-least-once
-  = duplicates are possible.
-
-Idempotency
-  = application responsibility.
+ACK   = "I successfully handled this delivery."
+NACK(requeue=true)   = "I failed; make it available again."
+NACK(requeue=false)   = "I failed; don't put it back into normal processing."
+DLX   = dead-letter exchange.
+DLQ  = queue where dead-lettered messages can be held.
+Retry   ≠ immediate requeue.
+Retry  = controlled re-attempt, ideally with backoff.
+At-least-once  = duplicates are possible.
+Idempotency  = application responsibility.
 And the most important failure sequence:
 Message
    ↓
@@ -20261,7 +19786,7 @@ RabbitMQ redelivers
    ↓
 Business operation executes again
 Therefore:
-Reliable RabbitMQ system
+Reliable RabbitMQ system 
 =
 at-least-once delivery
 +
@@ -20302,23 +19827,22 @@ Then we'll examine, step by step:
 •	Designing RabbitMQ for AZ failure
 •	And finally a full production system-design exercise with 3 AZs and 100K+ messages/sec.
 
-Module 5 — RabbitMQ Clustering & Failure Behavior
+Module 5 - RabbitMQ Clustering & Failure Behavior
 Now we move from message-level reliability to distributed broker architecture.
 This is where RabbitMQ starts becoming a real distributed-systems problem.
 The first misconception we need to eliminate is:
 A RabbitMQ cluster does NOT mean every queue is automatically replicated on every node.
 That one statement is extremely important.
 ________________________________________
-1. Start with the cluster mental model
+1. Start with the cluster model
 Suppose we have:
                 RabbitMQ Cluster
-
         ┌──────────┐
         │  Node A  │
         └──────────┘
-              │
+                       │
         ┌─────┴─────┐
-        │           │
+        │           	           │
    ┌───────┐   ┌───────┐
    │Node B │   │Node C │
    └───────┘   └───────┘
@@ -20327,10 +19851,8 @@ But queues have their own placement/replication behavior.
 For example:
 Node A
   └── orders.q
-
 Node B
   └── payments.q
-
 Node C
   └── emails.q
 The cluster does not mean:
@@ -20398,17 +19920,16 @@ Suppose:
 payment.q
 has three members:
              payment.q
-
        ┌───────────────┐
        │    Leader     │
        │    Node A     │
        └───────┬───────┘
-               │
+                          │
         ┌──────┴──────┐
-        │             │
-        v             v
-    Node B          Node C
-   follower        follower
+        │                                  │
+        v                                   v
+    Node B                  Node C
+   follower                follower
 Messages are replicated through the quorum-queue replication mechanism.
 You should think:
 Leader
@@ -20482,7 +20003,6 @@ So why not always use 4?
 Because:
 3 nodes
 → tolerate 1 failure
-
 5 nodes
 → tolerate 2 failures
 while:
@@ -20511,14 +20031,10 @@ Therefore:
 A new leader can be elected.
 Conceptually:
 Before:
-
 A = Leader
 B = Follower
 C = Follower
-
-
 After A failure:
-
 B = Leader
 C = Follower
 A = dead
@@ -20557,10 +20073,8 @@ The majority side can maintain quorum.
 The minority side cannot safely become independently authoritative.
 Conceptually:
           NETWORK PARTITION
-
        A       ||       B + C
        1       ||         2
-
     minority   ||      majority
      cannot    ||       can
     progress   ||     progress
@@ -20570,14 +20084,12 @@ ________________________________________
 A split brain occurs when different parts of a distributed system believe they can operate independently.
 Bad architecture:
        Partition
-
-A                  B
-|                  |
+A                                            B
+|                                               |
 accept writes      accept writes
 You can get:
 A:
 M1 M2 M3
-
 B:
 M4 M5 M6
 Later:
@@ -20588,7 +20100,6 @@ ________________________________________
 13. Minority node behavior
 Suppose:
 3-node cluster
-
 A = leader
 B = follower
 C = follower
@@ -20923,7 +20434,6 @@ This is much stronger than:
 Node A
 Node B
 Node C
-
 all in AZ-A
 because an entire AZ failure could take all replicas down.
 ________________________________________
@@ -21037,9 +20547,7 @@ Node C
 There can be additional network hops depending on topology and RabbitMQ behavior.
 For high-throughput workloads, network topology and queue placement can therefore matter.
 You should not assume:
-3 nodes
-=
-everything is equally local
+3 nodes = everything is equally local
 ________________________________________
 35. Failure recovery is not instantaneous
 Suppose:
@@ -21349,7 +20857,7 @@ Queues
 Consumers
 We'll go deep into direct, topic, fanout, headers exchanges; binding internals; routing-key design; wildcard matching; competing consumers; broadcast vs work queues; partition-style routing; consistent hashing; and a design exercise where you build a multi-service Order/Event platform from scratch.
 
-Module 6 — RabbitMQ Routing & Bindings
+Module 6 - RabbitMQ Routing & Bindings
 Now we're going to connect the pieces you've learned so far.
 You already know:
 Producer
@@ -21368,7 +20876,6 @@ Don't think:
 Producer → Queue
 Think:
                     RabbitMQ
-
 Producer
    |
    | publish(message, routingKey)
@@ -21426,7 +20933,6 @@ Suppose:
 orders.exchange
 has:
 Binding:
-
 order.created → orders.created.q
 order.cancelled → orders.cancelled.q
 order.shipped → orders.shipped.q
@@ -21462,7 +20968,6 @@ ________________________________________
 6. Direct exchange as a routing table
 A useful mental model:
 Direct Exchange
-
 routing key       queues
 --------------------------------
 order.created  →  Q1, Q2
@@ -21521,9 +21026,7 @@ completed
 contains two words after order.
 So:
 order.*
-
         ↓
-
 order.X
 ________________________________________
 10. Understanding #
@@ -21577,9 +21080,9 @@ A topic exchange:
                     events.exchange
                           |
        ┌──────────────────┼──────────────────┐
-       |                  |                  |
-       v                  v                  v
-    payment.q         inventory.q       analytics.q
+       |                  		          |                                                |
+       v                                             v                                               v
+    payment.q                    inventory.q                        analytics.q
 Bindings:
 payment.#       → payment.q
 inventory.#     → inventory.q
@@ -21664,7 +21167,6 @@ ________________________________________
 Headers exchanges route based on message headers instead of routing keys.
 For example:
 Headers:
-
 format = pdf
 region = EU
 priority = high
@@ -21812,10 +21314,8 @@ A useful convention is hierarchical:
 For example:
 order.created
 order.cancelled
-
 payment.completed
 payment.failed
-
 inventory.reserved
 inventory.released
 Or more detailed:
@@ -21862,10 +21362,10 @@ ________________________________________
 28. Exchange choice
 A useful decision table:
 Requirement	Exchange
-Exact routing key	Direct
-Hierarchical/wildcard routing	Topic
-Broadcast to all bound queues	Fanout
-Attribute/header-based routing	Headers
+Exact routing key					Direct
+Hierarchical/wildcard routing			Topic
+Broadcast to all bound queues			Fanout
+Attribute/header-based routing			Headers
 Think:
 Exact       → Direct
 Pattern     → Topic
@@ -22077,28 +21577,22 @@ ________________________________________
 Now you design the routing topology.
 Requirements:
 Events:
-
 order.created
 order.cancelled
 order.shipped
-
 payment.completed
 payment.failed
-
 inventory.reserved
 inventory.failed
 Consumers:
 Payment:
 order.created
-
 Inventory:
 order.created
 order.cancelled
-
 Shipping:
 payment.completed
 inventory.reserved
-
 Notification:
 order.*
 payment.failed
@@ -22133,20 +21627,16 @@ analytics.q
 Bindings:
 payment.q
     order.created
-
 inventory.q
     order.created
     order.cancelled
-
 shipping.q
     payment.completed
     inventory.reserved
-
 notification.q
     order.*
     payment.failed
     inventory.failed
-
 analytics.q
     #
 This is simple, extensible, and keeps queue ownership aligned with consumer responsibilities.
@@ -22291,38 +21781,17 @@ That distinction is fundamental.
 ________________________________________
 46. Your RabbitMQ architecture vocabulary is now coming together
 You should now be able to explain:
-Exchange
-    = routing point
-
-Binding
-    = routing relationship/rule
-
-Routing key
-    = routing information attached to publication
-
-Queue
-    = durable/temporary work or event-consumption stream
-
-Consumer
-    = worker attached to queue
-
-Competing consumers
-    = horizontal work scaling
-
-Multiple queues
-    = independent consumer groups
-
-Fanout
-    = broadcast
-
-Topic
-    = pattern-based routing
-
-Direct
-    = exact routing
-
-Headers
-    = attribute-based routing
+Exchange     = routing point
+Binding     = routing relationship/rule 
+Routing key    = routing information attached to publication 
+Queue    = durable/temporary work or event-consumption stream
+Consumer    = worker attached to queue
+Competing consumers    = horizontal work scaling
+Multiple queues    = independent consumer groups
+Fanout    = broadcast
+Topic    = pattern-based routing
+Direct    = exact routing
+Headers    = attribute-based routing
 ________________________________________
 Design challenge
 Before moving forward, here's a harder university-level exercise.
@@ -22374,7 +21843,7 @@ The interesting part is #7:
 How do you guarantee ordering for the same orderId while still processing different orders in parallel?
 That takes us into the next level: partitioning, consistent hashing, ordering guarantees, and RabbitMQ scaling patterns.
 
-Module 7 — RabbitMQ Partitioning, Ordering & High-Throughput Design
+Module 7 - RabbitMQ Partitioning, Ordering & High-Throughput Design
 This is where RabbitMQ starts intersecting heavily with distributed systems theory.
 The central problem:
 How do we process 100,000 messages/sec in parallel while preserving ordering where the business actually requires it?
@@ -22457,10 +21926,10 @@ ________________________________________
             hash(orderId) / partitioning
                            |
        ┌──────────┬────────┼────────┬──────────┐
-       v          v        v        v
-      Q0         Q1       Q2       Q3
-       |          |        |        |
-      C0         C1       C2       C3
+       v                         v                                                 v                        v
+      Q0                    Q1                                              Q2                   Q3
+       |                          |                                                  |                          |
+      C0                   C1                                                C2                C3
 Now:
 O123.created → Q2
 O123.paid    → Q2
@@ -22495,9 +21964,7 @@ must be processed in exactly that order.
 This tends to force serialization.
 Per-key ordering
 O1: A → B → C
-
 O2: A → B → C
-
 O3: A → B → C
 but:
 O1 and O2 and O3
@@ -22626,7 +22093,6 @@ ________________________________________
 13. What if M1 fails?
 Suppose:
 Q2:
-
 M1
 M2
 M3
@@ -22646,7 +22112,6 @@ ________________________________________
 14. Head-of-line blocking
 Suppose:
 Q2:
-
 M1 ← poison
 M2
 M3
@@ -22700,7 +22165,7 @@ Architecture:
       partition by orderId
               |
  ┌────┬────┬────┬────┬─────┐
- Q0   Q1   Q2   Q3   ... Q15
+ Q0       Q1        Q2       Q3   ...              Q15
 Advantages:
 •	simple
 •	predictable
@@ -22732,7 +22197,6 @@ ________________________________________
 Consistent hashing reduces reassignment when partitions/nodes change.
 Conceptually:
               Hash Ring
-
           0
        /     \
      25       75
@@ -22772,8 +22236,8 @@ Conceptually:
                  consistent hash exchange
                            |
           ┌────────────────┼────────────────┐
-          v                v                v
-         Q0               Q1               Q2
+          v                                         v                                         v
+         Q0                                   Q1                                      Q2
 Messages with the same hash key go to the same queue.
 This is useful for partition-style routing.
 But in production architecture, understand the operational consequences rather than treating the plugin as a black box.
@@ -22938,7 +22402,6 @@ ________________________________________
 30. Now introduce quorum replication
 Each partition queue could be a quorum queue:
 payment-0
-
 Node A → leader
 Node B → follower
 Node C → follower
@@ -22981,7 +22444,6 @@ ________________________________________
 32. Consumer deployment
 A useful deployment model:
                  Kubernetes
-
 payment-consumer
         |
  ┌──────┼────────┐
@@ -23030,7 +22492,6 @@ ________________________________________
 35. Retry complicates ordering
 Let's revisit:
 Q2:
-
 M1 = O123.created
 M2 = O123.paid
 M3 = O123.shipped
@@ -23163,7 +22624,6 @@ Retry:
 
 Poison:
     DLQ
-
 Gap detection:
     expected version per orderId
 The exact partition count should come from measured throughput rather than a magic number.
@@ -23250,7 +22710,8 @@ consumer delivery
 ACK
 We'll study what actually happens inside the broker, including memory vs disk, persistent messages, fsync/flush concepts, backpressure, flow control, queue indexes, consumer prefetch, and why a RabbitMQ system can suddenly become slow even when CPU looks fine.
 That is the next important step if you want to understand RabbitMQ internals rather than just configuration.
-Module 8 — RabbitMQ Internals: What Actually Happens to a Message?
+
+Module 8 - RabbitMQ Internals: What Actually Happens to a Message?
 Now we're going below the API.
 As a Java developer, don't stop at:
 channel.basicPublish(...)
@@ -23281,17 +22742,17 @@ ________________________________________
 A RabbitMQ node is an Erlang/BEAM application.
 Conceptually:
                   RabbitMQ Node
-┌──────────────────────────────────────────┐
+┌───────────────────────────────────┐
 │                                          │
-│  Connection processes                    │
-│       ↓                                  │
-│  Channel processes                       │
-│       ↓                                  │
-│  Exchange/routing                        │
-│       ↓                                  │
-│  Queue processes                         │
-│       ↓                                  │
-│  Memory / disk / replication             │
+│  		Connection processes                    │
+│     			  ↓                                  │
+│  		Channel processes                       │
+│     			  ↓                                  │
+│  		Exchange/routing                        │
+│      			 ↓                                  │
+│  		Queue processes                         │
+│       			↓                                  │
+│  		Memory / disk / replication             │
 │                                          │
 └──────────────────────────────────────────┘
 RabbitMQ isn't one giant Java-like thread processing every message.
@@ -23309,10 +22770,10 @@ Conceptually:
                     TCP Connection
                          |
           ┌──────────────┼──────────────┐
-          |              |              |
-       Channel 1      Channel 2      Channel 3
-          |              |              |
-       Producer       Producer       Consumer
+          |                                     |                                     |
+       Channel 1          Channel 2               Channel 3
+          |                                     |                                    |
+       Producer               Producer             Consumer
 Channels are lightweight compared with TCP connections.
 Therefore you generally don't want:
 10,000 TCP connections
@@ -23437,7 +22898,6 @@ routingKey = order.created
 Then it evaluates bindings.
 For example:
 events.exchange
-
 order.created → payment.q
 order.created → inventory.q
 order.*       → notification.q
@@ -23455,7 +22915,7 @@ Exchange
  +--> analytics.q
 ________________________________________
 9. Important: exchange doesn't store your message
-A useful mental model:
+A useful model:
 Exchange = routing
 Queue    = storage/buffering
 Don't imagine:
@@ -23484,9 +22944,9 @@ Conceptually:
               payment.q
                   |
         ┌─────────┴─────────┐
-        |                   |
-      memory              disk
-        |                   |
+        |                                                   |
+      memory                                 disk
+        |                                                   |
         └─────────┬─────────┘
                   |
                consumer
@@ -23518,7 +22978,6 @@ ________________________________________
 Suppose producers are faster than consumers:
 Producer:
 100K msg/sec
-
 Consumer:
 20K msg/sec
 Backlog grows:
@@ -23679,9 +23138,7 @@ W = average time in system
 For example:
 λ = 1,000 messages/sec
 W = 2 seconds
-Then:
-L = 1,000 × 2
-  = 2,000 messages
+Then: L = 1,000 × 2   = 2,000 messages
 This gives you a way to reason about queue size and latency.
 ________________________________________
 23. Queue latency
@@ -23689,8 +23146,7 @@ Suppose:
 Queue depth = 1,000,000
 Consumer rate = 10,000/sec
 Ignoring new arrivals:
-1,000,000 / 10,000
-= 100 sec
+1,000,000 / 10,000 = 100 sec
 So an old message may wait roughly 100 seconds before processing.
 This is why:
 Queue depth is often more meaningful when translated into backlog time.
@@ -23723,7 +23179,6 @@ deliver M2
 deliver M3
 ...
 deliver M10
-
 consumer processes
 This improves throughput.
 But it increases:
@@ -23814,9 +23269,7 @@ RabbitMQ assumes success.
 The message may be lost from the queue.
 Better:
 receive(message);
-
 database.save(message);
-
 ack(message);
 Conceptually:
 Message
@@ -24097,7 +23550,6 @@ ________________________________________
 45. AZ-aware deployment
 For three AZs:
 AZ-A     AZ-B     AZ-C
-
 Node A   Node B   Node C
 You want queue replicas distributed across failure domains.
 Conceptually:
@@ -24129,7 +23581,6 @@ ________________________________________
 Let's simulate.
 Initially:
 Q1
-
 AZ-A       AZ-B       AZ-C
   A          B          C
  leader    replica    replica
@@ -24360,10 +23811,10 @@ Can it be duplicated?
 How does the system recover?
 That module is where the difference between "I know RabbitMQ" and "I can design a fault-tolerant messaging system" really starts to show.
 
-Module 9 — RabbitMQ Failure Semantics
+Module 9 - RabbitMQ Failure Semantics
 Now we're going to study RabbitMQ the way a distributed-systems engineer should:
 Assume components fail, then reason about what each component knows and what it can guarantee.
-The most important mental model is:
+The most important model is:
 Producer
    |
    v
@@ -25169,7 +24620,3 @@ Failure recovery
 Exactly-once semantics
 Use cases
 And then we'll design the same system twice—once with RabbitMQ and once with Kafka—and determine why you'd choose one over the other.
-
-
-
-
