@@ -1,4 +1,4 @@
-Retry — Part 1: Why does it exist?
+Retry - Part 1: Why does it exist?
 ________________________________________
 1. Problem → Why did engineers need this?
 Let's start with a very ordinary Java service.
@@ -12,13 +12,12 @@ Order Service
    v
 Payment Service
 The code initially looks trivial:
-PaymentResponse response =
-    paymentClient.charge(order.getAmount());
+PaymentResponse response =  paymentClient.charge(order.getAmount());
 Now imagine this sequence:
 Order Service                    Payment Service
-     |                                |
+     |                           		     |
      | ---- charge ₹100 ------------> |
-     |                                |
+     |                             	                     |
      |                         processes payment
      |                         successfully
      |                                |
@@ -37,25 +36,20 @@ When a request fails from the caller's perspective:
                  Request failed
                       |
           +-----------+-----------+
-          |                       |
+          |                                        |
        Actually                 Actually
        failed                   succeeded
-          |                       |
-       retry                   retry?
+          |                                    |
+       retry                         retry?
 The first case is easy.
 The second case is dangerous.
 Suppose we blindly retry:
 Order Service                    Payment Service
-
 POST /charge ₹100  ------------>
-
-                               charge succeeds
-                               ₹100 deducted
-
+                                              charge succeeds
+                                               ₹100 deducted
               X response lost
-
 POST /charge ₹100 ------------>
-
                                charge succeeds again
                                ₹100 deducted AGAIN
 Congratulations.
@@ -67,7 +61,6 @@ ________________________________________
 2. Naive solution → How would we build it first?
 An inexperienced implementation might be:
 PaymentResponse charge(PaymentRequest request) {
-
     try {
         return paymentClient.charge(request);
     } catch (Exception e) {
@@ -289,10 +282,10 @@ The backoff calculation might be:
 delay = min(maxDelay, baseDelay × 2^(attempt-1))
 So:
 Attempt	Base delay
-1	100 ms
-2	200 ms
-3	400 ms
-4	800 ms
+1		100 ms
+2		200 ms
+3		400 ms
+4		800 ms
 But production systems usually add randomness:
 actualDelay = backoff + randomJitter
 or use a jitter strategy such as full jitter:
@@ -323,7 +316,6 @@ You cannot sensibly spend:
 because the user has already waited 6 seconds.
 Instead:
 Total request deadline = 3 sec
-
 Attempt 1
    ↓
 Attempt 2
@@ -478,17 +470,13 @@ But production code should conceptually evolve toward:
 RetryPolicy policy = ...;
 
 while (policy.canAttempt()) {
-
     try {
         return call();
     } catch (Exception e) {
-
         if (!policy.isRetryable(e)) {
             throw e;
         }
-
         Duration delay = policy.nextDelay();
-
         sleep(delay);
     }
 }
@@ -547,7 +535,6 @@ InventoryService
 to reserve 1 item.
 The API is:
 POST /inventory/reserve
-
 {
     "productId": "IPHONE-17",
     "quantity": 1
@@ -584,7 +571,7 @@ E.
 Suppose 100,000 OrderService instances all retry after exactly 1 second.
 What happens to InventoryService, and what mechanism would you introduce to reduce that problem?
 
-Retry — Part 2: Production Engineering
+Retry - Part 2: Production Engineering
 We have already established:
 failure
    ↓
@@ -630,7 +617,6 @@ Think:
 The entire operation has a deadline.
 For example:
 Deadline = 3 seconds
-
 t=0
  |
  |-- attempt 1
@@ -853,9 +839,7 @@ production systems can ask:
 "How much retry traffic can the system afford?"
 For example:
 normal traffic = 1,000,000/min
-
 retry budget = 5%
-
 maximum retry traffic ≈ 50,000/min
 Once the budget is exhausted:
 don't retry
@@ -992,17 +976,14 @@ The deduplication record and the business state change need appropriate atomicit
 For a relational database, a common approach is to use a transaction plus a uniqueness constraint.
 Conceptually:
 BEGIN TRANSACTION
-
 INSERT reservation(
     reservation_id = ORD-1001,
     product_id = IPHONE-17
 )
-
 UPDATE inventory
 SET available = available - 1
 WHERE product_id = IPHONE-17
   AND available > 0
-
 COMMIT
 with:
 UNIQUE(reservation_id)
@@ -1067,31 +1048,22 @@ ________________________________________
 Now you can understand what a production retry abstraction is really doing.
 Conceptually:
 Response execute(Request request) {
-
     Deadline deadline = Deadline.start();
-
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-
         try {
             return call(request, deadline.remaining());
         }
         catch (Exception e) {
-
             if (!retryPolicy.isRetryable(e)) {
                 throw e;
             }
-
             if (deadline.expired()) {
                 throw new TimeoutException();
             }
-
-            Duration delay =
-                retryPolicy.calculateBackoff(attempt);
-
+            Duration delay =     retryPolicy.calculateBackoff(attempt);
             sleep(delay);
         }
     }
-
     throw new RetryExhaustedException();
 }
 But notice what isn't contained in this code:
@@ -1122,18 +1094,18 @@ At this point, your mental model should look like:
                          +------------+-------------+
                          |            |             |
                      permanent    transient      unknown
-                         |            |             |
-                         v            |        idempotency?
-                       fail           |             |
-                                      |       +-----+-----+
-                                      |       |           |
-                                      |      safe       unsafe
-                                      |       |           |
-                                      +-------+         reconcile/
-                                              |          query
-                                           retry
-                                              |
-                                         backoff
+                         |         	           |                         |
+                         v                             |            idempotency?
+                       fail                          |                          |
+                                                       |               +-----+-----+
+                                                       |                |                   |
+                                                       |            safe          unsafe
+                                                       |                |                   |
+                                                                         +-------+         
+                                                    |         reconcile/  query
+                                                retry
+                                                    |
+                                             backoff
                                               |
                                            jitter
                                               |
@@ -1281,9 +1253,8 @@ Our three lessons:
 1.	Connection vs Read vs Request Timeout 
 2.	Timeout Propagation Through Distributed Systems 
 3.	Cascading Failures + Deadline Propagation 
-We will not move to Lesson 2 until Lesson 1 is solid.
 ________________________________________
-Lesson 1 — Connection vs Read vs Request Timeout
+Lesson 1 - Connection vs Read vs Request Timeout
 1. Problem → Why did engineers need timeouts?
 Start with a simple Java service:
 OrderService
@@ -1305,8 +1276,7 @@ PaymentService
      v
    ?
 Imagine your Java thread is sitting here:
-PaymentResponse response =
-    paymentClient.charge(request);
+PaymentResponse response =  paymentClient.charge(request);
 What happens if PaymentService:
 •	crashes? 
 •	becomes overloaded? 
@@ -1333,7 +1303,6 @@ eventually collapse
 So timeout isn't merely:
 "Don't wait too long."
 It is a resource-protection mechanism.
-That's the first important mental model.
 ________________________________________
 2. Naive solution → "Just set a timeout"
 An engineer might say:
@@ -1369,8 +1338,7 @@ OrderService
 PaymentService
 The client is trying to establish a connection.
 Maybe:
-PaymentService
-is unreachable.
+PaymentService is unreachable.
 Or the network path is broken.
 Or the server isn't accepting connections quickly enough.
 The connection timeout limits how long we're willing to wait to establish the connection.
@@ -1572,7 +1540,7 @@ Conceptually:
                 Overall deadline
                        |
              +---------+---------+
-             |                   |
+             |                                 |
           Connect              Response
           timeout              timeout
 For example:
@@ -1650,14 +1618,10 @@ So:
 Timeout is one of the major ways a distributed system creates an UNKNOWN outcome.
 Example:
 OrderService                    PaymentService
-
    POST /payment -------------------->
-
                                   charge succeeds
-
    <------------- response ----------X
                     lost
-
    timeout
 From OrderService's perspective:
 UNKNOWN
@@ -1739,7 +1703,8 @@ E.
 If OrderService retries after that timeout, what dangerous situation can occur?
 F.
 Why can increasing the timeout from 2 seconds → 30 seconds actually make an overloaded system worse?
-Timeout — Lesson 2: Timeout Propagation Through Distributed Systems
+
+Timeout - Lesson 2: Timeout Propagation Through Distributed Systems
 We'll assume Lesson 1's distinction is understood:
 Connection timeout
     ↓
@@ -1782,13 +1747,10 @@ Looks reasonable.
 But imagine the timeline:
 t=0s
 Client → Gateway
-
 t=0.5s
 Gateway → Order
-
 t=1.0s
 Order → Payment
-
 t=2.0s
 Payment → Bank
 At this point, we've already spent:
@@ -1860,10 +1822,8 @@ Original deadline = 5 sec
 At different points:
 Gateway:
 remaining = 5.0s
-
 Order:
 remaining = 4.2s
-
 Payment:
 remaining = 3.1s
 
@@ -1945,10 +1905,8 @@ Order starts all three calls.
 Now the dependencies become slow.
 t=0
 Order starts calls
-
 t=2
 User deadline expires
-
 t=2+
 Order returns timeout to client
 But what happened to the downstream calls?
@@ -2005,8 +1963,7 @@ Order
                  deadline = T
 Each service calculates its remaining budget.
 Conceptually:
-Duration remaining =
-    deadline.minus(Instant.now());
+Duration remaining =   deadline.minus(Instant.now());
 Then:
 callDependency(remaining);
 The downstream operation cannot arbitrarily exceed the caller's remaining budget.
@@ -2029,14 +1986,11 @@ More importantly:
 A service may need to reserve some time for its own work after the dependency returns.
 Example:
 Remaining deadline = 500ms
-
 Payment call = 400ms
-
 Order needs:
   50ms processing
   20ms serialization
   30ms response
-
 Total = 500ms
 That's already razor-thin.
 So deadline propagation isn't simply:
@@ -2296,7 +2250,7 @@ and:
 G.
 Why can deadline propagation help prevent cascading failures?
 
-Timeout — Lesson 3: Cascading Failures and Deadline Propagation
+Timeout - Lesson 3: Cascading Failures and Deadline Propagation
 This is where Timeout becomes a distributed-systems concept, rather than an HTTP-client configuration.
 The central question is:
 How can one slow dependency cause an entire distributed system to become unhealthy?
@@ -2626,9 +2580,9 @@ They interact, but they aren't the same.
                  Request lifetime
                        |
           +------------+------------+
-          |                         |
+          |                                                |
        Deadline                  Cancellation
-          |                         |
+          |                                                  |
    time-based boundary       explicit stop signal
 A mature distributed system tries to propagate both time constraints and cancellation, where the underlying operation supports it.
 ________________________________________
@@ -2743,7 +2697,7 @@ ________________________________________
 Consider:
              ┌── Inventory
              |
-Order ───────┼── Pricing
+Order ───── Pricing
              |
              ├── Recommendation
              |
@@ -2769,7 +2723,7 @@ Fraud
 If all happen concurrently:
         ┌── Inventory
         │
-Order ──┼── Pricing
+Order ── Pricing
         │
         └── Fraud
 all receive the same remaining deadline.
@@ -2839,26 +2793,26 @@ A mature request path often looks conceptually like:
                   Calculate remaining
                          |
                 +--------+--------+
-                |                 |
+                |                               |
           Enough time?        Not enough
-                |                 |
+                |                               |
                yes                fail fast
                 |
                 v
           Call dependency
                 |
           +-----+------+
-          |            |
+          |                           |
        success      timeout/error
-          |            |
-          v            v
+          |                          |
+          v                          v
       continue      classify
-                         |
-                    retry?
-                         |
-                    deadline?
-                         |
-                    budget?
+                                      |
+                               retry?
+                                     |
+                               deadline?
+                                     |
+                                 budget?
 And every downstream request receives the remaining deadline.
 ________________________________________
 22. The relationship between Timeout, Retry and Cascading Failure
@@ -2974,7 +2928,7 @@ to:
 "Stop calling for a while."
 That's the core idea.
 ________________________________________
-Lesson 1 — Why Circuit Breakers Exist
+Lesson 1 - Why Circuit Breakers Exist
 1. Problem → Why did engineers need this?
 Let's start with something very important:
 Circuit breakers are not primarily about detecting that a dependency is broken.
@@ -3371,7 +3325,6 @@ Conceptually:
 if (circuitBreaker.allowsRequest()) {
     return paymentClient.pay(request);
 }
-
 throw new CircuitOpenException();
 The actual production implementation tracks:
 successes
@@ -3397,17 +3350,16 @@ Retry
 
 Circuit Breaker
    ↓
-"We have enough evidence that this dependency
- is unhealthy. Stop sending it traffic."
+"We have enough evidence that this dependency  is unhealthy. Stop sending it traffic."
 And together:
                Dependency
                    |
               unhealthy
                    |
           +--------+--------+
-          |                 |
+          |                              |
        Timeout           Failures
-          |                 |
+          |                            |
           +--------+--------+
                    |
                  Retry?
@@ -3420,7 +3372,7 @@ And together:
                    v
               FAIL FAST
 
-Circuit Breaker — Lesson 2: Internal State Machine
+Circuit Breaker - Lesson 2: Internal State Machine
 Now we're going underneath the abstraction.
 A circuit breaker isn't magic. Internally, it's essentially:
 state
@@ -3448,16 +3400,16 @@ more load
 We want the breaker to transition between three modes:
              failures
         ┌─────────────────┐
-        │                 ▼
+        │                                         ▼
     ┌────────┐        ┌────────┐
     │ CLOSED │        │  OPEN  │
     └────────┘        └────────┘
-        ▲                 │
-        │                 │ wait
-        │                 ▼
-        │            ┌──────────┐
+        ▲                                │
+        │                                 │ wait
+        │                               ▼
+        │                              ┌──────────┐
         └────────────│HALF-OPEN │
-          recovered  └──────────┘
+          recovered           └──────────┘
 These states represent three different beliefs about the dependency.
 ________________________________________
 2. CLOSED — "Everything looks normal"
@@ -3609,8 +3561,8 @@ The breaker goes back to protecting the system.
 So the state machine becomes:
               failure threshold
          ┌───────────────────────┐
-         │                       │
-         v                       │
+         │                                                        │
+         v                                                       │
      ┌────────┐              ┌────────┐
      │ CLOSED │              │  OPEN  │
      └────────┘              └────────┘
@@ -3686,11 +3638,8 @@ half-open probe count
 Conceptually:
 CircuitBreaker {
     State state;
-
     Metrics metrics;
-
     Instant openedAt;
-
     int permittedHalfOpenCalls;
 }
 The exact implementation varies.
@@ -3753,8 +3702,7 @@ if (state == OPEN && cooldownElapsed()) {
     state = HALF_OPEN;
 }
 Two threads:
-Thread A                    Thread B
-
+Thread A                               Thread B
 read state = OPEN           read state = OPEN
 cooldown elapsed            cooldown elapsed
 set HALF_OPEN               set HALF_OPEN
@@ -3847,7 +3795,7 @@ Circuit Breaker
 Load Balancer
    |
 +-----+-----+
-|     |     |
+|          |         |
 P1    P2    P3
 If Payment cluster is unhealthy:
 Circuit Breaker → OPEN
@@ -3911,8 +3859,7 @@ The complete mental model is:
                       v
                   CLOSED
                       |
-            failure/slow-call
-             rate too high
+            failure/slow-call rate too high
                       |
                       v
                     OPEN
@@ -3930,9 +3877,9 @@ And behind the state machine:
                     Metrics
                       |
           +-----------+-----------+
-          |                       |
+          |                                              |
     failure/slow rate         timestamps
-          |                       |
+          |                                          |
           +-----------+-----------+
                       |
                   transition
@@ -3968,17 +3915,13 @@ ________________________________________
 24. Java connection
 At the Java level, you can imagine:
 class CircuitBreaker {
-
     private State state;
     private Metrics metrics;
     private Instant openedAt;
-
     Response execute(Supplier<Response> action) {
-
         if (!allowRequest()) {
             throw new CircuitOpenException();
         }
-
         try {
             Response response = action.get();
             recordSuccess();
@@ -4011,7 +3954,6 @@ OPEN duration = 10 seconds
 HALF_OPEN permits = 2 calls
 Now the following happens:
 Calls 1-10:
-
 S S S S S F F F F F
 Where:
 S = success
@@ -4040,7 +3982,7 @@ You have 10 OrderService instances. Can one instance be OPEN while another is CL
 H.
 Why is a global circuit-breaker state potentially much more complicated than a local one?
 
-Lesson 3 — Circuit Breaker: Failure Counting + Sliding Windows
+Lesson 3 - Circuit Breaker: Failure Counting + Sliding Windows
 We already established the motivation for circuit breakers:
 Service A
    |
@@ -4068,11 +4010,9 @@ ________________________________________
 1. The naive circuit breaker
 Let's start with the simplest possible implementation.
 int failureCount = 0;
-
 if (callFails()) {
     failureCount++;
 }
-
 if (failureCount >= 5) {
     circuitOpen = true;
 }
@@ -4113,7 +4053,6 @@ Failure threshold = 50%
 Minimum requests = 20
 Suppose the last 10 seconds contain:
 20 requests
-
 SUCCESS SUCCESS SUCCESS SUCCESS
 FAIL    FAIL    FAIL    FAIL
 SUCCESS SUCCESS SUCCESS SUCCESS
@@ -4122,14 +4061,11 @@ SUCCESS SUCCESS SUCCESS SUCCESS
 That's:
 15 success
 5 failure
-
-failure rate = 5 / 20
-            = 25%
+failure rate = 5 / 20   = 25%
 If threshold is 50%:
 Circuit remains CLOSED
 Now:
 20 requests
-
 SUCCESS
 FAIL
 FAIL
@@ -4258,20 +4194,16 @@ At:
 12:00:10.1
 we ask:
 What happened from:
-
 12:00:00.1
       to
 12:00:10.1
 The window moves continuously:
 time
 ------------------------------------------------>
-
         [-----------]
             window
-
            [-----------]
                window
-
               [-----------]
                   window
 This gives much more accurate temporal behavior.
@@ -4288,9 +4220,7 @@ record CallResult(
 Then:
 void record(CallResult result) {
     calls.addLast(result);
-
     long cutoff = System.currentTimeMillis() - WINDOW;
-
     while (!calls.isEmpty()
             && calls.peekFirst().timestamp() < cutoff) {
         calls.removeFirst();
@@ -4300,7 +4230,6 @@ Failure rate:
 long failures = calls.stream()
         .filter(c -> !c.success())
         .count();
-
 double failureRate =
         (double) failures / calls.size();
 Conceptually this works.
@@ -4327,7 +4256,6 @@ failedCalls
 slowCalls
 Conceptually:
 Time
-
 12:00:00   [S=80 F=20]
 12:00:01   [S=90 F=10]
 12:00:02   [S=95 F=5]
@@ -4341,9 +4269,7 @@ Time
 Total:
 success = 490
 failure = 510
-
-failureRate = 510 / 1000
-            = 51%
+failureRate = 510 / 1000    = 51%
 Now we can make the decision.
 ________________________________________
 9. Ring buffer
@@ -4375,9 +4301,7 @@ class Bucket {
 }
 It needs identity:
 class Bucket {
-
     long epochSecond;
-
     long success;
     long failure;
 }
@@ -4456,14 +4380,10 @@ failedCalls
 over the window.
 Then:
 boolean shouldOpen() {
-
     if (totalCalls < minimumCalls) {
         return false;
     }
-
-    double failureRate =
-            (double) failedCalls / totalCalls;
-
+    double failureRate = (double) failedCalls / totalCalls;
     return failureRate >= 0.50;
 }
 That's the mathematical core.
@@ -4513,19 +4433,15 @@ ________________________________________
 14. Failure classification
 Conceptually:
 Outcome classify(Response response) {
-
     if (response.statusCode() >= 500) {
         return FAILURE;
     }
-
     if (response.statusCode() == 429) {
         return maybeFailure;
     }
-
     if (response.statusCode() >= 400) {
         return SUCCESS;
     }
-
     return SUCCESS;
 }
 But even this isn't universally correct.
@@ -4713,7 +4629,6 @@ probe 2 -> success
 probe 3 -> success
 probe 4 -> success
 probe 5 -> success
-
 => CLOSED
 But:
 probe 1 -> success
@@ -4793,7 +4708,6 @@ Thread 3 -> sees OPEN
 Thread 4 -> sees OPEN
 
 all think:
-
 "I am the probe"
 You wanted:
 1 probe
@@ -4919,14 +4833,10 @@ Potential configuration:
 failureRateThreshold
 slowCallRateThreshold
 slowCallDurationThreshold
-
 minimumNumberOfCalls
-
 slidingWindowType
 slidingWindowSize
-
 waitDurationInOpenState
-
 permittedNumberOfCallsInHalfOpenState
 ________________________________________
 29. Let's write a simplified Java implementation
@@ -4945,27 +4855,21 @@ record CircuitBreakerConfig(
 ) {}
 Statistics:
 class Statistics {
-
     private long total;
     private long failures;
-
     synchronized void recordSuccess() {
         total++;
     }
-
     synchronized void recordFailure() {
         total++;
         failures++;
     }
-
     synchronized double failureRate() {
         if (total == 0) {
             return 0.0;
         }
-
         return (double) failures / total;
     }
-
     synchronized long totalCalls() {
         return total;
     }
@@ -4973,18 +4877,11 @@ class Statistics {
 Again: this is educational, not production code.
 Now the breaker:
 class CircuitBreaker {
-
     private final CircuitBreakerConfig config;
     private final Statistics statistics = new Statistics();
-
-    private final AtomicReference<State> state =
-            new AtomicReference<>(State.CLOSED);
-
+    private final AtomicReference<State> state =  new tomicReference<>(State.CLOSED);
     private volatile long openedAt;
-
-    private final AtomicInteger halfOpenCalls =
-            new AtomicInteger();
-
+    private final AtomicInteger halfOpenCalls =   new AtomicInteger();
     CircuitBreaker(CircuitBreakerConfig config) {
         this.config = config;
     }
@@ -4993,33 +4890,24 @@ ________________________________________
 30. Request admission
 Every call first passes through:
 boolean allowRequest() {
-
     State current = state.get();
-
     switch (current) {
-
         case CLOSED:
             return true;
-
         case OPEN:
             return tryTransitionToHalfOpen();
-
         case HALF_OPEN:
             return allowHalfOpenProbe();
-
         default:
             throw new IllegalStateException();
     }
 }
 OPEN logic:
 boolean tryTransitionToHalfOpen() {
-
     long now = System.currentTimeMillis();
-
     if (now - openedAt < config.openDurationMillis()) {
         return false;
     }
-
     return state.compareAndSet(
             State.OPEN,
             State.HALF_OPEN
@@ -5034,15 +4922,11 @@ We therefore need explicit admission control.
 ________________________________________
 31. HALF_OPEN admission control
 boolean allowHalfOpenProbe() {
-
     int current = halfOpenCalls.incrementAndGet();
-
     if (current <= config.halfOpenProbeLimit()) {
         return true;
     }
-
     halfOpenCalls.decrementAndGet();
-
     return false;
 }
 Now we limit probes.
@@ -5064,33 +4948,24 @@ ________________________________________
 32. Recording the result
 Conceptually:
 void onSuccess() {
-
     State current = state.get();
-
     if (current == State.CLOSED) {
         statistics.recordSuccess();
         evaluate();
         return;
     }
-
     if (current == State.HALF_OPEN) {
         handleHalfOpenSuccess();
     }
 }
 Failure:
 void onFailure(Throwable error) {
-
     State current = state.get();
-
     if (current == State.CLOSED) {
-
         statistics.recordFailure();
-
         evaluate();
-
         return;
     }
-
     if (current == State.HALF_OPEN) {
         state.set(State.OPEN);
         openedAt = System.currentTimeMillis();
@@ -5103,7 +4978,6 @@ ________________________________________
 This is a surprisingly important issue.
 Imagine:
 CompletableFuture<Response> future = call();
-
 future.whenComplete((response, error) -> {
     recordResult();
 });
@@ -5677,13 +5551,10 @@ Design a circuit breaker for a Java microservice making 10,000 requests/sec to a
 I would expect you to reason approximately like this:
 Traffic:
 10k RPS
-
 Failure detection:
 time/count-based sliding window
-
 Need minimum sample size:
 yes
-
 Failure classification:
 timeouts + 5xx + connection errors
 but not arbitrary 4xx/business errors
@@ -5826,21 +5697,15 @@ ________________________________________
 Your mental model going forward
 For every circuit breaker problem, ask these 7 questions:
 1. What counts as a failure?
-
 2. What time/count window are we observing?
-
 3. How much evidence do we require before deciding?
-
 4. How quickly should we stop traffic?
-
 5. How long should we wait before probing recovery?
-
 6. How much traffic can HALF_OPEN release?
-
 7. What happens to rejected requests?
 If you can answer those seven, you understand the circuit breaker rather than just knowing the API.
 
-Lesson 4 — Circuit Breaker + Retry + Timeout + Bulkhead as One System
+Lesson 4 - Circuit Breaker + Retry + Timeout + Bulkhead as One System
 This is where system design becomes much more interesting.
 A common mistake is to learn these as four independent patterns:
 Timeout
@@ -5874,8 +5739,7 @@ The Order Service has:
 10,000 incoming requests/sec
 and each request needs Payment Service.
 A naive implementation:
-PaymentResponse response =
-        paymentClient.charge(request);
+PaymentResponse response =  paymentClient.charge(request);
 Looks harmless.
 But now Payment Service becomes slow.
 Normal:
@@ -6026,16 +5890,15 @@ Order Service
      +------ rejected/limited
 So:
 Circuit Breaker = health-based protection
-
 Bulkhead = resource-based protection
 This distinction is fundamental.
 ________________________________________
 8. Think of them as four different questions
 Mechanism	Question
 Timeout	How long am I willing to wait?
-Retry	Should I try the operation again?
-Circuit Breaker	Is the dependency currently unhealthy enough that I should stop calling it?
-Bulkhead	How many resources am I willing to let this dependency consume concurrently?
+Retry	              Should I try the operation again?
+Circuit Breaker       Is the dependency currently unhealthy enough that I should stop calling it?
+Bulkhead	      How many resources am I willing to let this dependency consume concurrently?
 Notice:
 They solve different dimensions.
 ________________________________________
@@ -6089,7 +5952,6 @@ response read
 overall operation
 For example:
 total timeout = 2 sec
-
 connect timeout = 500ms
 read timeout = 1500ms
 But these don't necessarily compose simply.
@@ -6345,7 +6207,6 @@ A common conceptual formula:
 with a maximum cap.
 Example:
 base = 100ms
-
 retry 1 = 100ms
 retry 2 = 200ms
 retry 3 = 400ms
@@ -6382,12 +6243,10 @@ Client 4 → 31ms
 Requests spread out.
 Conceptually:
 Without jitter:
-
 |       |       |       |
 100ms   200ms   400ms
 
 With jitter:
-
 | |  |    || |   | | | 
 This reduces synchronized retry storms.
 ________________________________________
@@ -6515,15 +6374,15 @@ Think:
               +----------------+
               | Retry Budget   |
               +-------+--------+
-                      |
+                               |
              +--------+--------+
-             |                 |
-             v                 v
+             |                               |
+             v                              v
          Attempt 1          Attempt 2
-             |                 |
+             |                               |
        Per-attempt         Per-attempt
          timeout             timeout
-             |                 |
+             |                                 |
              +--------+--------+
                       |
                       v
@@ -7114,16 +6973,13 @@ Normal:
 RPS = 500
 latency = 100ms
 Using Little's Law:
-So normal concurrency ≈:
-50
+So normal concurrency ≈: 50
 Suppose we configure:
 bulkhead = 100
 This allows roughly 2× normal concurrency.
-Now Payment latency becomes:
-500ms
+Now Payment latency becomes: 500ms
 Expected concurrency:
-But bulkhead allows:
-100
+But bulkhead allows: 100
 So we intentionally reject/limit some traffic.
 Why?
 Because allowing all 250 calls might consume too many resources and destabilize Order Service.
@@ -7148,23 +7004,17 @@ ________________________________________
 For each dependency:
 request_attempts_total
 logical_requests_total
-
 success_total
 failure_total
 timeout_total
-
 retry_attempts_total
 retry_exhausted_total
-
 circuit_open_total
 circuit_rejected_total
-
 bulkhead_rejected_total
 bulkhead_active
-
 connection_pool_active
 connection_pool_pending
-
 latency
 slow_call_rate
 failure_rate
@@ -7234,8 +7084,7 @@ Suppose:
 threshold = 5%
 Normal transient network errors might be:
 1-3%
-A temporary blip takes you to:
-6%
+A temporary blip takes you to:6%
 and the circuit opens.
 Now you have excessive sensitivity.
 So the threshold is a trade-off:
@@ -7247,8 +7096,7 @@ ________________________________________
 63. Sliding window + timeout interaction
 Suppose:
 window = 10 sec
-and timeout:
-2 sec
+and timeout: 2 sec
 A request that hangs for 2 seconds doesn't produce an outcome until then.
 Therefore failure detection isn't instantaneous.
 If 100 requests all begin hanging at:
@@ -7423,7 +7271,6 @@ A strong answer wouldn't start with:
 "I'll use Resilience4j."
 It would start with:
 First, define the latency SLO and dependency budget.
-
 Then:
 - deadline/timeout
 - bounded concurrency
@@ -7446,22 +7293,18 @@ breaker = 50%
 bulkhead = 50
 you should be able to explain:
 Why 2 seconds?
-
 Because parent deadline is 1 second?
 Then 2 seconds is already wrong.
 
 Why 3 retries?
-
 Because operation is idempotent?
 What's the retry budget?
 
 Why 50%?
-
 What's normal failure rate?
 What's the desired detection sensitivity?
 
 Why 50 concurrent?
-
 What is normal concurrency?
 What can the dependency handle?
 What resource limit are we protecting?
@@ -7584,7 +7427,7 @@ The real system is:
 The key senior-level insight is:
 Resilience isn't about making every request succeed. It's about preventing one failing component from consuming enough time, concurrency, connections, retries, and capacity to bring down components that could otherwise remain healthy.
 
-Bulkhead — Lesson 1: Resource Isolation
+Bulkhead - Lesson 1: Resource Isolation
 1. First: what problem is Bulkhead actually solving?
 Imagine your Java service handles three kinds of requests:
                     Order Service
@@ -7692,8 +7535,7 @@ Suppose:
 and each request normally takes:
 100 ms
 Approximate capacity:
-100 threads / 0.1 sec
-≈ 1000 requests/sec
+100 threads / 0.1 sec ≈ 1000 requests/sec
 Now an external dependency becomes slow.
 Requests take:
 10 seconds
@@ -7741,15 +7583,12 @@ ________________________________________
 6. A realistic Java example
 Suppose you have:
 class OrderService {
-
     PaymentClient paymentClient;
     SearchClient searchClient;
-
     Order createOrder(...) {
         paymentClient.charge(...);
         ...
     }
-
     List<Product> search(...) {
         return searchClient.search(...);
     }
@@ -7783,13 +7622,13 @@ Instead of:
                   200 shared workers
                        |
           +------------+------------+
-          |                         |
+          |                                           |
        Search                     Orders
 we conceptually create:
                   200 capacity
                        |
           +------------+------------+
-          |                         |
+          |                                            |
        Search                     Orders
        120 max                     80 max
 Now Search can become terrible:
@@ -7996,7 +7835,7 @@ Bulkhead tries to stop the failure from crossing a boundary:
              Order Service
                    |
           +--------+--------+
-          |                 |
+          |                                          |
      Payment bulkhead    Other work
           |
      limited capacity
@@ -8039,7 +7878,8 @@ Don't memorize this:
 Instead, understand this:
 When one workload becomes slow or overloaded, Bulkhead limits how much finite system capacity that workload can consume, preserving capacity for other workloads.
 That's the real concept.
-Bulkhead — Lesson 2: Thread Pools / Connection Pools / Concurrency Limits
+
+Bulkhead - Lesson 2: Thread Pools / Connection Pools / Concurrency Limits
 Now we go one level deeper.
 In Lesson 1, the key idea was:
 A workload must not be allowed to consume all finite resources.
@@ -8085,11 +7925,11 @@ For example:
                     Order Service
                          |
               +----------+----------+
-              |                     |
+              |                                      |
         application             DB pool
          threads                connections
-              |                     |
-            200                   50
+              |                                       |
+            200                                 50
 You could have:
 200 application threads
 50 database connections
@@ -8239,8 +8079,8 @@ Java Application
        v
 +------------------+
 | DB Connection    |
-| Pool             |
-|                  |
+| Pool                           |
+|                                     |
 | C1 C2 C3 ... C50 |
 +------------------+
        |
@@ -8283,7 +8123,6 @@ Only 20 can actively use a DB connection at a time.
 The other threads wait.
 Conceptually:
 Threads:
-
 T1  ──> DB connection
 T2  ──> DB connection
 ...
@@ -8323,7 +8162,7 @@ Suppose instead there is one shared pool:
                30 connections
                     |
           +---------+---------+
-          |                   |
+          |                                   |
         Orders             Analytics
 Analytics receives a huge traffic spike.
 It consumes:
@@ -8421,7 +8260,6 @@ Conceptually:
 Semaphore semaphore = new Semaphore(50);
 Then:
 semaphore.acquire();
-
 try {
     callPaymentService();
 } finally {
@@ -8450,9 +8288,7 @@ Your real goal might be:
 "This dependency should never have more than 30 requests hitting it concurrently."
 Those are different requirements.
 For example:
-Thread pool:
-
-20 workers
+Thread pool: 20 workers
 doesn't necessarily tell you exactly how many outbound operations can exist if tasks fan out asynchronously.
 A concurrency limit directly expresses the business/system constraint:
 Payment Service:
@@ -8610,8 +8446,7 @@ HTTP connection pool = 20
 Thread pool = 50
 What is the actual maximum number of simultaneous HTTP operations?
 Approximately:
-min(100, 20, 50)
-= 20
+min(100, 20, 50) = 20
 The narrowest resource becomes the effective bottleneck.
 But don't blindly make everything equal.
 Different layers have different purposes.
@@ -8773,9 +8608,7 @@ The architectural problem doesn't.
 ________________________________________
 25. The mental model I want you to have
 Don't think:
-Bulkhead
-  =
-create separate thread pools
+Bulkhead  = create separate thread pools
 Think:
                  FINITE RESOURCES
                        |
@@ -8783,8 +8616,7 @@ Think:
        |               |               |
      Threads       Connections     Concurrency
        |               |               |
-   thread pool      conn pool       semaphore/
-                                   concurrency limit
+   thread pool      conn pool       semaphore/ concurrency limit
        |               |               |
        +---------------+---------------+
                        |
@@ -8819,9 +8651,7 @@ Consider this architecture:
        DB + HTTP                 HTTP only
 Current configuration:
 DB connection pool = 20
-
 Shared HTTP connection pool = 50
-
 No concurrency limits
 Traffic:
 Payment = 20 req/sec
@@ -8839,7 +8669,7 @@ E. Where would you put a Bulkhead for Search?
 F. When the Search Bulkhead is full, would you queue indefinitely or reject some requests? Why?
 G. If Payment and Search share the same HTTP connection pool, what additional isolation problem exists?
 
-Bulkhead — Lesson 3: Cascading Failure Prevention
+Bulkhead - Lesson 3: Cascading Failure Prevention
 This is the most important Bulkhead lesson.
 Lessons 1 and 2 taught:
 •	Resource isolation — don't let one workload consume everything. 
@@ -8899,7 +8729,6 @@ At:
 100 requests/sec
 approximately:
 Concurrency = λ × S
-
              = 100 × 0.1
              = 10
 Only around 10 concurrent requests are waiting for Payment.
@@ -8909,8 +8738,7 @@ Payment latency = 5 sec
 Same traffic:
 100 req/sec
 Now:
-Concurrency = 100 × 5
-            = 500
+Concurrency = 100 × 5 = 500
 But you only have:
 100 worker threads
 So you can't sustain that workload.
@@ -9182,11 +9010,11 @@ Consider:
              ┌─────────────┐
              │ API Gateway │
              └──────┬──────┘
-                    |
+                               |
              ┌──────v──────┐
              │ Order       │
              └──────┬──────┘
-                    |
+                              |
              ┌──────v──────┐
              │ Payment     │
              └──────┬──────┘
@@ -9721,7 +9549,7 @@ For every topic, I'll cover:
 •	when to choose it 
 •	system-design interview reasoning 
 ________________________________________
-Lesson 1 — Why Rate Limiting Exists
+Lesson 1 - Why Rate Limiting Exists
 Let's start before algorithms.
 Suppose you have:
 Client
@@ -9896,12 +9724,12 @@ But these solve different failure dimensions.
 ________________________________________
 5. Rate limiting vs timeout vs circuit breaker vs bulkhead
 This distinction is worth mastering.
-Mechanism	Main question
-Rate limiting	How much work may enter?
-Timeout	How long may one operation take?
-Retry	Should failed work be attempted again?
+Mechanism		Main question
+Rate limiting		How much work may enter?
+Timeout		How long may one operation take?
+Retry			Should failed work be attempted again?
 Circuit breaker	Should we temporarily stop calling an unhealthy dependency?
-Bulkhead	How much concurrent work may consume this resource?
+Bulkhead		How much concurrent work may consume this resource?
 For example:
 Rate limit
 100 requests/sec
@@ -9922,8 +9750,7 @@ Does that mean there can only be 100 requests executing simultaneously?
 No.
 Imagine each request takes 10 seconds.
 You could have approximately:
-100 req/sec × 10 sec
-= 1,000 concurrent requests
+100 req/sec × 10 sec = 1,000 concurrent requests
 This relationship is roughly described by Little's Law:
 L = λW
 where:
@@ -9933,19 +9760,12 @@ W = average time in system
 Example:
 λ = 100 requests/sec
 W = 2 sec
-
-L = 100 × 2
-  = 200 concurrent requests
+L = 100 × 2   = 200 concurrent requests
 This is why rate limiting and bulkheading are complementary.
 You might have:
-Rate limiter:
-1000 req/sec
-
-Bulkhead:
-100 concurrent requests
-
-Timeout:
-2 seconds
+Rate limiter: 1000 req/sec
+Bulkhead: 100 concurrent requests
+Timeout:2 seconds
 Each protects a different dimension.
 ________________________________________
 7. Rate limiting provides admission control
@@ -9989,7 +9809,6 @@ A naïve implementation might say:
 Consider this traffic:
 00:00:59
     100 requests
-
 00:01:00
     100 requests
 You've technically respected:
@@ -10000,7 +9819,7 @@ But during one real 2-second period:
 were accepted.
 This leads us to our first algorithm.
 ________________________________________
-Lesson 2 — Fixed Window
+Lesson 2 - Fixed Window
 The basic idea is extremely simple.
 For each client:
 counter = 0
@@ -10127,7 +9946,7 @@ But if your requirement is:
 "Strictly control traffic over arbitrary rolling intervals."
 You need something more sophisticated.
 
-Lesson 2 — Sliding Window Rate Limiting
+Lesson 2 - Sliding Window Rate Limiting
 Good. Now let's move from the weakness of Fixed Window to the two main sliding-window approaches:
 Fixed Window
      ↓
@@ -10163,7 +9982,6 @@ ________________________________________
 2. Why this fixes the boundary problem
 Remember our fixed-window attack:
 Limit = 100/minute
-
 10:00:59 → 100 requests
 10:01:00 → 100 requests
 Fixed window says:
@@ -10179,7 +9997,6 @@ If those 200 requests occurred within the previous 60 seconds, the second batch 
 The system says:
 previous 60 sec = 200
 limit = 100
-
 200 > 100
 Therefore:
 REJECT
@@ -10199,7 +10016,6 @@ Now a request arrives at:
 We look back 10 seconds:
 [10.0, 11.2, 13.5, 15.1, 18.7]
   ^
-
 10.0 is exactly 10 seconds old
 Depending on your interval convention, you might remove timestamps at or before the lower boundary.
 For a half-open interval:
@@ -10417,29 +10233,26 @@ Our buckets are:
 The current sliding window cuts through two buckets:
              sliding window
              <------------>
-
 10:00:05 ───────────────── 10:01:05
-     |                         |
-     v                         v
-  bucket                    current
-  partially                partially
-  included                  included
+     |                                                                 |
+     v                                                               v
+  bucket                   		 current
+  partially                		partially
+  included                  		included
 So we need to estimate the partial contribution of those buckets.
 ________________________________________
 13. The interpolation idea
 Suppose:
-previous bucket count = 100
-current bucket count  = 20
+previous bucket co unt = 100
+current bucket count = 20
 and the current point is 25% into the current bucket.
 Then approximately 75% of the previous bucket belongs to the sliding window.
 So:
 estimated previous contribution
-≈ 100 × 0.75
-= 75
+≈ 100 × 0.75 = 75
 Then:
 estimated sliding count
-≈ 75 + 20
-= 95
+≈ 75 + 20 = 95
 If:
 limit = 100
 the request can be accepted.
@@ -10498,15 +10311,15 @@ It's a capacity-vs-accuracy engineering decision.
 ________________________________________
 16. Compare the three algorithms
 Now put them together.
-Property	Fixed Window	Sliding Log	Sliding Counter
-State	Counter	Every timestamp	Bucket counters
-Accuracy	Low	Very high	Approximate
-Memory	Very low	High	Low/medium
-Boundary burst	Yes	No	Reduced
-Implementation	Simple	More complex	Moderate
-Distributed implementation	Easy-ish	More expensive	Moderate
-Good for huge scale	Yes	Potentially expensive	Yes
-Exact rolling-window semantics	No	Yes	Approximate
+Property		Fixed Window		Sliding Log		Sliding Counter
+State			Counter		Every timestamp	Bucket counters
+Accuracy		Low			Very high		Approximate
+Memory		Very low		High			Low/medium
+Boundary burst	Yes			No			Reduced
+Implementation	Simple		More complex	Moderate
+Distributed implementation 	Easy-ish	More expensive	       Moderate
+Good for huge scale			Yes		Potentially expensive        Yes
+Exact rolling-window semantics	No		Yes			         Approximate
 The crucial mental model is:
 Fixed Window
     ↓
@@ -10547,8 +10360,7 @@ and:
 Each pod independently allows:
 100 req/sec
 You could accidentally allow:
-10 × 100
-= 1,000 req/sec
+10 × 100 = 1,000 req/sec
 So distributed rate limiting requires shared state or coordinated partitioning.
 That's why Redis appears so often in real architectures.
 ________________________________________
@@ -10630,7 +10442,7 @@ First ask:
 10.	What is the acceptable false-rejection/false-acceptance behavior? 
 Those questions determine the algorithm.
 
-Lesson 3 — Token Bucket
+Lesson 3 - Token Bucket
 This is the rate-limiting algorithm I want you to understand mathematically, because Token Bucket is one of the most useful models in real production systems.
 The key idea is surprisingly simple:
 A request doesn't consume "permission per second." It consumes a token. Tokens accumulate over time, up to a maximum capacity.
@@ -10653,13 +10465,9 @@ GET /preferences
 Five requests arrive almost simultaneously.
 You don't necessarily want to reject them just because they happened within the same millisecond.
 What you really want is something like:
-Long-term average:
-10 requests/sec
-
-Short burst:
-perhaps 20 requests immediately
-Then the system should return to approximately:
-10 requests/sec
+Long-term average: 10 requests/sec
+Short burst: perhaps 20 requests immediately
+Then the system should return to approximately: 10 requests/sec
 That is exactly what Token Bucket models.
 ________________________________________
 2. The physical analogy
@@ -10737,10 +10545,7 @@ t_last = last time bucket was updated
 Elapsed time:
 Δt = T - t_last
 New token count:
-tokens = min(
-    C,
-    tokens + Δt × r
-)
+tokens = min( C, tokens + Δt × r)
 Then the request costs:
 cost = 1
 If:
@@ -10873,10 +10678,8 @@ Not every request costs the same.
 Suppose:
 GET /health
 cost = 1
-
 GET /profile
 cost = 2
-
 POST /generate-report
 cost = 20
 Now your bucket isn't really limiting:
@@ -10904,10 +10707,8 @@ POST /analytics/report
 Their average resource consumption:
 users:
 1 CPU unit
-
 orders:
 3 CPU units
-
 report:
 20 CPU units
 A simple request-count limiter treats them equally:
@@ -10922,8 +10723,7 @@ This is a much more advanced way of thinking about rate limiting.
 ________________________________________
 14. Fractional refill and time
 In real implementations, don't think:
-every second:
-    add 10 tokens
+every second:  add 10 tokens
 That is a possible implementation, but it's often unnecessary.
 Instead use lazy refill.
 Suppose:
@@ -10936,11 +10736,9 @@ Request arrives at:
 t = 0.7 sec
 Calculate:
 elapsed = 0.7
-refill = 0.7 × 10
-       = 7
+refill = 0.7 × 10  = 7
 Therefore:
-tokens = min(C, 5 + 7)
-       = 12
+tokens = min(C, 5 + 7)  = 12
 Then consume one:
 12 → 11
 This is much more efficient.
@@ -10976,22 +10774,14 @@ class Bucket {
 }
 On request:
 long now = System.nanoTime();
-
 long elapsed = now - bucket.lastRefillNanos;
-
-double refill =
-        elapsed / 1_000_000_000.0 * refillRate;
-
-bucket.tokens =
-        Math.min(capacity, bucket.tokens + refill);
-
+double refill =   elapsed / 1_000_000_000.0 * refillRate;
+bucket.tokens =      Math.min(capacity, bucket.tokens + refill);
 bucket.lastRefillNanos = now;
-
 if (bucket.tokens >= cost) {
     bucket.tokens -= cost;
     return ALLOW;
 }
-
 return REJECT;
 This is conceptual, not production-ready.
 Why?
@@ -11132,11 +10922,9 @@ After that, tokens arrive at:
 If the client continuously consumes at:
 20 requests/sec
 then:
-net depletion = 20 - 10
-              = 10 tokens/sec
+net depletion = 20 – 10 = 10 tokens/sec
 Starting with 100 tokens:
-time to empty = 100 / 10
-              = 10 seconds
+time to empty = 100 / 10     = 10 seconds
 This gives you a useful capacity calculation.
 ________________________________________
 23. Sustainable rate
@@ -11186,8 +10974,7 @@ For example:
 C = 100
 r = 10/sec
 During a 5-second interval, the maximum theoretical amount that can pass, starting with a full bucket, is approximately:
-100 + (10 × 5)
-= 150
+100 + (10 × 5) = 150
 The exact interpretation depends on the initial bucket state and request timing, but the traffic envelope is:
 burst allowance + sustained allowance
 That is much more precise than saying:
@@ -11312,7 +11099,7 @@ A strong answer is:
 That's a much stronger answer than:
 "Token Bucket allows N requests per second."
 
-Lesson 4 — Distributed Rate Limiting with Redis
+Lesson 4 - Distributed Rate Limiting with Redis
 Now we move from algorithm design to distributed-systems design.
 This is where the real engineering begins.
 You already understand Token Bucket:
@@ -11451,7 +11238,6 @@ key
  └── lastRefillTime
 For example:
 rate_limit:user-123
-
 tokens = 37.5
 lastRefill = 1723740000123
 Configuration might be:
@@ -11462,9 +11248,7 @@ currentTime = now
 Calculate:
 elapsed = currentTime - lastRefill
 Then:
-newTokens =
-    min(capacity,
-        tokens + elapsed × refillRate)
+newTokens =     min(capacity,   tokens + elapsed × refillRate)
 Then:
 if newTokens >= requestCost:
     newTokens -= requestCost
@@ -11480,9 +11264,7 @@ ________________________________________
 You might implement this in Java:
 GET tokens
 GET lastRefill
-
 calculate refill
-
 if enough tokens:
     SET tokens
     SET lastRefill
@@ -11565,10 +11347,8 @@ The important property is:
 The script executes atomically within Redis.
 Conceptually:
 -- pseudo-code
-
 read tokens
 read lastRefill
-
 calculate elapsed
 calculate refill
 
@@ -11605,10 +11385,8 @@ Correct.
 Without atomicity:
 A reads 1
 B reads 1
-
 A accepts
 B accepts
-
 tokens = 0
 Incorrect.
 The final value looks reasonable:
@@ -12367,7 +12145,8 @@ The correct senior-level answer isn't simply:
 You should say:
 It depends on the protected resource and availability requirements. We need an explicit failure policy—fail-open, fail-closed, or a local fallback limiter—and should consider the security, overload, and availability consequences.
 That's the level of reasoning I want you to develop.
-Lesson 5 — Production Rate Limiting: Architecture, Fairness & Failure
+
+Lesson 5 - Productiossn Rate Limiting: Architecture, Fairness & Failure
 Now we move from “how does the algorithm work?” to the question that matters in a real production system:
 How do I design a rate limiter that remains useful when traffic, users, regions, dependencies, and failures all behave badly?
 This is the level where rate limiting becomes distributed-systems engineering.
@@ -12438,7 +12217,7 @@ Technically:
 9,900 + 50 + 50 = 10,000
 No global limit was violated.
 But Customer A is effectively monopolizing the system.
-That's the noisy-neighbor problem.
+That's the noisy-neighbour problem.
 So you might define:
 Global:
 10,000/sec
@@ -12537,11 +12316,9 @@ ________________________________________
 7. Rate limiting vs load shedding
 These concepts are related but different.
 Rate limiting
-Controls:
-How much traffic is admitted.
+Controls: How much traffic is admitted.
 Load shedding
-Controls:
-What work do we sacrifice when the system is already overloaded?
+Controls: What work do we sacrifice when the system is already overloaded?
 Imagine:
 CPU = 95%
 DB connections = 100%
@@ -12549,12 +12326,8 @@ queue = full
 Even requests below their nominal rate limit may need to be rejected.
 That's load shedding.
 For example:
-Normal:
-accept everything within rate limits
-
-Overloaded:
-reject low-priority requests
-preserve critical traffic
+Normal: accept everything within rate limits
+Overloaded: reject low-priority requests preserve critical traffic
 ________________________________________
 8. Priority-based load shedding
 Suppose your system has:
@@ -12576,13 +12349,9 @@ ________________________________________
 9. Rate limiting + bulkhead
 You've already learned Bulkhead, so connect the two.
 Suppose:
-Rate:
-1000 requests/sec
-But each request takes:
-5 seconds
-Potential concurrency:
-1000 × 5
-= 5000 concurrent requests
+Rate: 1000 requests/sec
+But each request takes: 5 seconds
+Potential concurrency: 1000 × 5 = 5000 concurrent requests
 That can destroy your thread pool.
 So:
 Rate Limiter
@@ -12867,7 +12636,6 @@ Cons:
 ________________________________________
 Strategy 2 — Regional quota
 Global = 1000
-
 US  = 500
 EU  = 300
 APAC = 200
@@ -13321,7 +13089,7 @@ You've now covered:
 The next thing I recommend is not immediately jumping to another unrelated system-design topic.
 The best next step is to make this practical.
 
-Lesson 6 — Build a Production-Grade Rate Limiter in Java
+Lesson 6 - Build a Production-Grade Rate Limiter in Java
 Now we turn the theory into an implementation.
 We will build this progressively rather than jumping straight into Spring annotations.
 Our target architecture:
@@ -13345,7 +13113,6 @@ ________________________________________
 Before writing Java, define what the limiter actually does.
 A useful abstraction is:
 public interface RateLimiter {
-
     RateLimitResult tryAcquire(
         String key,
         int permits
@@ -13394,10 +13161,8 @@ ________________________________________
 3. Token Bucket state
 Our bucket needs:
 final class BucketState {
-
     double tokens;
     long lastRefillNanos;
-
     BucketState(double tokens, long lastRefillNanos) {
         this.tokens = tokens;
         this.lastRefillNanos = lastRefillNanos;
@@ -13430,12 +13195,9 @@ ________________________________________
 When a request arrives at time now:
 elapsed = now - lastRefill
 Then:
-refilledTokens =
-    elapsed × refillRate
+refilledTokens =   elapsed × refillRate
 And:
-tokens =
-    min(capacity,
-        oldTokens + refilledTokens)
+tokens =    min(capacity,   oldTokens + refilledTokens)
 Then if:
 tokens >= requestedCost
 consume:
@@ -13463,32 +13225,24 @@ every second?
 No.
 When the next request arrives at:
 t = 5 sec
-we calculate:
-0 + (5 × 10)
-= 50
+we calculate: 0 + (5 × 10) = 50
 and continue.
 This is called lazy refill.
 It saves enormous amounts of unnecessary work.
 ________________________________________
 6. Local implementation
 Let's first build a single-JVM implementation.
-public final class InMemoryRateLimiter
-        implements RateLimiter {
-
+public final class InMemoryRateLimiter  implements RateLimiter {
     private final ConcurrentHashMap<String, BucketState> buckets =
             new ConcurrentHashMap<>();
-
     private final RateLimitConfig config;
-
     public InMemoryRateLimiter(RateLimitConfig config) {
         this.config = config;
     }
-
     @Override
     public RateLimitResult tryAcquire(
             String key,
             int permits) {
-
         // implementation
     }
 }
@@ -13519,18 +13273,13 @@ buckets.compute(key, (k, state) -> {
 But there is another challenge:
 We need to return the decision from inside the atomic operation.
 You can use a holder:
-AtomicReference<RateLimitResult> result =
-        new AtomicReference<>();
+AtomicReference<RateLimitResult> result = new AtomicReference<>();
 
 buckets.compute(key, (k, state) -> {
-
     // calculate
-
     result.set(...);
-
     return updatedState;
 });
-
 return result.get();
 This works, but don't rush into clever code.
 For production code, clarity is more important than squeezing everything into one expression.
@@ -13538,13 +13287,10 @@ ________________________________________
 8. A cleaner local implementation
 We can make the bucket itself responsible for its state transition:
 final class TokenBucket {
-
     private final long capacity;
     private final double refillRate;
-
     private double tokens;
     private long lastRefillNanos;
-
     TokenBucket(
             long capacity,
             double refillRate,
@@ -13556,21 +13302,11 @@ final class TokenBucket {
         this.lastRefillNanos = now;
     }
 
-    synchronized RateLimitResult tryAcquire(
-            int permits,
-            long now) {
-
+    synchronized RateLimitResult tryAcquire(  int permits,  long now) {
         refill(now);
-
         if (tokens >= permits) {
-
             tokens -= permits;
-
-            return new RateLimitResult(
-                    true,
-                    (long) tokens,
-                    Duration.ZERO
-            );
+            return new RateLimitResult(true, (long) tokens,  Duration.ZERO  );
         }
 
 Now the critical transition:
@@ -13672,7 +13408,6 @@ For:
 user-123
 we could conceptually store:
 rate_limit:user-123
-
 tokens
 last_refill
 For example:
@@ -13685,9 +13420,7 @@ ________________________________________
 14. Don't do this from Java
 A tempting implementation:
 TokenState state = redis.get(key);
-
 state = refill(state);
-
 if (state.tokens() >= permits) {
     state = consume(state);
     redis.set(key, state);
@@ -13712,25 +13445,15 @@ ________________________________________
 15. Redis Lua is the critical piece
 The entire operation needs to happen atomically.
 Conceptually:
-local state = redis.call("HMGET", KEYS[1],
-                         "tokens",
-                         "lastRefill")
-
+local state = redis.call("HMGET", KEYS[1],  "tokens", "lastRefill")
 local tokens = state[1]
 local lastRefill = state[2]
-
 -- initialize if necessary
-
 -- calculate elapsed time
-
 -- refill
-
 -- check capacity
-
 -- consume if allowed
-
 -- save new state
-
 return result
 The important concept isn't Lua itself.
 The important concept is:
@@ -13740,16 +13463,13 @@ ________________________________________
 I'd separate the Redis implementation:
 public final class RedisRateLimiter
         implements RateLimiter {
-
     private final RedisTemplate<String, Object> redis;
-
     private final RateLimitConfig config;
 
     @Override
     public RateLimitResult tryAcquire(
             String key,
             int permits) {
-
         // execute atomic Redis operation
     }
 }
@@ -13888,9 +13608,7 @@ ________________________________________
 A Spring filter is a natural place for request-level rate limiting.
 Conceptually:
 @Component
-public class RateLimitFilter
-        extends OncePerRequestFilter {
-
+public class RateLimitFilter extends OncePerRequestFilter {
     private final RateLimiter rateLimiter;
 
     @Override
@@ -13899,16 +13617,11 @@ public class RateLimitFilter
             HttpServletResponse response,
             FilterChain filterChain)
             throws ServletException, IOException {
-
         String key = resolveKey(request);
 
-        RateLimitResult result =
-                rateLimiter.tryAcquire(key, 1);
-
+        RateLimitResult result =                rateLimiter.tryAcquire(key, 1);
         if (!result.allowed()) {
-
             response.setStatus(429);
-
             response.setHeader(
                     "Retry-After",
                     String.valueOf(
@@ -13991,8 +13704,7 @@ For local Java bucket calculations, prefer:
 System.nanoTime()
 for measuring elapsed time.
 Why?
-Because:
-System.currentTimeMillis()
+Because: System.currentTimeMillis()
 is wall-clock time and can be adjusted.
 nanoTime() is designed for measuring elapsed durations.
 But remember:
@@ -14259,7 +13971,8 @@ We'll build the code in this order:
 12. Load test
 Don't skip directly to Redis.
 Understanding the local implementation first makes the distributed version much easier to reason about.
-Lesson 7 — Build the Local Token Bucket Correctly in Java
+
+Lesson 7 - Build the Local Token Bucket Correctly in Java
 Today we implement the single-JVM rate limiter first.
 This is important because if you don't understand the concurrency model here, Redis will just hide the same problems behind a network call.
 Our goal:
@@ -14278,7 +13991,6 @@ ________________________________________
 1. Start with the contract
 We'll keep the interface small:
 public interface RateLimiter {
-
     RateLimitResult tryAcquire(String key, int permits);
 }
 Result:
@@ -14287,24 +13999,11 @@ public record RateLimitResult(
         long remainingTokens,
         Duration retryAfter
 ) {
-
     public static RateLimitResult allowed(long remaining) {
-        return new RateLimitResult(
-                true,
-                remaining,
-                Duration.ZERO
-        );
+        return new RateLimitResult(  true, emaining, Duration.ZERO );
     }
-
-    public static RateLimitResult rejected(
-            long remaining,
-            Duration retryAfter) {
-
-        return new RateLimitResult(
-                false,
-                remaining,
-                retryAfter
-        );
+    public static RateLimitResult rejected(long remaining, Duration retryAfter) {
+        return new RateLimitResult(  false,  remaining,  retryAfter  );
     }
 }
 Notice something important:
@@ -14364,32 +14063,23 @@ ________________________________________
 4. The TokenBucket class
 Let's write the actual class.
 public final class TokenBucket {
-
     private final long capacity;
     private final long refillTokensPerSecond;
-
     private long tokens;
     private long lastRefillNanos;
 
-    public TokenBucket(
-            long capacity,
-            long refillTokensPerSecond,
-            long nowNanos) {
+    public TokenBucket(  long capacity,  long refillTokensPerSecond,  long nowNanos) {
 
         if (capacity <= 0) {
-            throw new IllegalArgumentException(
-                    "capacity must be > 0");
+            throw new IllegalArgumentException(   "capacity must be > 0");
         }
 
         if (refillTokensPerSecond <= 0) {
-            throw new IllegalArgumentException(
-                    "refill rate must be > 0");
+            throw new IllegalArgumentException(    "refill rate must be > 0");
         }
 
         this.capacity = capacity;
-        this.refillTokensPerSecond =
-                refillTokensPerSecond;
-
+        this.refillTokensPerSecond =      refillTokensPerSecond;
         this.tokens = capacity;
         this.lastRefillNanos = nowNanos;
     }
@@ -14417,28 +14107,17 @@ ________________________________________
 6. Refill logic
 Conceptually:
 private void refill(long nowNanos) {
-
-    long elapsedNanos =
-            nowNanos - lastRefillNanos;
-
+    long elapsedNanos =            nowNanos - lastRefillNanos;
     if (elapsedNanos <= 0) {
         return;
     }
-
-    long tokensToAdd =
-            elapsedNanos
-            * refillTokensPerSecond
-            / 1_000_000_000L;
+    long tokensToAdd =   elapsedNanos  * refillTokensPerSecond    / 1_000_000_000L;
 
     if (tokensToAdd <= 0) {
         return;
     }
 
-    tokens = Math.min(
-            capacity,
-            tokens + tokensToAdd
-    );
-
+    tokens = Math.min(  capacity,     tokens + tokensToAdd    );
     lastRefillNanos = nowNanos;
 }
 Looks reasonable.
@@ -14451,9 +14130,7 @@ That's:
 1 token / 100ms
 Now request arrives after:
 50ms
-Calculation:
-50ms × 10/sec
-= 0.5 token
+Calculation:  50ms × 10/sec = 0.5 token
 Integer arithmetic gives:
 0 tokens
 If we simply return, we lose that 50ms.
@@ -14468,34 +14145,23 @@ ________________________________________
 We can advance lastRefillNanos only by the time actually converted into whole tokens.
 private void refill(long nowNanos) {
 
-    long elapsedNanos =
-            nowNanos - lastRefillNanos;
-
+    long elapsedNanos =    nowNanos - lastRefillNanos;
     if (elapsedNanos <= 0) {
         return;
     }
 
-    long tokensToAdd =
-            elapsedNanos
-                    * refillTokensPerSecond
-                    / NANOS_PER_SECOND;
+    long tokensToAdd =   elapsedNanos    * refillTokensPerSecond  /NANOS_PER_SECOND;
 
     if (tokensToAdd <= 0) {
         return;
     }
-
-    tokens = Math.min(
-            capacity,
-            tokens + tokensToAdd
+    tokens = Math.min(     capacity,   tokens + tokensToAdd
     );
 
-    long consumedNanosForRefill =
-            tokensToAdd
-                    * NANOS_PER_SECOND
+    long consumedNanosForRefill =   tokensToAdd  * NANOS_PER_SECOND
                     / refillTokensPerSecond;
 
-    lastRefillNanos +=
-            consumedNanosForRefill;
+    lastRefillNanos +=    consumedNanosForRefill;
 }
 Now the fractional elapsed time remains available for the next call.
 This is a small detail, but it is exactly the kind of detail that separates:
@@ -14553,24 +14219,13 @@ public synchronized RateLimitResult tryAcquire(
     }
 
     refill(nowNanos);
-
     if (tokens >= permits) {
-
-        tokens -= permits;
-
+        tokens -= permits; 
         return RateLimitResult.allowed(tokens);
     }
-
-    long missingTokens =
-            permits - tokens;
-
-    long retryAfterNanos =
-            calculateRetryAfter(missingTokens);
-
-    return RateLimitResult.rejected(
-            tokens,
-            Duration.ofNanos(retryAfterNanos)
-    );
+    long missingTokens =            permits - tokens;
+    long retryAfterNanos =            calculateRetryAfter(missingTokens);
+    return RateLimitResult.rejected( tokens, Duration.ofNanos(retryAfterNanos)    );
 }
 The key ordering is:
 refill
@@ -14602,7 +14257,6 @@ retryAfter = 500ms
 Conceptually:
 private long calculateRetryAfter(
         long missingTokens) {
-
     return Math.ceil(
             (double) missingTokens
             * NANOS_PER_SECOND
@@ -15171,7 +14825,4 @@ And we'll answer the important questions:
 7.	How two pods simultaneously competing for the last token behave. 
 8.	What happens when Redis times out. 
 9.	How to design fail-open vs fail-closed. 
-10.	How Redis Cluster changes the design. 
-
-
-
+10.	How Redis Cluster changes the design.
