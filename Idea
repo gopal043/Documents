@@ -1,913 +1,902 @@
+You are a Principal Software Architect, Principal Java Engineer, Principal Product Architect, Principal Security Architect, SaaS Founder, Compliance Expert (SOC2, HIPAA, ISO27001, GDPR), Database Architect, DevOps Architect, and Technical Writer.
 
-GK Security Platform
-Production-ready security starter for Spring Boot applications.
+Your task is to design and generate a production-grade product called:
 
-Features
+AUDITLEDGER
 
-✅ JWT Authentication
+====================================================================
+PRODUCT VISION
+====================================================================
 
-✅ OAuth2 / OpenID Connect
+AuditLedger is NOT an authentication platform.
 
-✅ Azure AD Integration
+AuditLedger does NOT compete with:
 
-✅ Keycloak Integration
+- Keycloak
+- Auth0
+- Okta
+- Azure AD
+- AWS Cognito
 
-✅ AWS Cognito Integration
+Authentication and Authorization are external concerns.
 
-✅ Authentication Audit Logs
+AuditLedger integrates with them if available.
 
-✅ OpenTelemetry Tracing
+AuditLedger's purpose is:
 
-✅ Micrometer Metrics
+"Application-Aware Audit Logging and Compliance Platform"
 
-✅ Grafana Dashboards
+It must answer:
 
-✅ Multi Factor Authentication
+- Who changed data?
+- What changed?
+- When was it changed?
+- From where was it changed?
+- What was the previous value?
+- What is the current value?
+- What exactly changed?
 
-✅ Fine-Grained Permissions
+It should generate:
 
-✅ Zero Boilerplate
+- Audit Trails
+- Compliance Evidence
+- SOC2 Reports
+- HIPAA Reports
+- ISO27001 Reports (future)
+- GDPR Reports (future)
+- Auditor-Friendly Dashboards
 
-Quick Start
+====================================================================
+BUSINESS GOAL
+====================================================================
 
-Add dependency
+The goal is to become the easiest way for software companies to add:
 
-com.gk gk-security-starter
-Configure
+- Change Tracking
+- Audit History
+- Compliance Evidence
 
-gk: security: provider: jwt
+into their applications.
 
-Run
+The product should reduce weeks of engineering work into minutes.
 
-mvn spring-boot:run
+Target customers:
 
-Done.
+- SaaS Companies
+- Startups pursuing SOC2
+- Healthcare Applications
+- FinTech Applications
+- Enterprise Applications
+- Government Contractors
+- HR Platforms
+- Internal Enterprise Systems
 
+====================================================================
+PRODUCT STRATEGY
+====================================================================
 
-Architecture
+Do NOT start with SaaS.
 
-gk-security-platform
-│
-├── gk-auth-core
-├── gk-auth-jwt
-├── gk-auth-oauth2
-│
-├── gk-provider-keycloak
-├── gk-provider-azure
-├── gk-provider-cognito
-├── gk-provider-okta
-├── gk-provider-auth0
-│
-├── gk-rbac
-|---gk-abac
-├── gk-mfa
-│
-├── gk-audit
-├── gk-observability
-│
-├── gk-admin-api
-├── gk-admin-ui
-│
-└── gk-spring-boot-starter
+Build Product First.
 
+Build Cloud Later.
 
-Internal Architecture
+Three Editions:
 
-                      ┌─────────────┐
-                      │ React UI    │
-                      └──────┬──────┘
-                             │
-                             ▼
+COMMUNITY EDITION
 
-                 ┌───────────────────────┐
-                 │ Security Filter Chain │
-                 └───────────┬───────────┘
-                             │
-                             ▼
+Free
 
-                 ┌───────────────────────┐
-                 │ Authentication Layer  │
-                 └───────────┬───────────┘
+Includes:
 
-                             │
-    ┌────────────┬───────────┼──────────┬───────────────┐
-    ▼            ▼           ▼          ▼               ▼
+- SDK
+- Local Storage
+- Dashboard
+- Search
+- Diff Viewer
+- Export CSV
+- Export Excel
 
-  JWT       Keycloak      Azure     Cognito       Custom Provider
+No cloud.
 
-                             │
-                             ▼
+PROFESSIONAL EDITION
 
-                 ┌───────────────────────┐
-                 │ Authorization Layer   │
-                 │ RBAC / Permissions    │
-                 └───────────┬───────────┘
-                             │
-                             ▼
+Includes:
 
-                 ┌───────────────────────┐
-                 │ Method Security       │
-                 │ @PreAuthorize         │
-                 └───────────┬───────────┘
-                             │
-                             ▼
+- Cloud Sync
+- Central Dashboard
+- Long Retention
+- Multi Application Support
+- Compliance Reports
+- Auditor Portal
 
-                 ┌───────────────────────┐
-                 │ Audit Logging         │
-                 └───────────┬───────────┘
-                             │
-                             ▼
+ENTERPRISE EDITION
 
-                 ┌───────────────────────┐
-                 │ Metrics + Tracing     │
-                 └───────────────────────┘
+Includes:
 
+- SSO
+- SCIM
+- Azure AD
+- Okta
+- Self Hosted Deployment
+- Tamper Verification
+- Advanced Reports
 
-Database Design
+====================================================================
+CORE PRINCIPLES
+====================================================================
 
-USERS
+1. SDK MUST NOT slow customer applications.
 
-id
-username
-email
-password
-status
+2. SDK MUST NOT consume excessive memory.
 
-----------------
+3. SDK MUST NEVER block business transactions.
 
-ROLES
+4. SDK MUST work automatically after dependency installation.
 
-id
-name
+5. SDK MUST require almost zero code changes.
 
-----------------
+6. Customer business data must remain separate from audit data.
 
-PERMISSIONS
+7. Storage must be pluggable.
 
-id
-name
+8. Architecture must support future cloud migration.
 
-----------------
+9. Database-specific logic must be minimized.
 
-USER_ROLES
+10. Framework abstraction must be prioritized over database abstraction.
 
-user_id
-role_id
+====================================================================
+CUSTOMER OWNERSHIP MODEL
+====================================================================
 
-----------------
+Customer owns:
 
-ROLE_PERMISSIONS
+- Business Application
+- Users
+- Business Database
+- Business Data
+- Authentication Provider
+- Authorization Provider
 
-role_id
-permission_id
+AuditLedger owns:
 
-----------------
+- Audit Data
+- Compliance Data
+- Reports
+- Exports
+- Audit Dashboards
 
-REFRESH_TOKENS
+====================================================================
+HIGH LEVEL ARCHITECTURE
+====================================================================
 
-id
-token
-expires_at
+CUSTOMER APPLICATION
 
-----------------
+Spring Boot
+Hibernate/JPA
+PostgreSQL/MySQL/Oracle/SQLServer
 
-AUDIT_LOGS
+               │
 
-id
-action
-user
-ip
-timestamp
+               ▼
 
-----------------
+         AuditLedger SDK
 
-MFA_SETTINGS
+               │
 
-user_id
-secret
-enabled
+      ┌────────┼────────┐
 
-Example Usage
+      ▼        ▼        ▼
 
-<dependency>
-   <groupId>com.gk</groupId>
-   <artifactId>gk-security-starter</artifactId>
-   <version>1.0.0</version>
-</dependency>
+   Context   Diff      Queue
+   Engine    Engine    Engine
 
-gk:
-  security:
-    provider: azure
+               │
 
-  mfa:
-    enabled: true
+               ▼
 
-  audit:
-    enabled: true
+       Storage Provider
 
+               │
 
-Roadmap
+     Local Storage (V1)
+
+               │
+
+               ▼
+
+          Dashboard
+
+Future:
+
+               │
+
+               ▼
+
+         Cloud Sync
+
+               │
+
+               ▼
+
+     AuditLedger Cloud
+
+====================================================================
+STORAGE STRATEGY
+====================================================================
+
+DO NOT store audit events inside the customer's business schema.
+
+BAD:
+
+business_db.audit_logs
+
+GOOD:
+
+Dedicated Audit Database
+
+examples:
+
+business_db
+
+audit_db
+
+Separate schemas or separate databases.
+
+====================================================================
+STORAGE PROVIDER DESIGN
+====================================================================
+
+Create abstraction:
+
+AuditStorageProvider
+
+Methods:
+
+- save()
+- batchSave()
+- search()
+- export()
+
+Implementations:
+
 V1
 
-JWT Authentication
-RBAC
-Refresh Tokens
-Audit Log
-MFA(TOTP)
-OpenTelemetry
-Micrometer
+- LocalPostgresProvider
+- LocalMySQLProvider
+- FileProvider
 
-V2
-Azure AD
-Keycloak
-Google Login
-GitHub Login
+Future
 
-V3
-AWS Cognito
-Auth0
-Okta
+- CloudProvider
+- S3Provider
+- ClickHouseProvider
 
-V4
-Multi Tenancy
-LDAP
-SSO
-SAML
-
-# GK Security Platform
-
-Production-ready security starter
-for Spring Boot applications.
-
-Features
-
-✅ JWT Authentication
-
-✅ OAuth2 / OpenID Connect
-
-✅ Azure AD Integration
-
-✅ Keycloak Integration
-
-✅ AWS Cognito Integration
-
-✅ Authentication Audit Logs
-
-✅ OpenTelemetry Tracing
-
-✅ Micrometer Metrics
-
-✅ Grafana Dashboards
-
-✅ Multi Factor Authentication
-
-✅ Fine-Grained Permissions
-
-✅ Zero Boilerplate
-
-Quick Start
-
-Add dependency
-
-<dependency>
-    <groupId>com.gk</groupId>
-    <artifactId>gk-security-starter</artifactId>
-</dependency>
-
-Configure
-
-gk:
-  security:
-    provider: jwt
-
-Run
-
-mvn spring-boot:run
-
-Done.
-
-
-
-
-
-
-The first release would provide:
-✅ JWT
-✅ Refresh Tokens
-✅ RBAC
-✅ Permissions
-✅ Audit Logs
-✅ Correlation IDs
-✅ OpenTelemetry
-✅ Micrometer
-✅ Prometheus Metrics
-✅ Grafana Dashboards
-✅ Google/Microsoft Authenticator MFA
-✅ Spring Security Auto Configuration
-
-Then Version 2:
-✅ Azure AD
-✅ Keycloak
-✅ Google OAuth
-✅ GitHub OAuth
-
-Then Version 3:
-
-✅ Cognito
-✅ Auth0
-✅ Okta
-✅ LDAP
-✅ SAML
-
-
-
-
-Act as a Principal Security Architect, Principal Java Architect, Spring Security Expert, IAM Architect, and Product Architect.
-
-Your goal is to design and implement a production-grade commercial security platform named:
-
-GK Security Platform
-
-This is NOT a sample application.
-
-This is NOT a starter project.
-
-This is NOT a demo.
-
-This is a reusable enterprise security framework that will be published as multiple Maven artifacts and used by external Spring Boot applications.
-
-=====================================================
-PRODUCT VISION
-=====================================================
-
-Mission:
-
-Enable Spring Boot teams to achieve production-grade authentication, authorization, audit logging, policy enforcement, observability, MFA, and identity-provider integration with minimal configuration.
-
-Principles:
-
-- Secure by Default
-- Deny by Default
-- Observable by Default
-- Framework Independent
-- Cloud Agnostic
-- Enterprise Ready
-- Extensible by Design
-- Backward Compatible
-
-=====================================================
-ARCHITECTURE PRINCIPLES
-=====================================================
-
-Follow:
-
-- Hexagonal Architecture
-- Ports & Adapters
-- DDD where useful
-- Clean Architecture
-- Open/Closed Principle
-- SOLID Principles
-
-Critical Rule:
-
-Core module MUST NOT depend on:
-
-- Spring Security
-- Spring Data JPA
-- Hibernate
-- JWT libraries
-- Azure SDK
-- Keycloak SDK
-- AWS SDK
-- Cognito SDK
-
-Core must contain only:
-
-- Domain Models
-- Contracts
-- Interfaces
-- Contexts
-- Events
-- Exceptions
-- Policy Engine
-
-=====================================================
-MODULES
-=====================================================
-
-Generate COMPLETE implementation for:
-
-gk-security-parent
-
-gk-security-core
-
-gk-security-persistence-api
-
-gk-security-persistence-jpa
-
-gk-security-jwt
-
-gk-security-rbac
-
-gk-security-abac
-
-gk-security-audit
-
-gk-security-observability
-
-gk-security-mfa
-
-gk-security-starter
-
-sample-application
-
-=====================================================
-CORE REQUIREMENTS
-=====================================================
-
-User must support dynamic attributes.
+Storage type must be configurable.
 
 Example:
 
-public class User {
+auditledger.storage.type=local
 
-    String id;
+or
 
-    String username;
+auditledger.storage.type=cloud
 
-    Set<String> roles;
+No code changes.
 
-    Set<String> permissions;
+====================================================================
+SUPPORTED FRAMEWORKS
+====================================================================
 
-    Map<String,Object> attributes;
-}
-
-Resource must support:
-
-public class Resource {
-
-    String id;
-
-    String type;
-
-    Map<String,Object> attributes;
-}
-
-No hardcoded business fields.
-
-Support customer-defined attributes.
-
-=====================================================
-AUTHENTICATION REQUIREMENTS
-=====================================================
-
-Implement:
-
-AuthenticationProvider
-
-AuthenticationManager
-
-IdentityProvider
-
-TokenProvider
-
-SecurityContext
+VERSION 1
 
 Support:
 
-- Username Password Authentication
-- JWT Authentication
-- Refresh Tokens
-- Token Rotation
-- Token Revocation
-- Account Locking
-- Password Expiry
-- MFA Integration
+- Spring Boot
+- Hibernate
+- JPA
 
-=====================================================
-AUTHORIZATION REQUIREMENTS
-=====================================================
+By supporting Hibernate/JPA it should automatically support:
 
-Implement:
+- PostgreSQL
+- MySQL
+- MariaDB
+- SQL Server
+- Oracle
 
-PolicyEngine
+No database-specific coding.
 
-Policy
-
-PolicyContext
-
-PolicyDecision
-
-PolicyRepository
-
-PolicyStore
+VERSION 2
 
 Support:
 
-RBAC
+- MongoDB
+- MyBatis
+- JdbcTemplate
 
-ABAC
-
-Evaluation Order:
-
-1. RBAC
-2. ABAC
-3. Custom Policies
-
-Rule:
-
-DENY overrides PERMIT
-
-No match:
-DENY
-
-Failure:
-DENY
-
-=====================================================
-ABAC REQUIREMENTS
-=====================================================
-
-Enterprise-grade ABAC.
-
-Policy examples:
-
-user.department ==
-resource.department
-
-user.country ==
-resource.country
-
-resource.owner ==
-user.username
+VERSION 3
 
 Support:
 
-Subject Attributes
+- NodeJS
+- NestJS
+- TypeORM
+- Prisma
 
-Resource Attributes
-
-Environment Attributes
-
-Request Attributes
-
-Time-Based Rules
-
-=====================================================
-OBSERVABILITY REQUIREMENTS
-=====================================================
-
-Implement:
-
-Correlation IDs
-
-Trace IDs
-
-Span IDs
-
-Micrometer
-
-OpenTelemetry
-
-Prometheus
-
-Grafana
-
-Requirements:
-
-Every request must have:
-
-Correlation ID
-
-Every authentication event must produce metrics.
-
-Every authorization decision must produce metrics.
-
-=====================================================
-AUDIT REQUIREMENTS
-=====================================================
-
-Audit log everything.
-
-Examples:
-
-LOGIN_SUCCESS
-
-LOGIN_FAILURE
-
-PASSWORD_CHANGED
-
-ROLE_ASSIGNED
-
-POLICY_DENIED
-
-POLICY_GRANTED
-
-MFA_ENABLED
-
-TOKEN_REVOKED
+VERSION 4
 
 Support:
 
-Database Audit
+- CDC
+- Debezium
 
-Kafka Audit
+====================================================================
+SDK ARCHITECTURE
+====================================================================
 
-Custom Audit Publisher
+Modules:
 
-Audit schema must include:
+auditledger-parent
 
-Correlation ID
+auditledger-core
 
-Trace ID
+auditledger-context
 
-Timestamp
+auditledger-diff
 
-Attributes
+auditledger-storage
 
-=====================================================
-MFA REQUIREMENTS
-=====================================================
+auditledger-sdk
 
-Implement:
+auditledger-dashboard-api
 
-Google Authenticator
+auditledger-dashboard-ui
 
-Microsoft Authenticator
+auditledger-reporting
 
-TOTP
+auditledger-compliance
 
-Backup Codes
+auditledger-cloud
 
-SMS Provider SPI
+auditledger-docs
 
-Email Provider SPI
+====================================================================
+SDK FEATURES
+====================================================================
 
-Do not hardcode providers.
+CONTEXT ENGINE
 
-=====================================================
-PERSISTENCE REQUIREMENTS
-=====================================================
+Capture:
 
-Do NOT force customer schema.
+- User ID
+- Username
+- Email
+- Roles
+- Tenant ID
+- IP Address
+- User Agent
+- Session ID
+- Correlation ID
+- Request ID
 
-Support two modes:
+Sources:
 
-Mode 1:
+- Spring Security
+- JWT Claims
+- HTTP Request
 
-Internal storage
+====================================================================
+ENTITY CHANGE TRACKING
+====================================================================
 
-Framework-managed tables.
+Capture automatically:
 
-Mode 2:
+INSERT
 
-External storage
+UPDATE
 
-Customer provides:
+DELETE
 
-UserStore
+Through:
 
-RoleStore
+Hibernate Event Listeners
 
-PermissionStore
+JPA Entity Listeners
 
-PolicyStore
+Customer should not write custom code.
 
-Framework works with custom entities.
-
-=====================================================
-JWT REQUIREMENTS
-=====================================================
-
-Implement:
-
-Access Tokens
-
-Refresh Tokens
-
-Claims
-
-Token Validation
-
-Token Rotation
-
-Token Blacklist
-
-Clock Skew Handling
-
-Graceful Expiration
-
-Custom Claims
-
-=====================================================
-SECURITY REQUIREMENTS
-=====================================================
-
-Implement protections for:
-
-CSRF
-
-Session Hijacking
-
-Token Leakage
-
-Brute Force Attacks
-
-Rate Limiting
-
-Account Locking
-
-Password Policies
-
-Security Headers
-
-CSP
-
-=====================================================
-DATABASE
-=====================================================
-
-Use:
-
-PostgreSQL
-
-Flyway
-
-Optimistic Locking
-
-Indexes
-
-JSONB support
-
-Soft Deletes
-
-Create migrations.
-
-Do not use ddl-auto.
-
-=====================================================
-SPRING BOOT STARTER
-=====================================================
-
-Goal:
-
-User should only add:
-
-<dependency>
-   <groupId>com.gk</groupId>
-   <artifactId>gk-security-starter</artifactId>
-</dependency>
-
-and:
-
-gk:
-  security:
-     enabled: true
-
-Everything auto-configures.
+====================================================================
+SNAPSHOT ENGINE
+====================================================================
 
 Generate:
 
-@Configuration
+Before State
 
-@AutoConfiguration
+After State
 
-Conditional Beans
+As JSON
 
-Properties
+Example:
 
-Actuator Endpoints
+Before:
 
-=====================================================
-PROVIDER ARCHITECTURE
-=====================================================
+{
+  "status":"PENDING"
+}
 
-Design future-ready support for:
+After:
 
-Azure AD
+{
+  "status":"APPROVED"
+}
 
-Entra ID
+====================================================================
+DIFF ENGINE
+====================================================================
 
-Keycloak
+Generate:
 
-AWS Cognito
+{
+  "status": {
+    "old":"PENDING",
+    "new":"APPROVED"
+  }
+}
 
-Auth0
+Support:
 
-Okta
+- Nested Objects
+- Collections
+- Arrays
+- Maps
 
-Google
+Diff Engine should be generic.
 
-GitHub
+====================================================================
+MEMORY MANAGEMENT REQUIREMENTS
+====================================================================
 
-Do NOT implement yet.
+Very Important.
 
-Create contracts and extension points.
+SDK must have near zero application impact.
 
-=====================================================
-DELIVERABLE FORMAT
-=====================================================
+Requirements:
 
-Generate EVERYTHING.
+- Bounded Queue
+- No Unbounded Collections
+- No Memory Leaks
+- No Massive Buffers
+- No Blocking Calls
 
-For every module provide:
+Use:
 
-1. Folder structure
+LinkedBlockingQueue
 
-2. pom.xml
+Configurable Capacity
 
-3. Complete source code
+Queue Full Strategy:
 
-4. Complete entities
+- Drop Oldest
+- Log Warning
+- Metrics
 
-5. Interfaces
+DO NOT crash customer applications.
 
-6. Implementations
+====================================================================
+EVENT PROCESSING
+====================================================================
 
-7. Configuration
+Business Transaction
 
-8. Auto-configurations
+       ▼
 
-9. Flyway migrations
+Persist Entity
 
-10. Tests
+       ▼
 
-11. README
+Commit
 
-12. Architecture diagrams
+       ▼
 
-13. Sequence diagrams
+Generate Audit Event
 
-14. ER diagrams
+       ▼
 
-15. Examples
+Push to Queue
 
-Output file-by-file.
+       ▼
 
-Never use placeholders.
+Background Worker
 
-Never write:
-"implement later"
+       ▼
 
-Never write:
-"TODO"
+Storage Provider
 
-Generate production-ready code.
+Never block customer requests.
 
-Assume Java 21.
+====================================================================
+AUDIT EVENT MODEL
+====================================================================
 
-Assume Spring Boot 3.x.
+AuditEvent
 
-Assume Maven.
+Fields:
 
-Assume PostgreSQL.
+eventId
 
-Assume enterprise-grade coding standards.
+tenantId
 
+userId
 
+username
 
+email
 
-Prerequisites for You
+roles
 
-Since you're already a Java Full Stack Developer, learn these deeply:
+ipAddress
 
-Spring Security:
-Authentication Manager
-Security Filter Chain
-OAuth2
-JWT
-Method Security
-Custom Providers
+sessionId
 
-OAuth2 & OIDC:
-Authorization Code Flow
-Client Credentials
-PKCE
-Refresh Token
-ID Token
-Access Token
-Claims
+correlationId
 
-Identity Providers:
-Keycloak
-Azure AD / Entra ID
-AWS Cognito
-Auth0
-Okta
+requestId
 
-Security:
-OWASP Top 10
-CSRF
-XSS
-SQL Injection
-Session Hijacking
-Token Leakage
+entityName
 
-Observability:
-OpenTelemetry
-Micrometer
-Prometheus
-Grafana
+entityId
 
+entityVersion
 
+operationType
 
+beforeJson
+
+afterJson
+
+diffJson
+
+timestamp
+
+applicationName
+
+environment
+
+====================================================================
+DATABASE DESIGN
+====================================================================
+
+audit_events
+
+audit_entities
+
+audit_users
+
+audit_exports
+
+audit_reports
+
+audit_metadata
+
+Indexes:
+
+tenant_id
+
+timestamp
+
+user_id
+
+entity_name
+
+entity_id
+
+operation_type
+
+Design for high-volume searches.
+
+====================================================================
+DASHBOARD
+====================================================================
+
+Technology:
+
+React
+TypeScript
+Material UI
+
+====================================================================
+SCREEN 1
+====================================================================
+
+Activity Timeline
+
+Examples:
+
+John Updated Customer 100
+
+John Deleted Order 200
+
+Krishna Approved Invoice 10
+
+====================================================================
+SCREEN 2
+====================================================================
+
+Entity History
+
+Customer 100
+
+Created
+
+Updated
+
+Updated
+
+Deleted
+
+====================================================================
+SCREEN 3
+====================================================================
+
+Git Style Diff Viewer
+
+Show:
+
+- status=PENDING
+
++ status=APPROVED
+
+- amount=1000
+
++ amount=1200
+
+Highly readable.
+
+====================================================================
+SCREEN 4
+====================================================================
+
+Investigation View
+
+Search Filters:
+
+- User
+- Entity
+- Date Range
+- Tenant
+- Operation
+- IP Address
+
+====================================================================
+SCREEN 5
+====================================================================
+
+Advanced Search
+
+Search all audit records by:
+
+- Entity Name
+- Entity ID
+- User
+- Timestamp
+- Text Search
+
+====================================================================
+EXPORT ENGINE
+====================================================================
+
+Support:
+
+CSV
+
+Excel
+
+PDF
+
+JSON
+
+Export filtered audit records.
+
+====================================================================
+COMPLIANCE ENGINE
+====================================================================
+
+Design Strategy Pattern.
+
+Create:
+
+ComplianceReportGenerator
+
+Implementations:
+
+SOC2Generator
+
+HIPAAGenerator
+
+ISO27001Generator
+
+GDPRGenerator
+
+Future-proof architecture.
+
+====================================================================
+SOC2 REPORTS
+====================================================================
+
+Generate:
+
+- Change Management Report
+- User Activity Report
+- Deleted Records Report
+- Administrative Actions Report
+- Privileged User Activity Report
+- Entity Modification Report
+
+====================================================================
+HIPAA REPORTS
+====================================================================
+
+Generate:
+
+- PHI Modification Report
+- Patient Data Change Report
+- Sensitive Data Activity Report
+- User Activity Summary
+- Administrative Access Report
+
+====================================================================
+TAMPER EVIDENCE
+====================================================================
+
+Future Enterprise Feature.
+
+Store:
+
+previous_hash
+
+current_hash
+
+Formula:
+
+SHA256(
+previous_hash
++
+event_json
+)
+
+Enable audit verification.
+
+====================================================================
+SECURITY REQUIREMENTS
+====================================================================
+
+Application Security Only.
+
+Authentication is external.
+
+Support:
+
+- API Keys
+- JWT Validation
+- HTTPS
+- Encryption At Rest
+- Encryption In Transit
+- Tenant Isolation
+- Audit Logging Of AuditLedger Actions
+
+====================================================================
+MULTI TENANCY
+====================================================================
+
+Every table contains:
+
+tenant_id
+
+Every query filtered by:
+
+tenant_id
+
+No Exceptions.
+
+====================================================================
+NON FUNCTIONAL REQUIREMENTS
+====================================================================
+
+Performance
+
+- High Throughput
+- Low Memory Usage
+- Low CPU Usage
+
+Scalability
+
+- Millions Of Audit Events
+
+Reliability
+
+- Retry Mechanism
+- Circuit Breakers
+- Graceful Shutdown
+
+Observability
+
+- Metrics
+- Health Checks
+- Structured Logs
+
+Maintainability
+
+- Clean Architecture
+- Hexagonal Architecture
+- SOLID Principles
+- DDD Where Appropriate
+
+====================================================================
+TECH STACK
+====================================================================
+
+Backend
+
+- Java 21
+- Spring Boot 3
+- Hibernate 6
+- JPA
+- PostgreSQL
+- Flyway
+- MapStruct
+- Lombok
+
+Frontend
+
+- React
+- TypeScript
+- Material UI
+- TanStack Query
+
+Infrastructure
+
+- Docker
+- Docker Compose
+- Nginx
+- GitHub Actions
+
+Future
+
+- ClickHouse
+- OpenSearch
+- Kafka
+
+Only after adoption.
+
+====================================================================
+DELIVERABLES EXPECTED FROM AI
+====================================================================
+
+Generate:
+
+1. Complete System Architecture
+2. Module Architecture
+3. Package Structure
+4. Class Diagrams
+5. Database Design
+6. API Design
+7. SDK Design
+8. Dashboard Design
+9. Roadmap
+10. Development Plan
+11. Coding Standards
+12. Sequence Diagrams
+13. Deployment Architecture
+14. Docker Setup
+15. CI/CD Design
+16. Future Cloud Architecture
+17. Detailed Source Code For Every Module
+18. Unit Test Strategy
+19. Integration Test Strategy
+20. Complete Documentation
+
+Do not simplify.
+
+Design this as a production-grade enterprise product suitable for thousands of customers and millions of audit events while remaining lightweight, modular, extensible, and easy to integrate.
