@@ -1,0 +1,1062 @@
+Complete Networking Roadmap For Java Full Stack Engineers
+Phase 1: Networking Fundamentals
+1. What is a Network?
+•	LAN
+•	WAN
+•	MAN
+•	PAN
+•	Internet
+•	Intranet
+•	Extranet
+Understand:  Client → Router → ISP → Internet → Server
+________________________________________
+2. OSI Model
+Very important.
+Layer	Protocols
+Application	HTTP, SMTP
+Presentation	SSL/TLS
+Session	RPC, NetBIOS
+Transport	TCP, UDP
+Network	IP
+Data Link	Ethernet
+Physical	Cable/Fiber
+For interviews:
+Encapsulation and Decapsulation
+Understand packet flow through every layer.
+________________________________________
+3. TCP/IP Model
+Real-world model.
+Application
+Transport
+Internet
+Network Access
+Know differences from OSI.
+________________________________________
+Phase 2: IP Addressing
+IPv4
+Example: 192.168.1.10
+Understand:
+•	Network ID
+•	Host ID
+________________________________________
+IPv6
+Example: 2001:db8::1
+Growing rapidly because IPv4 is exhausted.
+________________________________________
+Public vs Private IP
+Private ranges:
+10.0.0.0/8
+172.16.0.0 - 172.31.255.255
+192.168.0.0/16
+Used heavily in corporate networks and Kubernetes.
+________________________________________
+Subnetting
+Very important.
+Example: 192.168.1.0/24
+Learn:
+•	CIDR notation
+•	Network address
+•	Broadcast address
+•	Gateway
+________________________________________
+Phase 3: MAC Address and Ethernet
+Understand:
+MAC = Layer 2
+IP = Layer 3
+Example: AA:BB:CC:DD:EE:FF
+Learn:
+•	ARP
+•	Ethernet Frames
+•	Broadcast
+•	Unicast
+•	Multicast
+________________________________________
+Phase 4: Core Protocols
+ARP
+Resolve IP → MAC
+Who has 192.168.1.5?
+________________________________________
+ICMP
+Used by:
+Shell
+ping
+traceroute
+________________________________________
+DHCP
+Automatically assigns:
+•	IP
+•	Gateway
+•	DNS
+Without DHCP: IP must be manually configured
+________________________________________
+DNS
+Most important for developers.
+google.com
+↓
+142.250.xx.xx
+Know:
+•	A Record
+•	AAAA Record
+•	CNAME
+•	MX
+•	TXT
+•	NS
+________________________________________
+Phase 5: Transport Layer
+TCP
+Connection-oriented.
+3-way handshake:
+
+SYN
+SYN-ACK
+ACK
+Java APIs mostly use TCP.
+________________________________________
+UDP
+Connectionless
+Examples:
+•	DNS
+•	VoIP
+•	Video Streaming
+•	Gaming
+________________________________________
+Ports
+Very important.
+Common ports:
+80 HTTP 
+443 HTTPS
+22 SSH
+25 SMTP
+53 DNS
+3306 MySQL
+5432 PostgreSQL
+1433 SQL Server
+6379 Redis
+9092 Kafka
+________________________________________
+Phase 6: Web Networking
+Most important for Java developers.
+HTTP
+Methods:
+GET
+POST
+PUT
+PATCH
+DELETE
+OPTIONS
+HEAD
+________________________________________
+HTTPS
+HTTP + TLS
+Learn:
+•	Certificates
+•	Public Key
+•	Private Key
+•	CA
+•	Handshake
+________________________________________
+HTTP Versions
+HTTP/1.1
+HTTP/2
+HTTP/3
+HTTP/3 uses QUIC over UDP.
+________________________________________
+Phase 7: Load Balancing
+Very important.
+Tools:
+•	NGINX
+•	HAProxy
+•	AWS ELB
+•	F5
+Algorithms:
+•	Round Robin
+•	Least Connections
+•	Weighted Routing
+Example:
+User
+↓
+Load Balancer
+↓
+Server1
+Server2
+Server3
+________________________________________
+Phase 8: Reverse Proxy
+Very important for Spring Boot.
+Examples:
+NGINX
+Apache
+Traefik
+Features:
+•	SSL termination
+•	Caching
+•	Compression
+•	Security
+________________________________________
+Phase 9: Security Networking
+Considering you're already working on Keycloak, DPDPA, RBI security requirements, focus deeply here.
+TLS/SSL
+Understand:
+•	Handshake
+•	Certificates
+•	PKI
+•	Mutual TLS (mTLS)
+________________________________________
+Firewall
+Types:
+•	Packet Filtering
+•	Stateful
+•	Next Generation Firewall
+________________________________________
+VPN
+Protocols:
+•	IPSec
+•	OpenVPN
+•	WireGuard
+________________________________________
+NAT
+Very important.
+Example:
+Private IP
+↓
+Public IP
+Home routers do this.
+________________________________________
+DMZ
+Used in banking and RBI architectures.
+Example:
+Internet
+↓
+DMZ
+↓
+Application
+↓
+Database
+________________________________________
+Phase 10: Cloud Networking
+Must know in 2026.
+AWS
+•	VPC
+•	Subnet
+•	Route Table
+•	Security Groups
+•	NAT Gateway
+•	Transit Gateway
+•	Internet Gateway
+________________________________________
+Azure
+•	Virtual Network
+•	NSG
+•	Azure Firewall
+________________________________________
+GCP
+•	VPC
+•	Firewall Rules
+•	Cloud Router
+________________________________________
+Phase 11: Container Networking
+Critical today.
+Docker Networking
+Types:
+Bridge
+Host
+Overlay
+MacVLAN
+________________________________________
+Kubernetes Networking
+Learn:
+•	Pod Networking
+•	Service
+•	ClusterIP
+•	NodePort
+•	LoadBalancer
+•	Ingress
+________________________________________
+Service Mesh
+Examples:
+•	Istio
+•	Linkerd
+Features:
+•	mTLS
+•	Traffic Routing
+•	Observability
+________________________________________
+Phase 12: API Networking
+Most relevant to your Java work.
+REST
+Understand:
+•	Stateless
+•	JSON
+•	HTTP
+________________________________________
+GraphQL
+Modern API pattern.
+________________________________________
+WebSocket
+Real-time communication.
+Examples:
+•	Trading
+•	Chat
+•	Monitoring
+________________________________________
+gRPC
+Becoming popular in microservices.
+Uses: HTTP/2
+Protocol Buffers
+________________________________________
+Phase 13: Authentication Networking
+Directly related to your Keycloak work.
+Learn:
+OAuth2
+Flows:
+•	Authorization Code
+•	Client Credentials
+•	Device Flow
+________________________________________
+OpenID Connect
+Used by Keycloak
+Components:
+ID Token
+Access Token
+Refresh Token
+________________________________________
+SAML
+Still used in enterprises.
+________________________________________
+JWT
+Structure:
+Header
+Payload
+Signature
+________________________________________
+Phase 14: Modern Enterprise Networking
+Common in large organizations.
+CDN
+Examples:
+•	Cloudflare
+•	Akamai
+________________________________________
+WAF
+Protects against:
+•	SQL Injection
+•	XSS
+•	CSRF
+________________________________________
+Zero Trust
+Modern security architecture.
+Principle:
+Never Trust
+Always Verify
+________________________________________
+SD-WAN
+Modern WAN networking used by enterprises.
+________________________________________
+Phase 15: Troubleshooting Tools
+Essential for every backend engineer.
+Shell
+ping
+traceroute
+nslookup
+dig
+curl
+telnet
+netstat
+ss
+tcpdump
+wireshark
+nmap
+openssl
+Example:
+Shell
+curl -v https://api.company.com
+________________________________________
+My Recommendation For You
+As a Senior Software Engineer working on Java, Keycloak, security, DPDPA, and AuditLedger, prioritize:
+Must Learn (High ROI)
+1.	OSI & TCP/IP
+2.	IPv4/IPv6
+3.	DNS
+4.	TCP vs UDP
+5.	HTTP/HTTPS
+6.	TLS & Certificates
+7.	NAT
+8.	Load Balancers
+9.	Reverse Proxy (NGINX)
+10.	OAuth2/OIDC
+11.	Firewalls
+12.	VPN
+13.	AWS/Azure Networking
+14.	Docker Networking
+15.	Kubernetes Networking
+16.	API Gateway
+17.	Service Mesh (Istio)
+18.	Wireshark & tcpdump
+Lower Priority
+•	Hub
+•	Bridge
+•	Brouter
+•	Token Ring
+•	Frame Relay
+•	ISDN
+
+Phase 1: How Communication Actually Happens
+Before IP, TCP, DNS, HTTP, or routers, answer this question:
+Scenario
+Your laptop wants to open: nhttps://google.com
+What actually happens?
+Most developers think:
+Browser
+↓
+Google Server
+Reality:
+Browser
+↓
+Operating System
+↓
+Network Card (NIC)
+↓
+Switch
+↓
+Router
+↓
+ISP
+↓
+Internet
+↓
+Google Router
+↓
+Google Load Balancer
+↓
+Google Server
+Many devices participate.
+________________________________________
+Lesson 1: What is a Network?
+A network is simply: A collection of devices connected together for communication.
+Examples:
+Home Network
+Laptop
+Phone
+TV
+Printer
+│
+Router
+│
+Internet
+Office Network
+Employee PCs
+Servers
+Printers
+WiFi AP
+│
+Switch
+│
+Router
+│
+Internet
+Cloud Network
+Spring Boot App
+│
+Load Balancer
+│
+API Gateway
+│
+Database Server
+Same concept.
+Just bigger.
+________________________________________
+Lesson 2: Why Networking Exists
+Imagine no network.
+Computer A  Contains customer data. Another computer needs it.
+Computer B Without networking:
+•	Copy to USB
+•	Carry USB
+•	Paste
+Not practical.
+Networking allows:
+Computer A
+↓
+Computer B
+exchange data instantly.
+________________________________________
+Lesson 3: What Is Data?
+A very important concept.
+Suppose your Spring Boot API returns:
+JSON
+{
+"name": "Krishna"
+}
+You think:
+Text
+Computer thinks:
+01001011
+01110010
+01101001
+...
+Everything becomes:
+
+1 and 0
+Known as:
+Bits
+Bit = smallest unit of data.
+________________________________________
+Lesson 4: How Does One Computer Send Bits?
+Imagine two computers.
+PC A ---------------- PC B
+Question:
+How can electricity represent data?
+Let's define:
+5 Volts = 1
+0 Volts = 0
+Then
+1010
+can be transmitted as
+5V
+0V
+5V
+0V
+This is the foundation of networking.
+Everything eventually becomes electrical or optical signals.
+________________________________________
+Lesson 5: Physical Medium
+Computers cannot throw bits through the air magically.
+They need a medium.
+Copper Cable
+PC ---- Ethernet Cable ---- Switch
+Signal is electrical.
+________________________________________
+Fiber Optic
+PC ---- Fiber ---- Network
+Signal is light.
+Much faster.
+Used in:
+•	ISPs
+•	Data Centers
+•	Cloud Providers
+________________________________________
+Wireless
+Laptop ))))) WiFi ))))) Router
+Signal is radio waves.
+Still carrying 1s and 0s.
+________________________________________
+Lesson 6: Why We Need Layers
+Imagine sending a parcel internationally.
+Problems:
+Question 1
+How to pack?
+Question 2
+Which address?
+Question 3
+Which vehicle?
+Question 4
+Which customs office?
+Question 5
+How to know if delivered?
+Many responsibilities.
+Networking solved this by dividing responsibilities.
+This became: Layers
+Each layer performs one job.
+This idea is the most important concept in networking.
+________________________________________
+Lesson 7: A Java Example
+Suppose:
+Java
+RestTemplate.getForObject( "https://bank.com/api/users", User.class );
+Seems simple.
+Actually many layers work.
+Application Layer
+Creates HTTP request
+HTTP
+GET /api/users
+________________________________________
+Transport Layer
+Creates TCP connection.
+Reliable delivery
+________________________________________
+Network Layer
+Adds IP addresses.
+Source IP
+Destination IP
+________________________________________
+Data Link Layer
+Adds MAC addresses.
+Source MAC
+Destination MAC
+________________________________________
+Physical Layer
+Converts to: 010101010
+and sends through cable or WiFi.
+________________________________________
+Lesson 8: Real World Packet Journey
+Suppose:
+Laptop IP: 192.168.1.10
+Google: 142.250.xxx.xxx
+Your packet journey:
+Laptop
+↓
+WiFi Access Point
+↓
+Switch
+↓
+Home Router
+↓
+ISP Router
+↓
+Internet Backbone
+↓
+Google Router
+↓
+Google Load Balancer
+↓
+Google Server
+Response follows the reverse path.
+________________________________________
+Lesson 9: Why Your Java Application Fails
+Many production issues are networking issues.
+Example:
+Database timeout
+Could be:
+DNS issue
+Cannot locate DB.
+________________________________________
+Firewall issue
+Port blocked.
+________________________________________
+Routing issue
+No route to host.
+________________________________________
+TLS issue
+Certificate expired.
+________________________________________
+TCP issue
+Connection reset.
+________________________________________
+Load Balancer issue
+Traffic misrouted.
+This is why senior engineers understand networking.
+________________________________________
+Lesson 10: First Key Concepts To Remember
+Memorize these.
+Data
+Bit
+Byte
+KB
+MB
+GB
+TB
+________________________________________
+Media
+Copper
+Fiber
+Wireless
+________________________________________
+Devices
+NIC
+Switch
+Router
+Firewall
+Access Point
+Load Balancer
+________________________________________
+Addresses
+MAC Address
+IP Address
+We'll learn the difference later.
+________________________________________
+Protocols
+Think of them as communication rules.
+Examples:
+HTTP
+HTTPS
+TCP
+UDP
+DNS
+DHCP
+ARP
+TLS
+
+Phase 2: OSI Model & TCP/IP Model
+(The Most Important Networking Concept for Java Engineers)
+If you master this phase, you'll understand:
+•	How a browser reaches Google
+•	How Spring Boot talks to PostgreSQL
+•	How Keycloak validates tokens
+•	Why APIs time out
+•	Why firewalls block traffic
+•	How HTTPS works at a high level
+________________________________________
+First: Why OSI Model Was Created
+Imagine a courier company.
+To deliver a package, different teams handle different jobs:
+Packaging Team
+Address Team
+Transport Team
+Delivery Team
+Each team focuses on one responsibility.
+Networking follows the same idea.
+Instead of one giant protocol doing everything, networking is split into layers.
+________________________________________
+OSI Model
+7 Application
+6 Presentation
+5 Session
+4 Transport
+3 Network
+2 Data Link
+1 Physical
+Interview Formula:
+User Data
+↓
+Application
+↓
+Transport
+↓
+Network
+↓
+Data Link
+↓
+Physical
+Data travels downward when sending.
+Data travels upward when receiving.
+________________________________________
+Easy Analogy
+Suppose you're sending a letter.
+Letter Content
+↓
+Envelope
+↓
+Address
+↓
+Truck
+↓
+Road
+OSI works similarly.
+Every layer adds its own information.
+This process is called:
+Encapsulation
+________________________________________
+Layer 1 - Physical Layer
+Responsible for:
+Moving bits
+Examples:
+Ethernet Cable
+Fiber Optic
+WiFi Radio Signals
+It doesn't know:
+•	Names
+•	IP addresses
+•	Websites
+•	HTTP
+It only knows:
+101010101
+________________________________________
+Java Example
+When Spring Boot sends:
+JSON
+{
+"name":"Krishna"
+}
+Eventually it becomes:
+010101010101
+and flows through cable or WiFi.
+________________________________________
+Layer 2 - Data Link Layer
+Responsible for:
+Local communication
+Uses:
+MAC Address
+Example:
+AA:BB:CC:11:22:33
+Every network card has one.
+________________________________________
+Analogy
+Apartment Building
+IP = Building Address
+MAC = Apartment Number
+________________________________________
+Devices
+Switch
+Access Point
+work mainly at Layer 2.
+________________________________________
+Layer 2 Data Unit
+Called: Frame
+Remember: Layer 2 = Frame
+________________________________________
+Layer 3 - Network Layer
+Responsible for:
+Communication between networks
+Uses: IP Address
+Example:
+192.168.1.10
+or
+2401:4900:xxxx
+________________________________________
+Main Device
+Router
+Routers make decisions like:
+Which path should packet take?
+________________________________________
+Layer 3 Data Unit
+Called:
+Packet
+Remember:
+Layer 3 = Packet
+________________________________________
+Layer 4 - Transport Layer
+Very important for backend engineers.
+Responsible for:
+Reliable delivery
+Protocols:
+TCP
+UDP
+________________________________________
+TCP
+Guarantees:
+✔ Data arrives
+✔ Correct order
+✔ Retransmission
+Example:
+Banking
+Spring Boot APIs
+Database Connections
+HTTPS
+________________________________________
+UDP
+Fast but doesn't guarantee delivery.
+Examples:
+Streaming
+Gaming
+VoIP
+DNS
+________________________________________
+Ports
+Layer 4 introduces:
+Ports
+Examples:
+
+80 HTTP
+443 HTTPS 
+3306 MySQL
+5432 PostgreSQL
+8080 Spring Boot
+________________________________________
+Layer 4 Data Unit
+Called:
+Segment
+Remember:
+Layer 4 = Segment
+________________________________________
+Layer 5 - Session Layer
+Responsible for:
+Managing conversations
+Examples:
+Open Session
+Maintain Session
+Close Session
+Modern applications mostly handle this through higher-level protocols.
+You rarely work with this layer directly.
+________________________________________
+Layer 6 - Presentation Layer
+Responsible for:
+Formatting
+Encryption
+Compression
+Examples:
+
+JSON
+XML
+TLS/SSL
+UTF-8
+________________________________________
+Java Example
+You send:
+Java
+User("Krishna")
+Presentation layer converts to:
+JSON
+{
+"name":"Krishna"
+}
+and encrypts it using TLS.
+________________________________________
+Layer 7 - Application Layer
+The layer developers interact with.
+Examples:
+HTTP
+HTTPS
+FTP
+SMTP
+DNS
+Java examples:
+Java
+RestTemplate
+ 
+WebClient
+Feign Client
+All operate here.
+________________________________________
+Full Journey of a Spring Boot Request
+Imagine:
+Java
+GET https://api.bank.com/account
+________________________________________
+Layer 7
+Creates:
+HTTP
+GET /account
+________________________________________
+Layer 6
+Encrypts using TLS.
+________________________________________
+Layer 5
+Manages session.
+________________________________________
+Layer 4
+Adds TCP information.
+Source Port: 5150
+Destination Port: 443
+________________________________________
+Layer 3
+Adds IP addresses.
+
+Source IP:
+192.168.1.10
+Destination IP:
+20.x.x.x
+________________________________________
+Layer 2
+Adds MAC addresses.
+Source MAC
+Destination MAC
+________________________________________
+Layer 1
+Converts everything into:
+101011010101001
+and sends it.
+________________________________________
+Encapsulation
+Each layer wraps the previous layer.
+HTTP Data
+↓
+TCP Header
+↓
+IP Header
+↓
+MAC Header
+↓
+Bits
+Think: Box inside Box inside Box inside Box
+________________________________________
+Decapsulation
+On the receiving server:
+Bits
+↓
+Frame
+↓
+Packet
+↓
+Segment
+↓
+HTTP Data
+Every layer removes its wrapper.
+This is:
+Decapsulation
+________________________________________
+Packet vs Segment vs Frame
+Interview favorite.
+Application
+Data
+Transport
+Segment
+Network
+Packet
+Data Link
+Frame
+Physical
+Bits
+________________________________________
+Real Example: Opening Google
+When you type:
+https://google.com
+Browser does NOT directly know Google.
+First:
+DNS lookup
+finds Google's IP.
+Then:
+TCP connection
+is established.
+Then:
+TLS Handshake
+happens.
+Then:
+HTTP
+GET /
+is sent.
+OSI layers are involved at every step.
+________________________________________
+Why Senior Java Engineers Care
+Suppose production issue:
+Connection refused
+Likely Layer 4.
+________________________________________
+Suppose:
+Host not found
+Likely DNS issue.
+________________________________________
+Suppose:
+SSL Handshake Failed
+Likely Layer 6.
+________________________________________
+Suppose:
+No route to host
+Likely Layer 3.
+________________________________________
+Suppose:
+Packet loss
+Could be Layer 1.
+________________________________________
+TCP/IP Model (What Industry Actually Uses)
+OSI is educational.
+Real networking uses:
+Application
+Transport
+Internet
+Network Access
+Mapping:
+OSI 7
+OSI 6
+OSI 5
+↓
+Application
+OSI 4
+↓
+Transport 
+OSI 3
+↓
+Internet
+OSI 2
+OSI 1
+↓
+Network Access
+________________________________________
+What You Must Remember Forever
+Layer Responsibilities
+L7 Application → HTTP
+L6 Presentation → TLS 
+L5 Session → Sessions
+L4 Transport → TCP/UDP
+L3 Network → IP
+L2 Data Link → MAC
+L1 Physical → Bits
+Devices
+Switch → Layer 2
+Router → Layer 3
+ Firewall → Layer 3-7
+ Load Balancer → Layer 4/7
+Data Units
+L4 = Segment
+L3 = Packet
+L2 = Frame
+L1 = Bits
+
+
