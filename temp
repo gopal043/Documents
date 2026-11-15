@@ -139,3 +139,264 @@ Your platform becomes:
 This is much harder for competitors to copy and provides significantly more value than a standalone audit logging solution.
 The very first coding milestone should be:
 Once these four modules are working end-to-end, you already have a sellable MVP.
+
+
+
+Act as a Distinguished Software Architect and Distributed Systems Expert with 20+ years of experience designing systems at Amazon, Netflix, Uber, Google, Stripe, LinkedIn, and Meta.
+Your task is NOT to give a beginner explanation.
+Your task is to create a COMPLETE ARCHITECT-LEVEL STUDY GUIDE in Markdown format that can be directly saved as a downloadable .md file.
+The content should help me become capable of:
+- Solution Architect
+- Principal Engineer
+- Staff Engineer
+- System Design Interview Expert
+- Distributed Systems Expert
+==================================================================
+TOPICS
+==================================================================
+1. Load Balancer
+2. Reverse Proxy
+3. Caching
+4. Redis
+5. Message Queues
+6. Kafka
+7. RabbitMQ
+8. API Gateway
+9. Rate Limiting
+10. Circuit Breaker
+11. Bulkhead
+12. Retry Pattern
+13. Saga Pattern
+14. CQRS
+15. Event Sourcing
+16. CAP Theorem
+17. PACELC
+18. Consistent Hashing
+19. Database Replication
+20. Leader-Follower Architecture
+21. Distributed Lock
+22. Idempotency
+23. Exactly Once vs At Least Once Delivery
+==================================================================
+IMPORTANT REQUIREMENTS
+==================================================================
+For EVERY topic, follow EXACTLY this structure.
+# Topic Name
+## 1. Why This Topic Exists
+Explain the historical problem.
+What challenges in real systems led to this concept?
+What failures occurred before this solution existed?
+Which companies first popularized this approach?
+What business problems does it solve?
+Provide a realistic production scenario.
+------------------------------------------------------------
+## 2. Core Concept
+Explain from first principles.
+Do NOT assume prior knowledge.
+Build intuition from scratch.
+Use analogies where useful.
+Show how the concept fits within large-scale systems.
+------------------------------------------------------------
+## 3. Internal Working
+Deeply explain internals.
+Include:
+- Components
+- Flow
+- Data movement
+- Request lifecycle
+- State handling
+- Failure handling
+Use ASCII diagrams.
+Example:
+Client
+  |
+  v
+Load Balancer
+  |
+  +--> Server A
+  +--> Server B
+Explain every step.
+------------------------------------------------------------
+## 4. Architecture Patterns
+Explain patterns involving this topic.
+Example:
+For Load Balancer:
+- Active-Passive
+- Active-Active
+- Global Load Balancing
+- DNS Load Balancing
+For Caching:
+- Cache Aside
+- Read Through
+- Write Through
+- Write Behind
+For Kafka:
+- Event Streaming
+- Event Driven Architecture
+etc.
+------------------------------------------------------------
+## 5. Real Implementation Technologies
+Explain commonly used tools:
+Examples:
+Load Balancer:
+- NGINX
+- HAProxy
+- AWS ALB
+- AWS NLB
+- Azure Application Gateway
+- F5
+Redis:
+- Redis Cluster
+- Redis Sentinel
+Message Queue:
+- Kafka
+- RabbitMQ
+- ActiveMQ
+- SQS
+For each tool explain:
+- Strengths
+- Weaknesses
+- Use Cases
+------------------------------------------------------------
+## 6. Step-by-Step Request Flow
+Walk through a realistic example.
+Example:
+User purchases a product on Amazon.
+Explain exactly where this topic participates.
+Trace every request.
+Provide sequence diagrams.
+------------------------------------------------------------
+## 7. Failure Scenarios
+What can go wrong?
+Show:
+- node failures
+- network failures
+- split brain
+- stale cache
+- duplicate messages
+- leader crashes
+- retry storms
+Explain recovery mechanisms.
+------------------------------------------------------------
+## 8. Scaling Considerations
+How does this scale from:
+100 users
+→ 10,000 users
+→ 1 million users
+→ 100 million users
+Explain bottlenecks.
+Explain scaling strategy.
+------------------------------------------------------------
+## 9. Trade-Off Analysis
+Provide comparison tables.
+Examples:
+Redis vs Memcached
+Kafka vs RabbitMQ
+API Gateway vs Reverse Proxy
+Active-Active vs Active-Passive
+Show:
+Advantages
+Disadvantages
+Complexity
+Latency
+Reliability
+Cost
+------------------------------------------------------------
+## 10. CAP and Consistency Impact
+If applicable explain:
+Consistency
+Availability
+Latency
+Partition Tolerance
+Impact on system design.
+------------------------------------------------------------
+## 11. Security Considerations
+Explain security concerns.
+Examples:
+DDoS
+Replay attacks
+Cache poisoning
+Unauthorized access
+Rate limiting attacks
+Message tampering
+Explain mitigations.
+------------------------------------------------------------
+## 12. Cloud Implementation
+Explain implementation in:
+AWS
+Azure
+GCP
+Mention exact services.
+Examples:
+AWS ALB
+ELB
+MSK
+ElastiCache
+API Gateway
+SQS
+etc.
+------------------------------------------------------------
+## 13. Monitoring and Observability
+Metrics
+Logs
+Tracing
+Alerting
+Important dashboards.
+Prometheus metrics.
+Grafana visualizations.
+------------------------------------------------------------
+## 14. Production Best Practices
+What do experienced architects do?
+What common mistakes should be avoided?
+What anti-patterns should be avoided?
+------------------------------------------------------------
+## 15. Interview Questions
+Beginner
+Intermediate
+Advanced
+Principal Engineer
+Provide model answers.
+------------------------------------------------------------
+## 16. Real System Design Examples
+Show how this topic is used in:
+Amazon
+Netflix
+Uber
+Google
+Swiggy
+Zomato
+Flipkart
+PayPal
+Stripe
+Describe architecture.
+------------------------------------------------------------
+## 17. Architect Notes
+Things senior engineers often miss.
+Hidden trade-offs.
+Decision-making frameworks.
+Architecture review checklist.
+------------------------------------------------------------
+## 18. Summary Cheat Sheet
+One-page revision guide.
+Key concepts.
+Decision tree.
+Golden rules.
+When to use.
+When not to use.
+==================================================================
+DOCUMENT REQUIREMENTS
+==================================================================
+1. Write at architect level.
+2. Do not skip details.
+3. Include diagrams.
+4. Include practical examples.
+5. Include interview questions.
+6. Include production scenarios.
+7. Include failure analysis.
+8. Include implementation details.
+9. Include cloud-specific examples.
+10. Include trade-offs and decision-making.
+Output as a single well-structured Markdown document.
+Make the content deep enough that studying it thoroughly would prepare an engineer for Senior Architect and Principal Engineer level system design discussions.
+Note: one topic at a time
+
